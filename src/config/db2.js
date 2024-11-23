@@ -2,11 +2,14 @@ const { Pool } = require("pg");
 
 // Настройки подключения
 const pool = new Pool({
-  user: "postgres", // Замените на ваше имя пользователя PostgreSQL
-  host: "localhost", // Адрес сервера
-  database: "deadlockDb", // Название вашей базы данных
-  password: "Admin2002", // Пароль, который вы задали при установке PostgreSQL
-  port: 5432, // Порт PostgreSQL (по умолчанию 5432)
+  user: "droplock_user", // Имя пользователя из нового сервера
+  host: "dpg-ct11ujt2ng1s73e3deu0-a.oregon-postgres.render.com", // Хост нового сервера
+  database: "droplock", // Имя базы данных на новом сервере
+  password: "fWD167Ds6xT1V2eHK5f66j3snydtSQNZ", // Пароль из настроек нового сервера
+  port: 5432, // Порт PostgreSQL
+  ssl: {
+    rejectUnauthorized: false, // Разрешает небезопасные SSL-сертификаты
+  },
 });
 
 const connectDB2 = async () => {
