@@ -1,8 +1,8 @@
 const express = require("express");
 const morgan = require("morgan");
 const passport = require("passport");
-const connectDB = require("./config/db");
-const { connectDB2, pool } = require("./config/db2");
+// const connectDB = require("./config/db");
+const { connectDB, pool } = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const caseRoutes = require("./routes/caseRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -16,9 +16,7 @@ app.use(express.json());
 app.use(morgan("dev"));
 app.use(passport.initialize());
 
-// connectDB();
-
-connectDB2();
+connectDB();
 
 // Routes
 app.use("/auth", authRoutes);
@@ -26,10 +24,10 @@ app.use("/auth", authRoutes);
 //app.use("/users", userRoutes);
 
 app.get("/cases", async (req, res) => {
-  const caseId = req.query.caseId || 4; // ID кейса
-  const page = parseInt(req.query.page, 10) || 1; // Номер страницы (по умолчанию 1)
-  const limit = parseInt(req.query.limit, 10) || 10; // Количество записей на странице (по умолчанию 10)
-  const offset = (page - 1) * limit; // Вычисляем сдвиг для SQL
+  const caseId = req.query.caseId || 4;
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+  const offset = (page - 1) * limit;
 
   if (!caseId) {
     return res.status(400).json({
@@ -55,7 +53,7 @@ app.get("/cases", async (req, res) => {
       WHERE cases.id = $1
       LIMIT $2 OFFSET $3;
       `,
-      [caseId, limit, offset] // Передаем параметры в запрос
+      [caseId, limit, offset]
     );
 
     res.status(200).json({
@@ -64,7 +62,7 @@ app.get("/cases", async (req, res) => {
       pagination: {
         currentPage: page,
         pageSize: limit,
-        totalRecords: result.rows.length, // В данном случае вернется только размер текущей страницы
+        totalRecords: result.rows.length,
       },
     });
   } catch (error) {

@@ -3,7 +3,6 @@ const passport = require("passport");
 const authenticateToken = require("../middleware/authenticateToken");
 const {
   getCurrentUser,
-  steamLogin,
   steamLoginCallback,
   logout,
 } = require("../controllers/authController");
