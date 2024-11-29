@@ -1,12 +1,12 @@
-import { Module } from "@nestjs/common";
-import { PassportModule } from "@nestjs/passport";
-import { ConfigModule, ConfigService } from "@nestjs/config";
-import { JwtModule } from "@nestjs/jwt";
-import { AuthController } from "./auth.controller";
-import { AuthService } from "./auth.service";
-import { JwtStrategy } from "./jwt.strategy";
-import { SteamStrategy } from "./steam.strategy";
-import { UserModule } from "../users/users.module";
+import { Module } from '@nestjs/common'
+import { PassportModule } from '@nestjs/passport'
+import { ConfigModule, ConfigService } from '@nestjs/config'
+import { JwtModule } from '@nestjs/jwt'
+import { AuthController } from './auth.controller'
+import { AuthService } from './auth.service'
+import { JwtStrategy } from './jwt.strategy'
+import { SteamStrategy } from './steam.strategy'
+import { UserModule } from '../users/users.module'
 
 @Module({
   imports: [
@@ -15,8 +15,8 @@ import { UserModule } from "../users/users.module";
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>("JWT_SECRET"),
-        signOptions: { expiresIn: "1h" },
+        secret: configService.get<string>('JWT_SECRET'),
+        signOptions: { expiresIn: '1h' },
       }),
     }),
     UserModule,

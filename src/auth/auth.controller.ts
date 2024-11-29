@@ -1,66 +1,68 @@
-import { Controller, Get, Req, UseGuards } from "@nestjs/common";
-import { AuthGuard } from "@nestjs/passport";
-import { Request } from "express";
-import { AuthService } from "./auth.service";
-import { UserService } from "../users/users.service";
+import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common'
+import { AuthGuard } from '@nestjs/passport'
+import { Request, Response } from 'express'
+import { AuthService } from './auth.service'
+import { UserService } from '../users/users.service'
 
-@Controller("auth")
+@Controller('auth')
 export class AuthController {
   constructor(
     private readonly authService: AuthService,
-    private readonly userService: UserService
+    private readonly userService: UserService,
   ) {}
 
-  @Get("steam")
-  @UseGuards(AuthGuard("steam"))
+  @Get('steam')
+  @UseGuards(AuthGuard('steam'))
   steamLogin() {
     // Перенаправляет на страницу авторизации Steam
   }
 
-  @Get("steam/return")
-  @UseGuards(AuthGuard("steam"))
-  async steamLoginCallback(@Req() req: Request) {
-    const steamUser = req.user;
+  @Get('steam/return')
+  @UseGuards(AuthGuard('steam'))
+  async steamLoginCallback(@Req() req: Request, @Res() res: Response) {
+    const steamUser = req.user
 
     if (!steamUser) {
-      throw new Error("Steam user is undefined. Authentication failed.");
+      throw new Error('Steam user is undefined. Authentication failed.')
     }
 
     // Проверяем пользователя в базе данных
-    let user = await this.userService.findBySteamId(steamUser.steamid);
+    let user = await this.userService.findBySteamId(steamUser.steamid)
 
     if (!user) {
       // Создаём нового пользователя
       user = await this.userService.create({
         steamid: steamUser.steamid, // Приводим к строке
-        displayname: steamUser.displayname || "", // Приводим к строке
-        avatar: steamUser.avatar || "", // Приводим к строке
-        profileurl: steamUser.profileurl || "", // Приводим к строке
-        role: steamUser.role || "user", // Роль по умолчанию
+        displayname: steamUser.displayname || '', // Приводим к строке
+        avatar: steamUser.avatar || '', // Приводим к строке
+        profileurl: steamUser.profileurl || '', // Приводим к строке
+        role: steamUser.role || 'user', // Роль по умолчанию
         balance: steamUser.balance ?? 0, // Баланс по умолчанию
-        tradelink: steamUser.tradelink || "", // Приводим к строке
+        tradelink: steamUser.tradelink || '', // Приводим к строке
         referral: steamUser.referral ?? 0, // Приводим к числу
         created_at: new Date(), // Устанавливаем текущее время
-      });
-      console.log("New user");
+      })
+      console.log('New user')
     } else {
-      console.log("User found");
+      console.log('User found')
     }
 
     // Генерируем JWT-токен
-    const token = await this.authService.login(user);
+    const token = await this.authService.login(user)
+
+    const referer = req.headers.referer || req.headers.origin
+
+    const frontendUrl = referer?.includes('localhost')
+      ? 'http://localhost:3000'
+      : 'https://droplock-frontend.vercel.app'
 
     // Возвращаем токен клиенту
-    return {
-      message: "Authentication successful",
-      token,
-      user,
-    };
+    return res.redirect(`${frontendUrl}/auth/callback?token=${token}`)
   }
 
-  @Get("me")
-  @UseGuards(AuthGuard("jwt"))
+  @Get('me')
+  @UseGuards(AuthGuard('jwt'))
   getProfile(@Req() req: Request) {
-    return req.user;
+    return req.user
   }
 }
