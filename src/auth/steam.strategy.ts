@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, UnauthorizedException } from '@nestjs/common'
 import { PassportStrategy } from '@nestjs/passport'
 import { Strategy } from 'passport-steam'
 import { ConfigService } from '@nestjs/config'
@@ -14,9 +14,13 @@ export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
   }
 
   async validate(identifier: string, profile: any) {
+    if (!profile || !profile.id) {
+      throw new UnauthorizedException('Invalid Steam profile')
+    }
+
     return {
       steamid: profile.id, // Соответствует `steamid` в сущности `User`
-      displayname: profile.displayName, // Соответствует `displayname`
+      displayname: profile.displayName || '', // Соответствует `displayname`
       avatar: profile.photos?.[2]?.value || null, // Соответствует `avatar`
       profileurl: profile._json.profileurl || null, // Дополнительно вытаскиваем `profileurl`
       role: 'user', // Значение по умолчанию

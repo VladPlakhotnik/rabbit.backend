@@ -1,4 +1,11 @@
-import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Req,
+  Res,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
 import { Request, Response } from 'express'
 import { AuthService } from './auth.service'
@@ -23,29 +30,24 @@ export class AuthController {
     const steamUser = req.user
 
     if (!steamUser) {
-      throw new Error('Steam user is undefined. Authentication failed.')
+      throw new UnauthorizedException('Authentication failed')
     }
 
     // Проверяем пользователя в базе данных
-    let user = await this.userService.findBySteamId(steamUser.steamid)
-
-    if (!user) {
-      // Создаём нового пользователя
-      user = await this.userService.create({
-        steamid: steamUser.steamid, // Приводим к строке
-        displayname: steamUser.displayname || '', // Приводим к строке
-        avatar: steamUser.avatar || '', // Приводим к строке
-        profileurl: steamUser.profileurl || '', // Приводим к строке
-        role: steamUser.role || 'user', // Роль по умолчанию
-        balance: steamUser.balance ?? 0, // Баланс по умолчанию
-        tradelink: steamUser.tradelink || '', // Приводим к строке
-        referral: steamUser.referral ?? 0, // Приводим к числу
-        created_at: new Date(), // Устанавливаем текущее время
-      })
-      console.log('New user')
-    } else {
-      console.log('User found')
-    }
+    // Find or create user in database
+    const user =
+      (await this.userService.findBySteamId(steamUser.steamid)) ||
+      (await this.userService.create({
+        steamid: steamUser.steamid,
+        displayname: steamUser.displayname || '',
+        avatar: steamUser.avatar || '',
+        profileurl: steamUser.profileurl || '',
+        role: steamUser.role || 'user',
+        balance: steamUser.balance ?? 0,
+        tradelink: steamUser.tradelink || '',
+        referral: steamUser.referral ?? 0,
+        created_at: new Date(),
+      }))
 
     // Генерируем JWT-токен
     const token = await this.authService.login(user)
@@ -53,13 +55,10 @@ export class AuthController {
     // Получаем redirectUrl из query-параметров
     const redirectUrl = req.query.redirectUrl as string
 
-    // Проверяем redirectUrl
-    if (!redirectUrl || !redirectUrl.startsWith('http')) {
-      // Если redirectUrl отсутствует или некорректен, перенаправляем на fallback URL
+    if (!redirectUrl || !this.isTrustedRedirectUrl(redirectUrl)) {
       return res.redirect(`http://localhost:3000/auth/callback?token=${token}`)
     }
 
-    // Перенаправляем на указанный redirectUrl с токеном
     return res.redirect(`${redirectUrl}/auth/callback?token=${token}`)
   }
 
@@ -67,5 +66,15 @@ export class AuthController {
   @UseGuards(AuthGuard('jwt'))
   getProfile(@Req() req: Request) {
     return req.user
+  }
+
+  private isTrustedRedirectUrl(url: string): boolean {
+    const trustedDomains = ['https://droplock-frontend.vercel.app/']
+    try {
+      const hostname = new URL(url).hostname
+      return trustedDomains.includes(hostname)
+    } catch {
+      return false
+    }
   }
 }
