@@ -4,6 +4,7 @@
   "description": "Deadlock Backend",
   "private": false,
   "scripts": {
+    "prestart": "npm run build",
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
