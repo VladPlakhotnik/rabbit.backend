@@ -50,14 +50,17 @@ export class AuthController {
     // Генерируем JWT-токен
     const token = await this.authService.login(user)
 
-    const referer = req.headers.referer || req.headers.origin
+    // Получаем redirectUrl из query-параметров
+    const redirectUrl = req.query.redirectUrl as string
 
-    const frontendUrl = referer?.includes('localhost')
-      ? 'http://localhost:3000'
-      : 'https://droplock-frontend.vercel.app'
+    // Проверяем redirectUrl
+    if (!redirectUrl || !redirectUrl.startsWith('http')) {
+      // Если redirectUrl отсутствует или некорректен, перенаправляем на fallback URL
+      return res.redirect(`http://localhost:3000/auth/callback?token=${token}`)
+    }
 
-    // Возвращаем токен клиенту
-    return res.redirect(`${frontendUrl}/auth/callback?token=${token}`)
+    // Перенаправляем на указанный redirectUrl с токеном
+    return res.redirect(`${redirectUrl}/auth/callback?token=${token}`)
   }
 
   @Get('me')
