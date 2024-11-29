@@ -5,12 +5,11 @@ import { ConfigService } from '@nestjs/config'
 async function bootstrap() {
   const app = await NestFactory.create(AppModule)
 
-  // Делаем настройки из .env доступными
   const configService = app.get(ConfigService)
   const port = configService.get<number>('PORT') || 5000
 
-  // Включаем CORS, если нужно
-  app.enableCors()
+  // // Включаем CORS, если нужно
+  // app.enableCors()
 
   await app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`)
