@@ -8,8 +8,11 @@ async function bootstrap() {
   const configService = app.get(ConfigService)
   const port = configService.get<number>('PORT') || 5000
 
-  // // Включаем CORS, если нужно
-  // app.enableCors()
+  app.enableCors({
+    origin: ['http://localhost:3000', 'https://droplock-frontend.vercel.app/'],
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+    credentials: true,
+  })
 
   await app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`)
