@@ -8,7 +8,7 @@
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "build": "nest build",
+    "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "eslint \"{src,test}/**/*.ts\""
   },
@@ -42,6 +42,10 @@
   "devDependencies": {
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-steam": "^1.0.6",
+    "cross-env": "^7.0.3",
     "nodemon": "^3.1.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
