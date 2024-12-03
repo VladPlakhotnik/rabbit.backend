@@ -20,7 +20,7 @@ import { PaymentModule } from './modules/payments/payment.module'
     CaseModule,
     NotificationModule,
     // TO DO
-    PaymentModule,
+    // PaymentModule,
   ],
 })
 export class AppModule {}
