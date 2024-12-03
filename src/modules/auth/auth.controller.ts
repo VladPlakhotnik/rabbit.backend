@@ -64,10 +64,10 @@ export class AuthController {
   }
 
   private isTrustedRedirectUrl(url: string): boolean {
-    const trustedDomains = ['https://droplock-frontend.vercel.app']
+    const trustedHostnames = ['droplock-frontend.vercel.app']
     try {
       const hostname = new URL(url).hostname
-      return trustedDomains.includes(hostname)
+      return trustedHostnames.includes(hostname)
     } catch {
       return false
     }
