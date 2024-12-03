@@ -1,0 +1,38 @@
+import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { PassportStrategy } from '@nestjs/passport'
+import { Strategy } from 'passport-steam'
+import { ConfigService } from '@nestjs/config'
+
+@Injectable()
+export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
+  constructor(private readonly configService: ConfigService) {
+    super({
+      returnURL: `${configService.get<string>('BASE_URL')}/auth/steam/return`,
+      realm: configService.get<string>('BASE_URL'),
+      apiKey: configService.get<string>('STEAM_API_KEY'),
+    })
+  }
+
+  async validate(identifier: string, profile: any) {
+    if (!profile || !profile.id) {
+      throw new UnauthorizedException('Invalid Steam profile')
+    }
+
+    return {
+      steam_id: profile.id, // Соответствует `steamid` в сущности `User`
+      display_name: profile.displayName || '', // Соответствует `displayname`
+      avatar: profile.photos?.[2]?.value || null, // Соответствует `avatar`
+      profile_url: profile._json.profileurl || null, // Дополнительно вытаскиваем `profileurl`
+      // role: 'user', // Значение по умолчанию
+      // balance: 0, // Значение по умолчанию
+      // trade_link: null, // Пока пустое
+      // referral_parent_id: null, // Пока пустое
+      // created_at: new Date(), // Устанавливаем текущее время
+      // opened_cases: 0, // Значение по умолчанию
+      // upgraded_skins: 0, // Значение по умолчанию
+      // deposit_amount: 0, // Значение по умолчанию
+      // withdrawal_amount: 0, // Значение по умолчанию
+      // rank: 'initiate_1', // Начальный ранг
+    }
+  }
+}

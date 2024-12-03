@@ -1,9 +1,11 @@
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
-import { DatabaseModule } from './database/database.module'
-import { AuthModule } from './auth/auth.module'
-import { UserModule } from './users/users.module'
-import { CaseModule } from './cases/cases.module'
+import { DatabaseModule } from './core/database/database.module'
+import { AuthModule } from './modules/auth/auth.module'
+import { UserModule } from './modules/users/users.module'
+import { CaseModule } from './modules/cases/case.module'
+import { SectionModule } from './modules/sections/section.module'
+import { NotificationModule } from './modules/notifications/notification.module'
 
 @Module({
   imports: [
@@ -13,7 +15,9 @@ import { CaseModule } from './cases/cases.module'
     DatabaseModule,
     AuthModule,
     UserModule,
+    SectionModule,
     CaseModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}

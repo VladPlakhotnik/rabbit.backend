@@ -33,26 +33,27 @@ export class AuthController {
       throw new UnauthorizedException('Authentication failed')
     }
 
-    // Проверяем пользователя в базе данных
-    // Find or create user in database
     const user =
-      (await this.userService.findBySteamId(steamUser.steamid)) ||
+      (await this.userService.findBySteamId(steamUser.steam_id)) ||
       (await this.userService.create({
-        steamid: steamUser.steamid,
-        displayname: steamUser.displayname || '',
-        avatar: steamUser.avatar || '',
-        profileurl: steamUser.profileurl || '',
-        role: steamUser.role || 'user',
-        balance: steamUser.balance ?? 0,
-        tradelink: steamUser.tradelink || '',
-        referral: steamUser.referral ?? 0,
+        steam_id: steamUser.steam_id,
+        display_name: steamUser.display_name ?? '',
+        avatar: steamUser.avatar ?? '',
+        profile_url: steamUser.profile_url ?? '',
+        role: 'user',
+        balance: 0,
+        trade_link: null,
+        referral_parent_id: null,
+        opened_cases: 0,
+        upgraded_skins: 0,
+        deposit_amount: 0,
+        withdrawal_amount: 0,
+        rank: 'initiate_1',
         created_at: new Date(),
       }))
 
-    // Генерируем JWT-токен
     const token = await this.authService.login(user)
 
-    // Получаем redirectUrl из query-параметров
     const redirectUrl = req.query.redirectUrl as string
 
     if (!redirectUrl || !this.isTrustedRedirectUrl(redirectUrl)) {
@@ -60,12 +61,6 @@ export class AuthController {
     }
 
     return res.redirect(`${redirectUrl}/auth/callback?token=${token}`)
-  }
-
-  @Get('me')
-  @UseGuards(AuthGuard('jwt'))
-  getProfile(@Req() req: Request) {
-    return req.user
   }
 
   private isTrustedRedirectUrl(url: string): boolean {

@@ -18,7 +18,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    const user = await this.userService.findBySteamId(payload.steamid)
+    const user = await this.userService.findBySteamId(payload.steam_id)
     if (!user) {
       throw new Error('Unauthorized')
     }
