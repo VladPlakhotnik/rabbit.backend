@@ -6,7 +6,6 @@ import { UserModule } from './modules/users/users.module'
 import { CaseModule } from './modules/cases/case.module'
 import { SectionModule } from './modules/sections/section.module'
 import { NotificationModule } from './modules/notifications/notification.module'
-import { PaymentModule } from './modules/payments/payment.module'
 
 @Module({
   imports: [

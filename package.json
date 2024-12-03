@@ -5,7 +5,7 @@
   "private": false,
   "scripts": {
     "prestart": "npm run build",
-    "start": "node --max-old-space-size=4096 dist/main.js",
+    "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
     "build": "nest build",
