@@ -2,25 +2,19 @@ import {
   Controller,
   Post,
   Body,
-  Res,
   HttpException,
   HttpStatus,
 } from '@nestjs/common'
-import { Response } from 'express'
-import Stripe from 'stripe'
-
-const stripe = new Stripe(
-  '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',
-  {
-    apiVersion: '2024-11-20.acacia', // Match your account's API version
-  },
-)
+import { StripeService } from './stripe.service'
 
 @Controller('payment')
 export class PaymentController {
+  constructor(private stripeService: StripeService) {}
+
   @Post('create-payment-intent')
-  async createPaymentIntent(@Body() body: any, @Res() res: Response) {
+  async createPaymentIntent(@Body() body: any) {
     const { amount, paymentMethod } = body
+    const stripe = this.stripeService.getStripeInstance()
 
     try {
       const paymentMethodTypes = []
@@ -44,11 +38,9 @@ export class PaymentController {
         payment_method_types: paymentMethodTypes,
       })
 
-      return res.status(200).send({
-        clientSecret: paymentIntent.client_secret,
-      })
+      return { clientSecret: paymentIntent.client_secret }
     } catch (error) {
-      return res.status(400).send({ error })
+      throw new HttpException(error as string, HttpStatus.BAD_REQUEST)
     }
   }
 }
