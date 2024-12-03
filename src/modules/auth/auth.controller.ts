@@ -67,6 +67,7 @@ export class AuthController {
     const trustedHostnames = ['droplock-frontend.vercel.app']
     try {
       const hostname = new URL(url).hostname
+      console.log(hostname)
       return trustedHostnames.includes(hostname)
     } catch {
       return false

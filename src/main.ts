@@ -1,6 +1,9 @@
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { ConfigService } from '@nestjs/config'
+const stripe = require('stripe')(
+  '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',
+)
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule)

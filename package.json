@@ -34,6 +34,7 @@
     "passport-steam": "^1.0.18",
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
+    "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
     "typeorm": "^0.3.20",
     "typescript": "^5.7.2"
