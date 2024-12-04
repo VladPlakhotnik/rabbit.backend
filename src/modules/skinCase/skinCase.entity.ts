@@ -10,7 +10,7 @@ import {
 import { Case } from '../cases/case.entity'
 import { Skin } from '../skins/skin.entity'
 
-@Entity('skinCase')
+@Entity('skincase')
 export class SkinCase {
   @PrimaryGeneratedColumn()
   id!: number

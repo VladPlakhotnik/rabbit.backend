@@ -4,9 +4,11 @@ import { Case } from './case.entity'
 import { Section } from '../sections/section.entity'
 import { CaseService } from './case.service'
 import { CaseController } from './case.controller'
+import { SkinCase } from '../skinCase/skinCase.entity'
+import { User } from '../users/user.entity'
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Case, Section])],
+  imports: [TypeOrmModule.forFeature([Case, Section, SkinCase, User])],
   providers: [CaseService],
   controllers: [CaseController],
   exports: [CaseService],

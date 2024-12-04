@@ -54,23 +54,17 @@ export class AuthController {
 
     const token = await this.authService.login(user)
 
-    const redirectUrl = req.query.redirectUrl as string
-
-    if (!redirectUrl || !this.isTrustedRedirectUrl(redirectUrl)) {
-      return res.redirect(`http://localhost:3000/auth/callback?token=${token}`)
-    }
-
-    return res.redirect(`${redirectUrl}/auth/callback?token=${token}`)
+    return res.redirect(`http://localhost:3000/auth/callback?token=${token}`)
   }
 
-  private isTrustedRedirectUrl(url: string): boolean {
-    const trustedHostnames = ['droplock-frontend.vercel.app']
-    try {
-      const hostname = new URL(url).hostname
-      console.log(hostname)
-      return trustedHostnames.includes(hostname)
-    } catch {
-      return false
-    }
-  }
+  // private isTrustedRedirectUrl(url: string): boolean {
+  //   const trustedHostnames = ['droplock-frontend.vercel.app']
+  //   try {
+  //     const hostname = new URL(url).hostname
+  //     console.log(hostname)
+  //     return trustedHostnames.includes(hostname)
+  //   } catch {
+  //     return false
+  //   }
+  // }
 }

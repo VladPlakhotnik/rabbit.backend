@@ -3,6 +3,7 @@ import { User } from '../../modules/users/user.entity'
 declare global {
   namespace Express {
     interface User {
+      id: number
       steam_id: number // Поле 'steam_id' (обязательно)
       display_name: string // Поле 'display_name'
       avatar: string // Поле 'avatar'
