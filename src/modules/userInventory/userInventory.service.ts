@@ -22,6 +22,7 @@ export class UserInventoryService {
     const inventories = await this.userInventoryRepository.find({
       where: { user: { id: userId } },
       relations: ['skin'],
+      order: { obtained_at: 'DESC' },
     })
 
     return inventories

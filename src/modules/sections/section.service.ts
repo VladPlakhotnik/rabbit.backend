@@ -11,7 +11,15 @@ export class SectionService {
   ) {}
 
   async findAll(): Promise<Section[]> {
-    return this.sectionRepository.find({ relations: ['cases'] })
+    return this.sectionRepository.find({
+      relations: ['cases'],
+      order: {
+        name: 'ASC',
+        cases: {
+          name: 'ASC',
+        },
+      },
+    })
   }
 
   async findById(id: number): Promise<Section> {
