@@ -10,16 +10,44 @@ export class SectionService {
     private sectionRepository: Repository<Section>,
   ) {}
 
-  async findAll(): Promise<Section[]> {
-    return this.sectionRepository.find({
-      relations: ['cases'],
-      order: {
-        name: 'ASC',
-        cases: {
-          name: 'ASC',
-        },
-      },
-    })
+  async findAll(filters: {
+    name?: string
+    minPrice?: number
+    maxPrice?: number
+    applyEnoughBalance?: boolean
+    userBalance?: number
+  }): Promise<Section[]> {
+    const { name, minPrice, maxPrice, applyEnoughBalance, userBalance } =
+      filters
+
+    const queryBuilder = this.sectionRepository.createQueryBuilder('section')
+    queryBuilder.leftJoinAndSelect('section.cases', 'cases')
+
+    // Применение фильтра по имени
+    if (name) {
+      queryBuilder.andWhere('cases.name ILIKE :name', { name: `%${name}%` })
+    }
+
+    // Применение фильтра по минимальной цене
+    if (minPrice !== undefined) {
+      queryBuilder.andWhere('cases.case_price >= :minPrice', { minPrice })
+    }
+
+    // Применение фильтра по максимальной цене
+    if (maxPrice !== undefined) {
+      queryBuilder.andWhere('cases.case_price <= :maxPrice', { maxPrice })
+    }
+
+    // Применение фильтра на баланс пользователя
+    if (applyEnoughBalance && userBalance !== undefined) {
+      queryBuilder.andWhere('cases.case_price <= :userBalance', { userBalance })
+    }
+
+    // Сортировка результатов
+    queryBuilder.orderBy('section.name', 'ASC').addOrderBy('cases.name', 'ASC')
+
+    // Выполнение запроса и возврат результатов
+    return queryBuilder.getMany()
   }
 
   async findById(id: number): Promise<Section> {

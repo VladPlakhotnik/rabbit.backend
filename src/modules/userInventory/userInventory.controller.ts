@@ -72,4 +72,22 @@ export class UserInventoryController {
       updatedBalance: Number(soldItem.user.balance),
     }
   }
+
+  @UseGuards(AuthGuard('jwt'))
+  @Post('sell-all')
+  async sellAllSkins(@Req() req: Request) {
+    if (!req.user) {
+      throw new UnauthorizedException('User not authenticated')
+    }
+    const userId = req.user.id
+
+    const { soldItems, updatedBalance } =
+      await this.userInventoryService.sellAllSkins(userId)
+
+    return {
+      message: 'All skins already sold',
+      soldItems,
+      updatedBalance,
+    }
+  }
 }
