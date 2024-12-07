@@ -9,6 +9,7 @@ import {
 } from 'typeorm'
 import { Case } from '../cases/case.entity'
 import { Skin } from '../skins/skin.entity'
+import { numericTransformer } from '../../common/helpers/numericTransformer'
 
 @Entity('skincase')
 export class SkinCase {
@@ -23,10 +24,20 @@ export class SkinCase {
   @JoinColumn({ name: 'skin_id' })
   skin!: Skin
 
-  @Column({ type: 'numeric', precision: 5, scale: 2 })
+  @Column({
+    type: 'numeric',
+    precision: 5,
+    scale: 2,
+    transformer: numericTransformer,
+  })
   chance!: number
 
-  @Column({ type: 'numeric', precision: 5, scale: 2 })
+  @Column({
+    type: 'numeric',
+    precision: 5,
+    scale: 2,
+    transformer: numericTransformer,
+  })
   hidden_chance!: number
 
   @Column({ type: 'boolean' })

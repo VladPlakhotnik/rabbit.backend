@@ -46,23 +46,6 @@ export class UserController {
   }
 
   @UseGuards(AuthGuard('jwt'))
-  @Get('me/inventory')
-  async getMyInventory(@Req() req: Request) {
-    const user = req.user as User
-    const inventories = await this.userService.getUserInventory(user.id)
-    return inventories
-  }
-
-  @Get(':id/inventory')
-  async getUserInventory(@Param('id') id: number) {
-    const inventories = await this.userService.getUserInventory(id)
-    if (!inventories || inventories.length === 0) {
-      throw new NotFoundException('Inventory not found for user')
-    }
-    return inventories
-  }
-
-  @UseGuards(AuthGuard('jwt'))
   @Patch('me/trade-link')
   async updateTradeLink(
     @Req() req: Request,

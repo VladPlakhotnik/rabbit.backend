@@ -8,6 +8,7 @@ import {
   JoinColumn,
 } from 'typeorm'
 import { User } from '../users/user.entity'
+import { numericTransformer } from '../../common/helpers/numericTransformer'
 
 @Entity('bonuses')
 export class Bonus {
@@ -21,7 +22,12 @@ export class Bonus {
   @Column({ type: 'varchar', length: 50 })
   bonus_type!: string
 
-  @Column({ type: 'numeric', precision: 12, scale: 2 })
+  @Column({
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    transformer: numericTransformer,
+  })
   amount!: number
 
   @Column({ type: 'timestamp' })

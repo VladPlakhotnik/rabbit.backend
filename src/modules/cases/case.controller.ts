@@ -29,7 +29,6 @@ export class CaseController {
   async findOne(@Param('id') id: number) {
     const caseEntity = await this.caseService.findById(id)
 
-    // Transform the response
     const response = {
       id: caseEntity.id,
       name: caseEntity.name,
@@ -42,13 +41,13 @@ export class CaseController {
         rarity: skinCase.skin.rarity,
         skin_price: skinCase.skin.skin_price,
         chance: skinCase.chance,
-        hidden_chance: skinCase.hidden_chance,
         is_drop_out: skinCase.is_drop_out,
       })),
     }
 
     return response
   }
+
   @UseGuards(AuthGuard('jwt'))
   @Post(':id/open')
   async openCase(@Param('id') caseId: number, @Req() req: Request) {
@@ -65,7 +64,28 @@ export class CaseController {
         name: result.winner.skin.name,
         img_url: result.winner.skin.img_url,
         rarity: result.winner.skin.rarity,
+        chance: result.winner.chance,
         skin_price: result.winner.skin.skin_price,
+      },
+      inventory: {
+        id: result.inventory.id,
+        obtained_at: result.inventory.obtained_at,
+        is_sold: result.inventory.is_sold,
+        is_withdrawn: result.inventory.is_withdrawn,
+        withdrawn_at: result.inventory.withdrawn_at,
+        skin: {
+          id: result.inventory.skin.id,
+          name: result.inventory.skin.name,
+          img_url: result.inventory.skin.img_url,
+          rarity: result.inventory.skin.rarity,
+          skin_price: result.inventory.skin.skin_price,
+        },
+        case: {
+          id: result.inventory.case.id,
+          name: result.inventory.case.name,
+          img_url: result.inventory.case.img_url,
+          case_price: result.inventory.case.case_price,
+        },
       },
     }
   }

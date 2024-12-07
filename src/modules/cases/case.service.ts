@@ -9,6 +9,7 @@ import { Repository } from 'typeorm'
 import { Section } from '../sections/section.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { User } from '../users/user.entity'
+import { UserInventory } from '../userInventory/userInventory.entity'
 
 @Injectable()
 export class CaseService {
@@ -21,6 +22,8 @@ export class CaseService {
     private skinCaseRepository: Repository<SkinCase>,
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    @InjectRepository(UserInventory)
+    private userInventoryRepository: Repository<UserInventory>,
   ) {}
 
   async findAll(): Promise<Case[]> {
@@ -62,7 +65,7 @@ export class CaseService {
   async openCase(
     caseId: number,
     userId: number,
-  ): Promise<{ winner: SkinCase }> {
+  ): Promise<{ winner: SkinCase; inventory: UserInventory }> {
     const user = await this.userRepository.findOne({ where: { id: userId } })
 
     if (!user) {
@@ -76,7 +79,11 @@ export class CaseService {
       throw new NotFoundException('Case not found')
     }
 
-    if (user.balance < caseEntity.case_price) {
+    if (isNaN(user.balance) || isNaN(caseEntity.case_price)) {
+      throw new BadRequestException('Invalid balance or case price')
+    }
+
+    if (user.balance <= caseEntity.case_price) {
       throw new BadRequestException('Insufficient balance')
     }
 
@@ -120,8 +127,20 @@ export class CaseService {
       user.opened_cases += 1
 
       await this.userRepository.save(user)
-    }
 
-    return { winner: winnerRange.skinCase }
+      const newInventory = this.userInventoryRepository.create({
+        user: user,
+        skin: winnerRange.skinCase.skin,
+        case: caseEntity,
+        obtained_at: new Date(),
+        is_sold: false,
+        is_withdrawn: false,
+        withdrawn_at: null,
+      })
+
+      await this.userInventoryRepository.save(newInventory)
+
+      return { winner: winnerRange.skinCase, inventory: newInventory }
+    }
   }
 }

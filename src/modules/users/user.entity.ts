@@ -9,6 +9,7 @@ import {
 import { Bonus } from '../bonuses/bonus.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { Notification } from '../notifications/notification.entity'
+import { numericTransformer } from '../../common/helpers/numericTransformer'
 
 @Entity('users')
 export class User {
@@ -42,7 +43,13 @@ export class User {
   @Column({ type: 'varchar', length: 50 })
   rank!: string
 
-  @Column({ type: 'numeric', precision: 12, scale: 2, default: 0 })
+  @Column({
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
   balance!: number
 
   @Column({ type: 'varchar', length: 255 })

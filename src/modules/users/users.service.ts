@@ -2,15 +2,12 @@ import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { User } from './user.entity'
-import { UserInventory } from '../userInventory/userInventory.entity'
 
 @Injectable()
 export class UserService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
-    @InjectRepository(UserInventory)
-    private readonly userInventoryRepository: Repository<UserInventory>,
   ) {}
 
   findAll() {
@@ -33,16 +30,6 @@ export class UserService {
   async create(userData: Partial<User>): Promise<User> {
     const newUser = this.userRepository.create(userData)
     return this.userRepository.save(newUser)
-  }
-
-  // Method to get the inventory for a user
-  async getUserInventory(userId: number): Promise<UserInventory[]> {
-    const inventories = await this.userInventoryRepository.find({
-      where: { user: { id: userId } },
-      relations: ['skin'],
-    })
-
-    return inventories
   }
 
   async updateTradeLink(userId: number, tradeLink: string): Promise<void> {
