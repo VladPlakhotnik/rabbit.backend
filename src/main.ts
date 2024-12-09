@@ -12,7 +12,11 @@ async function bootstrap() {
   const port = configService.get<number>('PORT') || 5000
 
   app.enableCors({
-    origin: ['http://localhost:3000', 'https://droplock-frontend.vercel.app/'],
+    origin: [
+      'http://localhost:3000',
+      'https://droplock-frontend.vercel.app/',
+      'https://droplock-frontend.onrender.com/',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   })
