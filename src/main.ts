@@ -14,8 +14,8 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:3000',
-      'https://droplock-frontend.vercel.app/',
-      'https://droplock-frontend.onrender.com/',
+      'https://droplock-frontend.vercel.app',
+      'https://droplock-frontend.onrender.com',
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
