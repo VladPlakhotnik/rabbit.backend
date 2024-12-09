@@ -53,7 +53,7 @@ export class AuthController {
     const token = await this.authService.login(user)
 
     return res.redirect(
-      `${process.env.FRONTEND_URL}auth/callback?token=${token}`,
+      `${process.env.FRONTEND_URL}/auth/callback?token=${token}`,
     )
   }
 }
