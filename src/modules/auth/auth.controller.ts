@@ -20,9 +20,7 @@ export class AuthController {
 
   @Get('steam')
   @UseGuards(AuthGuard('steam'))
-  steamLogin() {
-    // Перенаправляет на страницу авторизации Steam
-  }
+  steamLogin() {}
 
   @Get('steam/return')
   @UseGuards(AuthGuard('steam'))

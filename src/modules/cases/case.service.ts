@@ -30,20 +30,10 @@ export class CaseService {
     return this.caseRepository.find({ relations: ['section'] })
   }
 
-  // async findById(id: number): Promise<Case> {
-  //   const caseEntity = await this.caseRepository.findOne({
-  //     where: { id },
-  //   })
-  //   if (!caseEntity) {
-  //     throw new NotFoundException('Case not found')
-  //   }
-  //   return caseEntity
-  // }
-
   async findById(id: number): Promise<Case> {
     const caseEntity = await this.caseRepository.findOne({
       where: { id },
-      relations: ['skinCases', 'skinCases.skin'], // Include relations for skins
+      relations: ['skinCases', 'skinCases.skin'],
     })
     if (!caseEntity) {
       throw new NotFoundException('Case not found')
