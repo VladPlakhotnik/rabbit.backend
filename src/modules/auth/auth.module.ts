@@ -6,13 +6,14 @@ import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
 import { SteamStrategy } from './steam.strategy'
 import { UserModule } from '../users/users.module'
+import { ACCESS_TOKEN_EXPIRES } from '../../constants/common'
 
 @Module({
   imports: [
     PassportModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
-      signOptions: { expiresIn: '7d' },
+      signOptions: { expiresIn: ACCESS_TOKEN_EXPIRES },
     }),
     UserModule,
   ],
