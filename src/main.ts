@@ -10,6 +10,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule)
 
   const port = process.env.PORT || 5000
+  const baseUrl = process.env.BASE_URL || 'localhost'
 
   app.enableCors({
     origin: ['http://localhost:3000', 'https://droplock-frontend.vercel.app'],
@@ -18,9 +19,7 @@ async function bootstrap() {
   })
 
   await app.listen(port, () => {
-    console.log(
-      `Server is running on http://localhost:${port} or in your production environment`,
-    )
+    console.log(`Server is running on ${baseUrl}`)
   })
 }
 bootstrap()
