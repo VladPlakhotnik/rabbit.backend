@@ -1,10 +1,10 @@
-// src/promo-codes/promo-code.entity.ts
+// src/promoCodes/promoCode.entity.ts
 
 import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm'
 import { PromoCodeBonus } from '../promoCodeBonuses/promoCodeBonus.entity'
 import { PromoCodeDeposit } from '../promoCodeDeposits/promoCodeDeposit.entity'
 
-@Entity('promoCodes')
+@Entity('promocodes')
 export class PromoCode {
   @PrimaryGeneratedColumn()
   id!: number

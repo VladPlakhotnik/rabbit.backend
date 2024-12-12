@@ -9,7 +9,7 @@ import {
 } from 'typeorm'
 import { PromoCode } from '../promoCodes/promoCode.entity'
 
-@Entity('promoCodeDeposits')
+@Entity('promocodedeposits')
 export class PromoCodeDeposit {
   @PrimaryGeneratedColumn()
   id!: number
