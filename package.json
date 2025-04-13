@@ -10,7 +10,8 @@
     "start:debug": "nest start --debug --watch",
     "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "lint": "eslint \"{src,test}/**/*.ts\""
+    "lint": "eslint \"{src,test}/**/*.ts\"",
+    "postinstall": "npm run build"
   },
   "dependencies": {
     "@nestjs/cli": "^10.4.8",
@@ -28,7 +29,7 @@
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.21.1",
+    "express": "^4.21.2",
     "express-session": "^1.18.1",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.8.2",
@@ -52,6 +53,7 @@
     "nodemon": "^3.1.7"
   },
   "engines": {
-    "node": "18.x"
+    "node": "18.x",
+    "npm": "10.8.2"
   }
 }
