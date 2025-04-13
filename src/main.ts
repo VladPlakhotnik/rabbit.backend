@@ -14,7 +14,11 @@ async function bootstrap() {
   const baseUrl = process.env.BASE_URL || 'localhost'
 
   app.enableCors({
-    origin: ['http://localhost:3000', 'https://droplock-frontend.vercel.app'],
+    origin: [
+      'http://localhost:3000',
+      'https://droplock-frontend.vercel.app',
+      process.env.FRONTEND_URL || 'http://localhost:3000',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   })

@@ -44,12 +44,12 @@
     "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
     "typeorm": "^0.3.22",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "cross-env": "^7.0.3"
   },
   "devDependencies": {
     "@types/passport-jwt": "^4.0.1",
     "@types/passport-steam": "^1.0.6",
-    "cross-env": "^7.0.3",
     "nodemon": "^3.1.7"
   },
   "engines": {
