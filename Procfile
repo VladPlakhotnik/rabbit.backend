@@ -1,1 +1,1 @@
-web: nest start --watch --port $PORT
+web: npm run start
