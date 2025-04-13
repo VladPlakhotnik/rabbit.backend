@@ -14,11 +14,15 @@
   },
   "dependencies": {
     "@nestjs/cli": "^10.4.8",
+    "@nestjs/common": "^11.0.13",
     "@nestjs/config": "^3.3.0",
+    "@nestjs/core": "^11.0.13",
     "@nestjs/jwt": "^10.2.0",
     "@nestjs/passport": "^10.0.3",
     "@nestjs/platform-express": "^10.4.8",
+    "@nestjs/schedule": "^5.0.1",
     "@nestjs/typeorm": "^10.0.2",
+    "@nestjs/websockets": "^11.0.13",
     "@types/node": "^22.9.3",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.3",
@@ -34,9 +38,11 @@
     "passport-steam": "^1.0.18",
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
+    "reflect-metadata": "^0.2.2",
+    "socket.io": "^4.8.1",
     "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
-    "typeorm": "^0.3.20",
+    "typeorm": "^0.3.22",
     "typescript": "^5.7.2"
   },
   "devDependencies": {

@@ -8,6 +8,7 @@ import { NotificationModule } from './modules/notifications/notification.module'
 import { UserInventoryModule } from './modules/userInventory/userInventory.module'
 import { PromoCodeModule } from './modules/promoCodes/promoCode.module'
 import { SkinModule } from './modules/skins/skin.module'
+import { LiveDropModule } from './modules/liveDrop/live-drop.module'
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { SkinModule } from './modules/skins/skin.module'
     UserInventoryModule,
     PromoCodeModule,
     SkinModule,
+    LiveDropModule,
     // TO DO
     // PaymentModule,
   ],
