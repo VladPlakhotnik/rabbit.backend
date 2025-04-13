@@ -21,7 +21,7 @@ import { LiveDropModule } from './modules/liveDrop/live-drop.module'
     UserInventoryModule,
     PromoCodeModule,
     SkinModule,
-    LiveDropModule,
+    // LiveDropModule,
     // TO DO
     // PaymentModule,
   ],
