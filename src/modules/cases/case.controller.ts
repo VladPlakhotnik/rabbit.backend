@@ -13,17 +13,29 @@ import { CaseService } from './case.service'
 import { Roles } from '../../core/decorators/roles.decorator'
 import { AuthGuard } from '@nestjs/passport'
 import { RolesGuard } from '../../core/guards/roles.guard'
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { User } from '../users/user.entity'
 
+/**
+ * Controller for working with cases
+ * @class CaseController
+ */
+
+@ApiTags('cases')
 @Controller('cases')
 export class CaseController {
   constructor(private readonly caseService: CaseService) {}
 
+  @ApiOperation({ summary: 'Get all cases' })
+  @ApiResponse({ status: 200, description: 'Return all cases' })
   @UseGuards(AuthGuard('jwt'))
   @Get()
   async findAll() {
     return this.caseService.findAll()
   }
 
+  @ApiOperation({ summary: 'Get case by ID' })
+  @ApiResponse({ status: 200, description: 'Return case by ID' })
   @UseGuards(AuthGuard('jwt'))
   @Get(':id')
   async findOne(@Param('id') id: number) {
@@ -48,48 +60,23 @@ export class CaseController {
     return response
   }
 
+  @ApiOperation({ summary: 'Open case' })
+  @ApiResponse({ status: 200, description: 'Return opened case' })
   @UseGuards(AuthGuard('jwt'))
   @Post(':id/open')
-  async openCase(@Param('id') caseId: number, @Req() req: Request) {
+  async openCase(
+    @Param('id') id: number,
+    @Req() req: Request & { user?: User },
+    @Body('client_seed') clientSeed: string,
+  ) {
     if (!req.user) {
-      throw new UnauthorizedException('User not authenticated')
+      throw new UnauthorizedException('User not found')
     }
-    const userId = req.user.id
-
-    const result = await this.caseService.openCase(caseId, userId)
-
-    return {
-      winner: {
-        id: result.winner.skin.id,
-        name: result.winner.skin.name,
-        img_url: result.winner.skin.img_url,
-        rarity: result.winner.skin.rarity,
-        chance: result.winner.chance,
-        skin_price: result.winner.skin.skin_price,
-      },
-      inventory: {
-        id: result.inventory.id,
-        obtained_at: result.inventory.obtained_at,
-        is_sold: result.inventory.is_sold,
-        is_withdrawn: result.inventory.is_withdrawn,
-        withdrawn_at: result.inventory.withdrawn_at,
-        skin: {
-          id: result.inventory.skin.id,
-          name: result.inventory.skin.name,
-          img_url: result.inventory.skin.img_url,
-          rarity: result.inventory.skin.rarity,
-          skin_price: result.inventory.skin.skin_price,
-        },
-        case: {
-          id: result.inventory.case.id,
-          name: result.inventory.case.name,
-          img_url: result.inventory.case.img_url,
-          case_price: result.inventory.case.case_price,
-        },
-      },
-    }
+    return this.caseService.openCase(id, req.user.id, clientSeed)
   }
 
+  @ApiOperation({ summary: 'Create a new case' })
+  @ApiResponse({ status: 200, description: 'Return created case' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
   @Roles('admin')
   @Post()

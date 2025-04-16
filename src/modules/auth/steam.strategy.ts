@@ -1,9 +1,34 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { Injectable, UnauthorizedException, Logger } from '@nestjs/common'
 import { PassportStrategy } from '@nestjs/passport'
 import { Strategy } from 'passport-steam'
+import { ERROR_MESSAGES } from '../../constants/errorMessages'
+
+interface SteamProfile {
+  id: string
+  displayName?: string
+  photos?: { value: string }[]
+  _json?: {
+    profileurl?: string
+  }
+}
+
+interface SteamAuthResult {
+  steam_id: string
+  display_name: string
+  avatar: string | null
+  profile_url: string | null
+}
+
+/**
+ * Steam authentication strategy
+ * @class SteamStrategy
+ * @extends {PassportStrategy}
+ */
 
 @Injectable()
 export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
+  private readonly logger = new Logger(SteamStrategy.name)
+
   constructor() {
     super({
       returnURL: `${process.env.BASE_URL}/auth/steam/return`,
@@ -12,26 +37,27 @@ export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
     })
   }
 
-  async validate(identifier: string, profile: any) {
-    if (!profile || !profile.id) {
-      throw new UnauthorizedException('Invalid Steam profile')
-    }
+  async validate(
+    _identifier: string,
+    profile: SteamProfile,
+  ): Promise<SteamAuthResult> {
+    try {
+      if (!profile || !profile.id) {
+        this.logger.warn('Invalid Steam profile received')
+        throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_CREDENTIALS)
+      }
 
-    return {
-      steam_id: profile.id, // Соответствует `steamid` в сущности `User`
-      display_name: profile.displayName || '', // Соответствует `displayname`
-      avatar: profile.photos?.[2]?.value || null, // Соответствует `avatar`
-      profile_url: profile._json.profileurl || null, // Дополнительно вытаскиваем `profileurl`
-      // role: 'user', // Значение по умолчанию
-      // balance: 0, // Значение по умолчанию
-      // trade_link: null, // Пока пустое
-      // referral_parent_id: null, // Пока пустое
-      // created_at: new Date(), // Устанавливаем текущее время
-      // opened_cases: 0, // Значение по умолчанию
-      // upgraded_skins: 0, // Значение по умолчанию
-      // deposit_amount: 0, // Значение по умолчанию
-      // withdrawal_amount: 0, // Значение по умолчанию
-      // rank: 'initiate_1', // Начальный ранг
+      this.logger.log(`Steam authentication successful for user ${profile.id}`)
+      return {
+        steam_id: profile.id,
+        display_name: profile.displayName || '',
+        avatar: profile.photos?.[2]?.value || null,
+        profile_url: profile._json?.profileurl || null,
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Unknown error'
+      this.logger.error(`Steam authentication error: ${message}`)
+      throw error
     }
   }
 }

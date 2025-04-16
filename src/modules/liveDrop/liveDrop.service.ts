@@ -1,10 +1,10 @@
-import { Injectable } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { LiveDrop } from './entities/live-drop.entity';
-import { WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
-import { Server } from 'socket.io';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable } from '@nestjs/common'
+import { InjectRepository } from '@nestjs/typeorm'
+import { Repository } from 'typeorm'
+import { LiveDrop } from './liveDrop.entity'
+import { WebSocketGateway, WebSocketServer } from '@nestjs/websockets'
+import { Server } from 'socket.io'
+import { Cron, CronExpression } from '@nestjs/schedule'
 
 @Injectable()
 @WebSocketGateway({
@@ -14,24 +14,28 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 })
 export class LiveDropService {
   @WebSocketServer()
-  server!: Server;
+  server!: Server
 
   constructor(
     @InjectRepository(LiveDrop)
     private readonly liveDropRepository: Repository<LiveDrop>,
   ) {}
 
-  async createBotDrop(caseId: string, skinId: string, skinPrice: number): Promise<LiveDrop> {
+  async createBotDrop(
+    caseId: string,
+    skinId: string,
+    skinPrice: number,
+  ): Promise<LiveDrop> {
     const liveDrop = this.liveDropRepository.create({
       caseId,
       skinId,
       skinPrice,
       isBot: true,
       isDisplayed: false,
-    });
+    })
 
-    await this.liveDropRepository.save(liveDrop);
-    return liveDrop;
+    await this.liveDropRepository.save(liveDrop)
+    return liveDrop
   }
 
   async createUserDrop(
@@ -47,15 +51,15 @@ export class LiveDropService {
       skinPrice,
       isBot: false,
       isDisplayed: false,
-    });
+    })
 
-    await this.liveDropRepository.save(liveDrop);
-    this.emitNewDrop(liveDrop);
-    return liveDrop;
+    await this.liveDropRepository.save(liveDrop)
+    this.emitNewDrop(liveDrop)
+    return liveDrop
   }
 
   private emitNewDrop(liveDrop: LiveDrop) {
-    this.server.emit('newDrop', liveDrop);
+    this.server.emit('newDrop', liveDrop)
   }
 
   @Cron(CronExpression.EVERY_5_SECONDS)
@@ -63,12 +67,12 @@ export class LiveDropService {
     const nextDrop = await this.liveDropRepository.findOne({
       where: { isBot: true, isDisplayed: false },
       order: { createdAt: 'ASC' },
-    });
+    })
 
     if (nextDrop) {
-      nextDrop.isDisplayed = true;
-      await this.liveDropRepository.save(nextDrop);
-      this.emitNewDrop(nextDrop);
+      nextDrop.isDisplayed = true
+      await this.liveDropRepository.save(nextDrop)
+      this.emitNewDrop(nextDrop)
     }
   }
 
@@ -78,6 +82,6 @@ export class LiveDropService {
       order: { createdAt: 'DESC' },
       take: limit,
       relations: ['user', 'case', 'skin'],
-    });
+    })
   }
-} 
+}

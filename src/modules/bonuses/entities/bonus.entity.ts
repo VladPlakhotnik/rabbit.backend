@@ -7,8 +7,8 @@ import {
   ManyToOne,
   JoinColumn,
 } from 'typeorm'
-import { User } from '../users/user.entity'
-import { numericTransformer } from '../../common/helpers/numericTransformer'
+import { User } from '../../users/user.entity'
+import { numericTransformer } from '../../../common/helpers/numericTransformer'
 
 @Entity('bonuses')
 export class Bonus {

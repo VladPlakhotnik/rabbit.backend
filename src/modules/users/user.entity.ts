@@ -6,7 +6,7 @@ import {
   OneToMany,
   JoinColumn,
 } from 'typeorm'
-import { Bonus } from '../bonuses/bonus.entity'
+import { Bonus } from '../bonuses/entities/bonus.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { Notification } from '../notifications/notification.entity'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
