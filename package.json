@@ -4,14 +4,16 @@
   "description": "Deadlock Backend",
   "private": false,
   "scripts": {
-    "prestart": "npm run build",
+    "prestart": "pnpm run build",
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build",
+    "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build && pnpm run copy:assets",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "lint": "eslint \"{src,test}/**/*.ts\"",
-    "postinstall": "npm run build"
+    "lint": "eslint \"{src,test}/**/*.ts\" --fix",
+    "lint:check": "eslint \"{src,test}/**/*.ts\"",
+    "postinstall": "pnpm run build",
+    "copy:assets": "mkdir dist\\modules\\skins\\data && copy src\\modules\\skins\\data\\skins.json dist\\modules\\skins\\data\\"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
@@ -48,6 +50,7 @@
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",
     "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
     "socket.io": "^4.8.1",
     "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
@@ -55,6 +58,11 @@
     "typescript": "^5.7.2"
   },
   "devDependencies": {
+    "@eslint/js": "^9.25.0",
+    "@typescript-eslint/eslint-plugin": "^8.30.1",
+    "@typescript-eslint/parser": "^8.30.1",
+    "eslint": "^9.25.0",
+    "eslint-config-prettier": "^10.1.2",
     "nodemon": "^3.1.7"
   },
   "engines": {

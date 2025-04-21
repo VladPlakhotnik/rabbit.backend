@@ -7,8 +7,8 @@ import {
 } from 'typeorm'
 import { User } from '../../users/user.entity'
 
-@Entity('userspincooldown')
-export class UserSpinCooldown {
+@Entity('rewards_cooldown')
+export class RewardsCooldown {
   @PrimaryGeneratedColumn()
   id!: number
 

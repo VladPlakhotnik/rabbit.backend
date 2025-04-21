@@ -12,7 +12,7 @@ import { User } from '../users/user.entity'
 import { Skin } from '../skins/skin.entity'
 import { Case } from '../cases/case.entity'
 
-@Entity('userinventory')
+@Entity('user_inventory')
 @Check(
   `(is_withdrawn = TRUE AND withdrawn_at IS NOT NULL) OR (is_withdrawn = FALSE)`,
 )

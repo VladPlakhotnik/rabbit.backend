@@ -1,14 +1,6 @@
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  ManyToOne,
-  OneToMany,
-  JoinColumn,
-} from 'typeorm'
-import { Bonus } from '../bonuses/entities/bonus.entity'
+import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm'
 import { UserInventory } from '../userInventory/userInventory.entity'
-import { Notification } from '../notifications/notification.entity'
+import { Notification } from '../notifications/entities/notification.entity'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
 
 @Entity('users')
@@ -67,9 +59,6 @@ export class User {
   @OneToMany(() => UserInventory, inventory => inventory.user)
   inventories!: UserInventory[]
 
-  @OneToMany(() => Bonus, bonus => bonus.user)
-  bonuses!: Bonus[]
-
-  @OneToMany(() => Notification, notification => notification.user)
-  notifications!: Notification[]
+  // @OneToMany(() => Notification, notification => notification.user)
+  // notifications!: Notification[]
 }

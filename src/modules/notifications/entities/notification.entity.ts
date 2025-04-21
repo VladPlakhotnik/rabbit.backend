@@ -6,8 +6,9 @@ import {
   Column,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm'
-import { User } from '../users/user.entity'
+import { User } from '../../users/user.entity'
 
 @Entity('notifications')
 export class Notification {
@@ -26,7 +27,17 @@ export class Notification {
   @Column({ type: 'boolean' })
   is_important!: boolean
 
-  @ManyToOne(() => User, user => user.notifications, { nullable: true })
-  @JoinColumn({ name: 'user_id' })
-  user!: User | null
+  @Column({ default: false })
+  is_viewed!: boolean
+
+  @Column({ type: 'timestamp with time zone', nullable: true })
+  viewed_at!: Date | null
+
+  @Index()
+  @Column()
+  user_id!: number
+
+  // @ManyToOne(() => User, user => user.notifications, { nullable: true })
+  // @JoinColumn({ name: 'user_id' })
+  // user!: User | null
 }

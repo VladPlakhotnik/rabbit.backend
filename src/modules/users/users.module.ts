@@ -7,11 +7,7 @@ import { UserInventory } from '../userInventory/userInventory.entity'
 import { Skin } from '../skins/skin.entity'
 import { Case } from '../cases/case.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
-import { Bonus } from '../bonuses/entities/bonus.entity'
-import { Notification } from '../notifications/notification.entity'
-import { PromoCode } from '../promoCodes/promoCode.entity'
-import { PromoCodeBonus } from '../promoCodeBonuses/promoCodeBonus.entity'
-import { PromoCodeDeposit } from '../promoCodeDeposits/promoCodeDeposit.entity'
+import { Notification } from '../notifications/entities/notification.entity'
 import { HttpModule } from '@nestjs/axios'
 
 @Module({
@@ -22,11 +18,7 @@ import { HttpModule } from '@nestjs/axios'
       Skin,
       Case,
       SkinCase,
-      Bonus,
       Notification,
-      PromoCode,
-      PromoCodeBonus,
-      PromoCodeDeposit,
     ]),
     HttpModule,
   ],

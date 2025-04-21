@@ -6,16 +6,16 @@ import {
   Req,
   UnauthorizedException,
 } from '@nestjs/common'
-import { BonusService } from './services/bonus.service'
+import { RewardsService } from './rewards.service'
 import { AuthGuard } from '@nestjs/passport'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { Request } from 'express'
 import { User } from '../users/user.entity'
 
-@ApiTags('bonuses')
-@Controller('bonuses')
-export class BonusController {
-  constructor(private readonly bonusService: BonusService) {}
+@ApiTags('rewards')
+@Controller('rewards')
+export class RewardsController {
+  constructor(private readonly rewardsService: RewardsService) {}
 
   @ApiOperation({ summary: 'Check if spin is available' })
   @ApiResponse({ status: 200, description: 'Returns spin availability' })
@@ -25,7 +25,7 @@ export class BonusController {
     if (!req.user) {
       throw new UnauthorizedException('User not authenticated')
     }
-    const canSpin = await this.bonusService.canUserSpin(req.user.id)
+    const canSpin = await this.rewardsService.canUserSpin(req.user.id)
     return { canSpin }
   }
 
@@ -37,7 +37,7 @@ export class BonusController {
     if (!req.user) {
       throw new UnauthorizedException('User not authenticated')
     }
-    const reward = await this.bonusService.spin(req.user.id)
+    const reward = await this.rewardsService.spin(req.user.id)
     return {
       message: 'Spin successful',
       reward,

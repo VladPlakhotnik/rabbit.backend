@@ -1,99 +1,225 @@
-// src/promoCodes/promoCode.service.ts
-
-import { Injectable, BadRequestException } from '@nestjs/common'
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
-import { PromoCode } from './promoCode.entity'
+import {
+  PromoCode,
+  PromoCodeStatus,
+  PromoCodeType,
+} from './entities/promoCode.entity'
+import { PromoCodeReward, RewardType } from './entities/promoCodeReward.entity'
 import { User } from '../users/user.entity'
+import { UserService } from '../users/users.service'
+import { UserBonusService } from '../userBonuses/userBonus.service'
+import { UpdatePromoCodeDto } from './promoCode.controller'
 
 @Injectable()
 export class PromoCodeService {
   constructor(
     @InjectRepository(PromoCode)
-    private readonly promoCodeRepository: Repository<PromoCode>,
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
+    private promoCodeRepository: Repository<PromoCode>,
+    @InjectRepository(PromoCodeReward)
+    private promoCodeRewardRepository: Repository<PromoCodeReward>,
+    private readonly userService: UserService,
+    private readonly userBonusService: UserBonusService,
   ) {}
 
-  async activatePromoCode(code: string, userId: number) {
-    // Найти промокод
+  async findAll(): Promise<PromoCode[]> {
+    return this.promoCodeRepository.find({
+      relations: ['rewards'],
+    })
+  }
+
+  async findByCode(code: string): Promise<PromoCode> {
     const promoCode = await this.promoCodeRepository.findOne({
-      where: { code, is_active: true },
-      relations: ['deposits', 'bonuses'],
+      where: { code },
+      relations: ['rewards'],
     })
 
     if (!promoCode) {
-      throw new BadRequestException('Invalid or inactive promo code')
+      throw new NotFoundException('Promo code not found')
     }
 
-    // Проверить срок действия
-    if (promoCode.expires_at && new Date() > promoCode.expires_at) {
-      throw new BadRequestException('Promo code has expired')
+    return promoCode
+  }
+
+  async create(
+    code: string,
+    type: PromoCodeType,
+    rewards: {
+      reward_type: RewardType
+      value: number
+      skin_id?: number
+      min_deposit?: number
+      max_bonus?: number
+      is_demo?: boolean
+    }[],
+    description?: string,
+    max_uses?: number,
+    expires_at?: Date,
+    created_by?: User,
+  ): Promise<PromoCode> {
+    // Проверяем, не существует ли уже такой код
+    const existing = await this.promoCodeRepository.findOne({
+      where: { code },
+    })
+
+    if (existing) {
+      throw new BadRequestException('Промокод уже существует')
     }
 
-    // Проверить лимит активаций
-    if (promoCode.current_activations >= promoCode.max_activations) {
-      throw new BadRequestException('Promo code activation limit reached')
+    // Создаем промокод
+    const promoCode = this.promoCodeRepository.create({
+      code,
+      type,
+      status: PromoCodeStatus.ACTIVE,
+      description,
+      max_uses,
+      expires_at,
+      created_by,
+    })
+
+    await this.promoCodeRepository.save(promoCode)
+
+    // Создаем награды
+    const promoRewards = rewards.map(reward =>
+      this.promoCodeRewardRepository.create({
+        promo_code: promoCode,
+        ...reward,
+      }),
+    )
+
+    await this.promoCodeRewardRepository.save(promoRewards)
+
+    return this.findByCode(code)
+  }
+
+  async update(
+    code: string,
+    updateData: UpdatePromoCodeDto,
+  ): Promise<PromoCode> {
+    const promoCode = await this.findByCode(code)
+
+    Object.assign(promoCode, {
+      ...updateData,
+      code: updateData.code || promoCode.code,
+      type: updateData.type || promoCode.type,
+      status: updateData.status || promoCode.status,
+      description: updateData.description ?? promoCode.description,
+      max_uses: updateData.max_uses ?? promoCode.max_uses,
+      expires_at: updateData.expires_at || promoCode.expires_at,
+    })
+
+    // Если есть новые награды, обновляем их
+    if (updateData.rewards) {
+      // Удаляем старые награды
+      await this.promoCodeRewardRepository.delete({
+        promo_code: { id: promoCode.id },
+      })
+
+      // Создаем новые награды
+      const newRewards = updateData.rewards.map(reward =>
+        this.promoCodeRewardRepository.create({
+          promo_code: promoCode,
+          ...reward,
+        }),
+      )
+
+      await this.promoCodeRewardRepository.save(newRewards)
     }
 
-    // Увеличить количество активаций
-    promoCode.current_activations += 1
+    await this.promoCodeRepository.save(promoCode)
 
-    let activationResult: any
+    return this.findByCode(promoCode.code)
+  }
 
-    switch (promoCode.type) {
-      case 'deposit':
-        activationResult = await this.activateDeposit(promoCode, userId)
-        break
+  async activate(code: string, userId: number): Promise<any> {
+    const promoCode = await this.findByCode(code)
 
-      case 'bonus':
-        activationResult = await this.activateBonus(promoCode)
-        break
-
-      case 'partner':
-        activationResult = { message: 'Partner promo activated' }
-        break
-
-      default:
-        throw new BadRequestException('Unknown promo code type')
+    // Проверяем статус промокода
+    if (promoCode.status !== PromoCodeStatus.ACTIVE) {
+      throw new BadRequestException('Промокод неактивен')
     }
 
-    // Сохранить изменения
+    // Проверяем срок действия
+    if (promoCode.expires_at && promoCode.expires_at < new Date()) {
+      throw new BadRequestException('Date of promo code expiration has passed')
+    }
+
+    // Проверяем количество использований
+    if (
+      promoCode.max_uses !== null &&
+      promoCode.current_uses >= promoCode.max_uses
+    ) {
+      throw new BadRequestException(
+        'The maximum number of uses has been exceeded',
+      )
+    }
+
+    // Получаем пользователя
+    const user = await this.userService.findById(userId)
+    if (!user) {
+      throw new NotFoundException('User not found')
+    }
+
+    // Обрабатываем каждую награду
+    const results = []
+    for (const reward of promoCode.rewards) {
+      switch (reward.reward_type) {
+        case RewardType.BALANCE:
+          await this.userService.updateBalance(
+            userId,
+            user.balance + reward.value,
+          )
+          results.push({
+            type: 'BALANCE',
+            amount: reward.value,
+          })
+          break
+
+        case RewardType.SKIN:
+          // Здесь должна быть логика выдачи скина
+          results.push({
+            type: 'SKIN',
+            skin_id: reward.skin?.id,
+            is_demo: reward.is_demo,
+          })
+          break
+
+        case RewardType.DEPOSIT_BONUS:
+          // Бонус к депозиту обрабатывается отдельно при пополнении
+          results.push({
+            type: 'DEPOSIT_BONUS',
+            percent: reward.value,
+            min_deposit: reward.min_deposit,
+            max_bonus: reward.max_bonus,
+          })
+          break
+      }
+    }
+
+    await this.userBonusService.createPromoBonus(
+      userId,
+      promoCode.id,
+      promoCode.expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000),
+    )
+
+    // Увеличиваем счетчик использований
+    promoCode.current_uses++
     await this.promoCodeRepository.save(promoCode)
 
     return {
-      message: 'Promo code activated successfully',
-      activationResult,
+      message: 'Promo code successfully activated',
+      rewards: results,
     }
   }
 
-  private async activateDeposit(promoCode: PromoCode, userId: number) {
-    const user = await this.userRepository.findOne({ where: { id: userId } })
-
-    if (!user) {
-      throw new BadRequestException('User not found')
-    }
-
-    const totalDepositAmount = promoCode.deposits.reduce(
-      (sum, deposit) => sum + parseFloat(deposit.deposit_amount.toString()),
-      0,
-    )
-
-    user.balance = parseFloat(user.balance.toString()) + totalDepositAmount
-    await this.userRepository.save(user)
-
-    return {
-      type: 'deposit',
-      depositAmount: totalDepositAmount,
-      newBalance: user.balance,
-    }
-  }
-
-  private async activateBonus(promoCode: PromoCode) {
-    const bonuses = promoCode.bonuses.map(bonus => ({
-      type: bonus.bonus_type,
-      value: bonus.bonus_value,
-    }))
-    return { type: 'bonus', bonuses }
+  async deactivate(code: string): Promise<PromoCode> {
+    const promoCode = await this.findByCode(code)
+    promoCode.status = PromoCodeStatus.INACTIVE
+    return this.promoCodeRepository.save(promoCode)
   }
 }

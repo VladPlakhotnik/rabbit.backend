@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, UseGuards, Req } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  UseGuards,
+  Req,
+  Delete,
+  Param,
+  Patch,
+} from '@nestjs/common'
 import { NotificationService } from './notification.service'
 import { AuthGuard } from '@nestjs/passport'
 import { Request } from 'express'
@@ -30,6 +40,15 @@ export class NotificationController {
     return notifications
   }
 
+  @ApiOperation({ summary: 'Mark notification as viewed' })
+  @ApiResponse({ status: 200, description: 'Notification marked as viewed' })
+  @UseGuards(AuthGuard('jwt'))
+  @Patch(':id/view')
+  async markAsViewed(@Param('id') id: number, @Req() req: Request) {
+    const user = req.user as User
+    return this.notificationService.markAsViewed(id, user.id)
+  }
+
   @ApiOperation({ summary: 'Create a new notification' })
   @ApiResponse({ status: 200, description: 'Return created notification' })
   @UseGuards(AuthGuard('jwt'), RolesGuard)
@@ -53,5 +72,45 @@ export class NotificationController {
     )
 
     return newNotification
+  }
+
+  @ApiOperation({ summary: 'Delete a notification' })
+  @ApiResponse({
+    status: 200,
+    description: 'Notification successfully deleted',
+  })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Delete(':id')
+  async delete(@Param('id') id: number) {
+    await this.notificationService.delete(id)
+    return { message: 'Notification successfully deleted' }
+  }
+
+  @ApiOperation({ summary: 'Update a notification' })
+  @ApiResponse({ status: 200, description: 'Return updated notification' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Patch(':id')
+  async update(
+    @Param('id') id: number,
+    @Body('title') title?: string,
+    @Body('message') message?: string,
+    @Body('is_important') isImportant?: boolean,
+    @Body('user_id') userId?: number,
+  ) {
+    const updateData = {
+      title,
+      message,
+      is_important: isImportant,
+    }
+
+    const updatedNotification = await this.notificationService.update(
+      id,
+      updateData,
+      userId,
+    )
+
+    return updatedNotification
   }
 }

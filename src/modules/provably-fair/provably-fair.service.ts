@@ -130,4 +130,20 @@ export class ProvablyFairService {
       .digest('hex')
     return parseInt(resultHash.substring(0, 8), 16) / 0xffffffff
   }
+
+  // RANGE 0 - 100000
+
+  // generateRandomNumber(clientSeed: string, serverSeed: string): number {
+  //   const resultHash = crypto
+  //     .createHash('sha256')
+  //     .update(clientSeed + serverSeed)
+  //     .digest('hex')
+
+  //   // Берем первые 5 байт (10 hex символов) для получения числа от 0 до 100000
+  //   const hexValue = resultHash.substring(0, 10)
+  //   const number = parseInt(hexValue, 16)
+
+  //   // Нормализуем до диапазона 0-100000
+  //   return number % 100001
+  // }
 }

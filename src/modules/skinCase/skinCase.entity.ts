@@ -11,7 +11,7 @@ import { Case } from '../cases/case.entity'
 import { Skin } from '../skins/skin.entity'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
 
-@Entity('skincase')
+@Entity('skin_case')
 export class SkinCase {
   @PrimaryGeneratedColumn()
   id!: number

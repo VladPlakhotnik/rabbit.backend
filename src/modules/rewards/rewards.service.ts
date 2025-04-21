@@ -1,16 +1,16 @@
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
-import { Reward } from '../entities/rewards.entity'
-import { UserSpinCooldown } from '../entities/userSpinCooldown.entity'
+import { Reward } from './entities/rewards.entity'
+import { RewardsCooldown } from './entities/rewardsCooldown.entity'
 
 @Injectable()
-export class BonusService {
+export class RewardsService {
   constructor(
     @InjectRepository(Reward)
     private rewardRepository: Repository<Reward>,
-    @InjectRepository(UserSpinCooldown)
-    private cooldownRepository: Repository<UserSpinCooldown>,
+    @InjectRepository(RewardsCooldown)
+    private cooldownRepository: Repository<RewardsCooldown>,
   ) {}
 
   async canUserSpin(userId: number): Promise<boolean> {
