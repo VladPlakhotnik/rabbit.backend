@@ -1,8 +1,6 @@
 import { Injectable } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { User } from '../users/user.entity'
-import { Cache } from 'cache-manager'
-import { Inject } from '@nestjs/common'
 import {
   ACCESS_TOKEN_EXPIRES,
   REFRESH_TOKEN_EXPIRES,
@@ -21,10 +19,7 @@ export interface JwtPayload {
  */
 @Injectable()
 export class AuthService {
-  constructor(
-    private readonly jwtService: JwtService,
-    @Inject('CACHE_MANAGER') private cacheManager: Cache,
-  ) {}
+  constructor(private readonly jwtService: JwtService) {}
 
   async login(user: User) {
     const payload: JwtPayload = {
@@ -38,13 +33,6 @@ export class AuthService {
       this.jwtService.sign(payload, { expiresIn: REFRESH_TOKEN_EXPIRES }),
     ])
 
-    // Save the refresh token in the cache
-    await this.cacheManager.set(
-      `refresh:${user.id}`,
-      refreshToken,
-      7 * 24 * 60 * 60,
-    )
-
     return { accessToken, refreshToken }
   }
 
@@ -52,13 +40,6 @@ export class AuthService {
     try {
       // Check if the refresh token is valid
       const payload = this.jwtService.verify(refreshToken)
-
-      // Check if the token is in the cache
-      const cachedToken = await this.cacheManager.get(`refresh:${payload.sub}`)
-
-      if (cachedToken !== refreshToken) {
-        throw new Error('Invalid refresh token')
-      }
 
       // Generate new access token
       const newAccessToken = this.jwtService.sign(
