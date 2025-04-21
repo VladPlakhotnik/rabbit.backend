@@ -13,7 +13,7 @@
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
     "postinstall": "pnpm run build",
-    "copy:assets": "mkdir dist\\modules\\skins\\data && copy src\\modules\\skins\\data\\skins.json dist\\modules\\skins\\data\\"
+    "copy:assets": "mkdir -p dist/modules/skins/data && cp src/modules/skins/data/skins.json dist/modules/skins/data/"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
@@ -67,6 +67,7 @@
   },
   "engines": {
     "node": "18.x",
-    "npm": "10.8.2"
+    "npm": "10.8.2",
+    "pnpm": "10.8.1"
   }
 }
