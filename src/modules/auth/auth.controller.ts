@@ -6,6 +6,8 @@ import {
   UnauthorizedException,
   UseGuards,
   Logger,
+  Post,
+  Body,
 } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
 import { Request, Response } from 'express'
@@ -70,7 +72,7 @@ export class AuthController {
       const token = await this.authService.login(user)
 
       return res.redirect(
-        `${process.env.FRONTEND_URL}/auth/callback?token=${token.accessToken}`,
+        `${process.env.FRONTEND_URL}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
       )
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error'
@@ -116,5 +118,18 @@ export class AuthController {
     //   this.logger.error(`Google authentication error: ${message}`)
     //   return res.redirect(`${process.env.FRONTEND_URL}/auth/error`)
     // }
+  }
+
+  @ApiOperation({ summary: 'Refresh access token' })
+  @ApiResponse({ status: 200, description: 'Token refreshed successfully' })
+  @ApiResponse({ status: 401, description: 'Invalid refresh token' })
+  @Post('refresh')
+  async refreshToken(@Body('refreshToken') refreshToken: string) {
+    try {
+      const result = await this.authService.refreshToken(refreshToken)
+      return result
+    } catch (error) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_REFRESH_TOKEN)
+    }
   }
 }

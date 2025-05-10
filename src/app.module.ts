@@ -10,6 +10,11 @@ import { SkinModule } from './modules/skins/skin.module'
 import { RewardsModule } from './modules/rewards/rewards.module'
 import { ProvablyFairModule } from './modules/provably-fair/provably-fair.module'
 import { PromoCodeModule } from './modules/promoCodes/promoCode.module'
+import { AppController } from './app.controller'
+import { ClickerCasesModule } from './modules/clickerCase/clicker-cases.module'
+import { ClickerUserModule } from './modules/clickerUser/clicker-user.module'
+import { ClickerChallengesModule } from './modules/clickerChallenges/clicker-challenges.module'
+import { ClickerLevelsModule } from './modules/clickerLevels/clicker-levels.module'
 
 @Module({
   imports: [
@@ -24,8 +29,13 @@ import { PromoCodeModule } from './modules/promoCodes/promoCode.module'
     RewardsModule,
     ProvablyFairModule,
     PromoCodeModule,
+    ClickerCasesModule,
+    ClickerUserModule,
+    ClickerChallengesModule,
+    ClickerLevelsModule,
     // TO DO
     // PaymentModule,
   ],
+  controllers: [AppController],
 })
 export class AppModule {}

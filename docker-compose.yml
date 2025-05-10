@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - '5000:5000'
+    volumes:
+      - .:/app
+      - /app/node_modules
+    environment:
+      - NODE_ENV=development
+      - PORT=5000
+      - JWT_SECRET=7214a56a52111478425d0e44f331cb888a1ee95feed6ea4ed316b203c1721437b517814ec73b3b581a3c5e0b059a07e7a83cb2b681b0f4dafcb54bd55614286b
+      - DATABASE_URL=postgres://uf4g4cphgq8hkv:p2f1eb6ffe1d2250b61c873cd5a68c85394ba61668bb7d0aca5e57eb7de30610a@c7lolh640htr57.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com:5432/d4sd6t86qkh6dr
+      - STEAM_API_KEY=4C7DF8B10C4C11DEF164E81518423B6E
+      - STRIPE_SECRET_KEY=sk_test_51QRnQiDYLLmleiKQbOfdXsiTtUDdCZdlJFLviC5UHtM9IiFkdxpNIvchHhfBRnPW4WN2FEJqejQ9iwJZRc6QmqG600EzM2lNXM
+      - MARKET_CSGO_API_KEY=EI4F14k374Ff4l6YMJtgIDqIlNSV69v
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--no-verbose',
+          '--tries=1',
+          '--spider',
+          'http://localhost:5000/api/health',
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    command: pnpm dev

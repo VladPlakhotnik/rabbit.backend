@@ -34,7 +34,17 @@ export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
       returnURL: `${process.env.BASE_URL}/auth/steam/return`,
       realm: process.env.BASE_URL,
       apiKey: process.env.STEAM_API_KEY,
+      profile: true,
     })
+
+    this.logger.log(
+      `Initializing Steam strategy with returnURL: ${process.env.BASE_URL}/auth/steam/return`,
+    )
+    this.logger.log(
+      `Using Steam API key: ${
+        process.env.STEAM_API_KEY ? 'Present' : 'Missing'
+      }`,
+    )
   }
 
   async validate(

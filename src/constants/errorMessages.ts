@@ -5,6 +5,7 @@ export const ERROR_MESSAGES = {
     INVALID_CREDENTIALS: 'Invalid credentials',
     TOKEN_EXPIRED: 'Token has expired',
     INVALID_TOKEN: 'Invalid token',
+    INVALID_REFRESH_TOKEN: 'Invalid refresh token',
   },
   USER: {
     NOT_FOUND: 'User not found',

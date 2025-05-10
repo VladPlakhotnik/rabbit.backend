@@ -8,12 +8,11 @@
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build && pnpm run copy:assets",
+    "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
-    "postinstall": "pnpm run build",
-    "copy:assets": "mkdir -p dist/modules/skins/data && cp src/modules/skins/data/skins.json dist/modules/skins/data/"
+    "postinstall": "pnpm run build"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
