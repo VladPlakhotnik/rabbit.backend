@@ -13,6 +13,7 @@ import { AuthGuard } from '@nestjs/passport'
 import { Request, Response } from 'express'
 import { AuthService } from './auth.service'
 import { UserService } from '../users/users.service'
+import { ClickerUserService } from '../clickerUser/clicker-user.service'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 
@@ -24,6 +25,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly userService: UserService,
+    private readonly clickerUserService: ClickerUserService,
   ) {}
 
   @ApiOperation({ summary: 'Steam login' })
@@ -50,8 +52,11 @@ export class AuthController {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
       }
 
+      const existingUser = await this.userService.findBySteamId(
+        steamUser.steam_id,
+      )
       const user =
-        (await this.userService.findBySteamId(steamUser.steam_id)) ||
+        existingUser ||
         (await this.userService.create({
           steam_id: steamUser.steam_id,
           display_name: steamUser.display_name ?? '',
@@ -68,6 +73,18 @@ export class AuthController {
           rank: 'initiate_1',
           created_at: new Date(),
         }))
+
+      // Создаем профиль clicker только для нового пользователя
+      if (!existingUser) {
+        await this.clickerUserService.create({
+          user_id: user.id,
+          level: 1,
+          click_level: 1,
+          energy_level: 1,
+          energy_amount: 100,
+          points: 0,
+        })
+      }
 
       const token = await this.authService.login(user)
 

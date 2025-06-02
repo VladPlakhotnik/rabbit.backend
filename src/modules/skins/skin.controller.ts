@@ -60,3 +60,22 @@
 //     return this.skinStorageService.getSkinsByCondition(condition)
 //   }
 // }
+
+import { Controller, Get, Param } from '@nestjs/common'
+import { SkinService } from './skin.service'
+import { Skin } from './skin.entity'
+
+@Controller('skins')
+export class SkinController {
+  constructor(private readonly skinService: SkinService) {}
+
+  @Get()
+  async getAllSkins(): Promise<Skin[]> {
+    return await this.skinService.getAllSkins()
+  }
+
+  @Get(':id')
+  async getSkinById(@Param('id') id: number): Promise<Skin> {
+    return await this.skinService.getSkinById(id)
+  }
+}

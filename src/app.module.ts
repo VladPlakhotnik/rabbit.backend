@@ -15,6 +15,9 @@ import { ClickerCasesModule } from './modules/clickerCase/clicker-cases.module'
 import { ClickerUserModule } from './modules/clickerUser/clicker-user.module'
 import { ClickerChallengesModule } from './modules/clickerChallenges/clicker-challenges.module'
 import { ClickerLevelsModule } from './modules/clickerLevels/clicker-levels.module'
+import { ClickerClickLevelsModule } from './modules/clickerClickLevels/clicker-click-levels.module'
+import { ClickerEnergyLevelsModule } from './modules/clickerEnergyLevels/clicker-energy-levels.module'
+import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
 
 @Module({
   imports: [
@@ -33,6 +36,9 @@ import { ClickerLevelsModule } from './modules/clickerLevels/clicker-levels.modu
     ClickerUserModule,
     ClickerChallengesModule,
     ClickerLevelsModule,
+    ClickerClickLevelsModule,
+    ClickerEnergyLevelsModule,
+    LiveDropsModule,
     // TO DO
     // PaymentModule,
   ],

@@ -20,7 +20,11 @@ async function bootstrap() {
       logger.error('Invalid PORT value')
       process.exit(1)
     }
-    const baseUrl = process.env.BASE_URL || 'localhost'
+    const baseUrl = process.env.BASE_URL || `http://localhost:${port}`
+    if (!baseUrl.startsWith('http://') && !baseUrl.startsWith('https://')) {
+      logger.error('BASE_URL must include protocol (http:// or https://)')
+      process.exit(1)
+    }
 
     const config = new DocumentBuilder()
       .setTitle('API')
@@ -34,8 +38,8 @@ async function bootstrap() {
 
     app.enableCors({
       origin: [
-        'http://localhost:3000',
         'https://droplock-frontend.vercel.app',
+        'https://rabbit-frontend-jet.vercel.app',
         process.env.FRONTEND_URL || 'http://localhost:3000',
       ],
       methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',

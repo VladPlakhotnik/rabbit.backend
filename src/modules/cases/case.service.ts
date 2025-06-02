@@ -36,7 +36,9 @@ export class CaseService {
   ) {}
 
   async findAll(): Promise<Case[]> {
-    return this.caseRepository.find({ relations: ['section'] })
+    return this.caseRepository.find({
+      relations: ['skinCases', 'skinCases.skin'],
+    })
   }
 
   async findById(id: number): Promise<Case> {

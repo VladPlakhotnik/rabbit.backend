@@ -6,6 +6,7 @@ import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
 import { SteamStrategy } from './steam.strategy'
 import { UserModule } from '../users/users.module'
+import { ClickerUserModule } from '../clickerUser/clicker-user.module'
 import { ACCESS_TOKEN_EXPIRES } from '../../constants/common'
 import { ConfigModule } from '@nestjs/config'
 import { CacheModule } from '@nestjs/cache-manager'
@@ -25,6 +26,7 @@ import { CacheModule } from '@nestjs/cache-manager'
       secret: process.env.JWT_SECRET,
     }),
     UserModule,
+    ClickerUserModule,
     CacheModule.register({
       ttl: 300, // 5 minutes
       max: 100, // 100 requests
