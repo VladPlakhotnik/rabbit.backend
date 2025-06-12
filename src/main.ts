@@ -40,7 +40,9 @@ async function bootstrap() {
       origin: [
         'https://droplock-frontend.vercel.app',
         'https://rabbit-frontend-jet.vercel.app',
-        process.env.FRONTEND_URL || 'http://localhost:3000',
+        process.env.FRONTEND_URL || '',
+        'http://localhost:3000',
+        'http://localhost:7000',
       ],
       methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
       credentials: true,
