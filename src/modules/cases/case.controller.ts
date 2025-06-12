@@ -36,7 +36,7 @@ export class CaseController {
 
   @ApiOperation({ summary: 'Get case by ID' })
   @ApiResponse({ status: 200, description: 'Return case by ID' })
-  @UseGuards(AuthGuard('jwt'))
+  // @UseGuards(AuthGuard('jwt'))
   @Get(':id')
   async findOne(@Param('id') id: number) {
     const caseEntity = await this.caseService.findById(id)

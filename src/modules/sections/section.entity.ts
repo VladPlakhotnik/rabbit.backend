@@ -9,6 +9,9 @@ export class Section {
   @Column({ type: 'varchar', length: 255 })
   name!: string
 
+  @Column({ type: 'varchar', length: 255 })
+  icon!: string
+
   @OneToMany(() => Case, caseEntity => caseEntity.section)
   cases!: Case[]
 }

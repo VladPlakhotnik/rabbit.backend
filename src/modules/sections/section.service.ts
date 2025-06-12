@@ -44,7 +44,7 @@ export class SectionService {
     }
 
     // Сортировка результатов
-    queryBuilder.orderBy('section.name', 'ASC').addOrderBy('cases.name', 'ASC')
+    queryBuilder.orderBy('section.id', 'ASC').addOrderBy('cases.name', 'ASC')
 
     // Выполнение запроса и возврат результатов
     return queryBuilder.getMany()
