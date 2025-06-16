@@ -67,12 +67,12 @@ export class CaseController {
   async openCase(
     @Param('id') id: number,
     @Req() req: Request & { user?: User },
-    @Body('client_seed') clientSeed: string,
+    // @Body('client_seed') clientSeed: string,
   ) {
     if (!req.user) {
       throw new UnauthorizedException('User not found')
     }
-    return this.caseService.openCase(id, req.user.id, clientSeed)
+    return this.caseService.openCase(id, req.user.id)
   }
 
   @ApiOperation({ summary: 'Create a new case' })

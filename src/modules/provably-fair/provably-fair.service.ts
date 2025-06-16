@@ -42,6 +42,9 @@ export class ProvablyFairService {
     })
 
     return {
+      id: game.id,
+      client_seed: clientSeed,
+      server_seed: serverSeed,
       game_id: game.id,
       public_hash: publicHash,
     }

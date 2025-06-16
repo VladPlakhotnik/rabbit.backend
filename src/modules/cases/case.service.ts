@@ -129,7 +129,7 @@ export class CaseService {
   async openCase(
     caseId: number,
     userId: number,
-    clientSeed: string,
+    // clientSeed: string,
   ): Promise<{ winner: SkinCase; inventory: UserInventory; game_id: number }> {
     // Валидация кейса
     const caseEntity = await this.validateCase(caseId)
@@ -144,14 +144,22 @@ export class CaseService {
     const skinCases = await this.getAvailableSkins(caseId)
 
     // Проверка Provably Fair
-    const provablyFair = await this.provablyFairService.getLastUnusedSeed(
+    // const provablyFair = await this.provablyFairService.getLastUnusedSeed(
+    //   userId,
+    //   GameType.CASE,
+    // )
+
+    const clientSeed = crypto.randomBytes(32).toString('hex')
+
+    const provablyFair = await this.provablyFairService.generateSeed(
       userId,
+      clientSeed,
       GameType.CASE,
     )
 
-    if (!provablyFair || provablyFair.client_seed !== clientSeed) {
-      throw new BadRequestException('Invalid or missing seed')
-    }
+    // if (!provablyFair || provablyFair.client_seed !== clientSeed) {
+    //   throw new BadRequestException('Invalid or missing seed')
+    // }
 
     // Генерация случайного числа
     const randomNumber = this.provablyFairService.generateRandomNumber(
