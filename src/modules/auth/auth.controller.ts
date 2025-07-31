@@ -48,6 +48,8 @@ export class AuthController {
     try {
       const steamUser = req.user
 
+      console.log(steamUser)
+
       if (!steamUser) {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
       }

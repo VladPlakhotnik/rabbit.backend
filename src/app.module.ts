@@ -18,6 +18,7 @@ import { ClickerLevelsModule } from './modules/clickerLevels/clicker-levels.modu
 import { ClickerClickLevelsModule } from './modules/clickerClickLevels/clicker-click-levels.module'
 import { ClickerEnergyLevelsModule } from './modules/clickerEnergyLevels/clicker-energy-levels.module'
 import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
+import { UserHistoryModule } from './modules/userHistory/userHistory.module'
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
     ClickerClickLevelsModule,
     ClickerEnergyLevelsModule,
     LiveDropsModule,
+    UserHistoryModule,
     // TO DO
     // PaymentModule,
   ],

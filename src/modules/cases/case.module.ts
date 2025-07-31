@@ -8,6 +8,7 @@ import { SkinCase } from '../skinCase/skinCase.entity'
 import { ProvablyFairModule } from '../provably-fair/provably-fair.module'
 import { UserInventoryModule } from '../userInventory/userInventory.module'
 import { UserModule } from '../users/users.module'
+import { UserHistoryModule } from '../userHistory/userHistory.module'
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { UserModule } from '../users/users.module'
     ProvablyFairModule,
     UserInventoryModule,
     UserModule,
+    UserHistoryModule,
   ],
   controllers: [CaseController],
   providers: [CaseService],

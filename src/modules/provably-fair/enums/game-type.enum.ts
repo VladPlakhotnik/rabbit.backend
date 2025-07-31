@@ -1,4 +1,6 @@
 export enum GameType {
   CASE = 'case',
-  HOLES = 'holes',
+  CLICKER_CASE = 'clicker_case',
+  UPGRADE = 'upgrade',
+  MINES = 'mines',
 }

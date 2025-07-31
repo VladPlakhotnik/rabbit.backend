@@ -14,6 +14,8 @@ import { ProvablyFairService } from '../provably-fair/provably-fair.service'
 import { GameType } from '../provably-fair/enums/game-type.enum'
 import { UserService } from '../users/users.service'
 import { UserInventoryService } from '../userInventory/userInventory.service'
+import { UserHistoryService } from '../userHistory/userHistory.service'
+import { HistoryAction } from '../userHistory/enums/history-action.enum'
 
 interface TicketRange {
   skinCase: SkinCase
@@ -33,6 +35,7 @@ export class CaseService {
     private readonly userService: UserService,
     private readonly provablyFairService: ProvablyFairService,
     private readonly userInventoryService: UserInventoryService,
+    private readonly userHistoryService: UserHistoryService,
   ) {}
 
   async findAll(): Promise<Case[]> {
@@ -180,6 +183,18 @@ export class CaseService {
 
     // Помечаем сид как использованный
     await this.provablyFairService.markSeedAsUsed(provablyFair.id)
+
+    await this.userHistoryService.openCase(
+      userId,
+      caseId,
+      caseEntity.name,
+      caseEntity.case_price,
+      caseEntity.img_url,
+      provablyFair.server_seed,
+      winner.skin?.id,
+      winner.skin?.img_url,
+      winner.skin?.skin_price,
+    )
 
     return {
       winner,
