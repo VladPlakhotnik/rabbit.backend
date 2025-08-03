@@ -14,6 +14,7 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { AuthGuard } from '@nestjs/passport'
 import { RolesGuard } from '../../core/guards/roles.guard'
 import { Roles } from '../../core/decorators/roles.decorator'
+import { OptionalAuthGuard } from '../../core/guards/optional-auth.guard'
 
 /**
  * Controller for working with sections
@@ -27,6 +28,7 @@ export class SectionController {
 
   @ApiOperation({ summary: 'Get all sections' })
   @ApiResponse({ status: 200, description: 'Return all sections' })
+  @UseGuards(OptionalAuthGuard)
   @Get()
   async getSections(
     @Req() req: Request,

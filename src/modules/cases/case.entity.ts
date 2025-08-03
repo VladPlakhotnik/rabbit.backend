@@ -32,6 +32,15 @@ export class Case {
   })
   case_price!: number
 
+  @Column({ type: 'integer' })
+  remaining_count!: number
+
+  @Column({ type: 'integer' })
+  max_count!: number
+
+  @Column({ type: 'boolean', default: false })
+  is_popular!: boolean
+
   @OneToMany(() => UserInventory, inventory => inventory.case)
   inventories!: UserInventory[]
 
