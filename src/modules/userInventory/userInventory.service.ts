@@ -5,7 +5,7 @@ import {
   Logger,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { Repository, In } from 'typeorm'
 import { UserInventory } from './userInventory.entity'
 import { User } from '../users/user.entity'
 import { Skin } from '../skins/skin.entity'
@@ -25,6 +25,11 @@ export interface SoldItem {
 }
 
 interface SellAllResult {
+  soldItems: SoldItem[]
+  updatedBalance: number
+}
+
+interface SellSelectedResult {
   soldItems: SoldItem[]
   updatedBalance: number
 }
@@ -194,6 +199,98 @@ export class UserInventoryService {
         withdrawn_at: null,
       })
       return manager.save(inventory)
+    })
+  }
+
+  async sellSelectedSkins(
+    inventoryIds: number[],
+    userId: number,
+  ): Promise<SellSelectedResult> {
+    return this.userInventoryRepository.manager.transaction(async manager => {
+      try {
+        if (!inventoryIds || inventoryIds.length === 0) {
+          throw new BadRequestException('Inventory IDs are required')
+        }
+
+        if (!userId) {
+          throw new BadRequestException('User ID is required')
+        }
+
+        const user = await manager.findOne(User, {
+          where: { id: userId },
+        })
+
+        if (!user) {
+          throw new NotFoundException('User not found')
+        }
+
+        const inventoryItems = await manager.find(UserInventory, {
+          where: { id: In(inventoryIds) },
+          relations: ['skin', 'user'],
+        })
+
+        if (inventoryItems.length === 0) {
+          throw new NotFoundException('No inventory items found')
+        }
+
+        // Проверяем, что все предметы принадлежат пользователю
+        for (const item of inventoryItems) {
+          if (item.user.id !== userId) {
+            throw new BadRequestException('You do not own one or more items')
+          }
+          if (item.is_sold) {
+            throw new BadRequestException(
+              'One or more items have already been sold',
+            )
+          }
+          if (item.is_withdrawn) {
+            throw new BadRequestException('Cannot sell withdrawn items')
+          }
+        }
+
+        // Подготавливаем данные для возврата
+        const soldItems = inventoryItems.map(item => ({
+          id: item.id,
+          skin: {
+            id: item.skin.id,
+            name: item.skin.name,
+            img_url: item.skin.img_url,
+            rarity: item.skin.rarity,
+            skin_price: item.skin.skin_price,
+          },
+          obtained_at: item.obtained_at,
+          is_sold: true,
+        }))
+
+        // Обновляем все предметы одним запросом
+        await manager.update(
+          UserInventory,
+          { id: In(inventoryIds) },
+          { is_sold: true },
+        )
+
+        // Вычисляем общую стоимость
+        const totalSellPrice = inventoryItems.reduce(
+          (sum, item) => sum + Number(item.skin.skin_price),
+          0,
+        )
+
+        // Обновляем баланс пользователя
+        user.balance = user.balance + totalSellPrice
+        await manager.save(user)
+
+        return {
+          soldItems,
+          updatedBalance: user.balance,
+        }
+      } catch (error: unknown) {
+        this.logger.error(
+          `Error selling selected skins for user ${userId}: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        )
+        throw error
+      }
     })
   }
 }

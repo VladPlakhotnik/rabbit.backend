@@ -41,6 +41,9 @@ export class Case {
   @Column({ type: 'boolean', default: false })
   is_popular!: boolean
 
+  @Column({ type: 'boolean', default: false })
+  is_limited!: boolean
+
   @OneToMany(() => UserInventory, inventory => inventory.case)
   inventories!: UserInventory[]
 

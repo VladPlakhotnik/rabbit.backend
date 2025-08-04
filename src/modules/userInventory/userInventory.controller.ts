@@ -9,6 +9,7 @@ import {
   Post,
   UnauthorizedException,
   Logger,
+  Body,
 } from '@nestjs/common'
 import { SoldItem, UserInventoryService } from './userInventory.service'
 import { AuthGuard } from '@nestjs/passport'
@@ -34,6 +35,16 @@ interface SellSkinResponse {
 }
 
 interface SellAllResponse {
+  message: string
+  soldItems: SoldItem[]
+  updatedBalance: number
+}
+
+interface SellSelectedRequest {
+  inventory_ids: number[]
+}
+
+interface SellSelectedResponse {
   message: string
   soldItems: SoldItem[]
   updatedBalance: number
@@ -138,6 +149,32 @@ export class UserInventoryController {
 
     return {
       message: 'All skins already sold',
+      soldItems,
+      updatedBalance,
+    }
+  }
+
+  @ApiOperation({ summary: 'Sell selected skins' })
+  @ApiResponse({ status: 200, description: 'Return selected skins sold' })
+  @UseGuards(AuthGuard('jwt'))
+  @Post('sell-selected')
+  async sellSelectedSkins(
+    @Body() body: SellSelectedRequest,
+    @Req() req: Request,
+  ): Promise<SellSelectedResponse> {
+    if (!req.user) {
+      throw new UnauthorizedException('User not authenticated')
+    }
+    const userId = req.user.id
+
+    const { soldItems, updatedBalance } =
+      await this.userInventoryService.sellSelectedSkins(
+        body.inventory_ids,
+        userId,
+      )
+
+    return {
+      message: 'Selected skins sold successfully',
       soldItems,
       updatedBalance,
     }

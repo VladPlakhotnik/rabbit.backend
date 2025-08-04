@@ -132,74 +132,151 @@ export class CaseService {
   async openCase(
     caseId: number,
     userId: number,
-    // clientSeed: string,
-  ): Promise<{ winner: SkinCase; inventory: UserInventory; game_id: number }> {
+    count: number = 1,
+  ): Promise<{
+    results: Array<{
+      winner: SkinCase
+      inventory: UserInventory
+      game_id: number
+    }>
+    totalCost: number
+  }> {
     // Валидация кейса
     const caseEntity = await this.validateCase(caseId)
 
+    // Проверка лимитов
+    if (count < 1 || count > 5) {
+      throw new BadRequestException('Count must be between 1 and 5')
+    }
+
+    // Если открываем один кейс
+    if (count === 1) {
+      // Проверка баланса и списание средств
+      await this.userService.validateAndDeductBalance(
+        userId,
+        caseEntity.case_price,
+      )
+
+      // Получение доступных скинов
+      const skinCases = await this.getAvailableSkins(caseId)
+
+      const clientSeed = crypto.randomBytes(32).toString('hex')
+
+      const provablyFair = await this.provablyFairService.generateSeed(
+        userId,
+        clientSeed,
+        GameType.CASE,
+      )
+
+      // Генерация случайного числа
+      const randomNumber = this.provablyFairService.generateRandomNumber(
+        clientSeed,
+        provablyFair.server_seed,
+      )
+
+      // Подготовка и выбор победителя
+      const ticketRanges = this.prepareTicketRanges(skinCases)
+      const winner = this.selectWinner(ticketRanges, randomNumber)
+
+      // Создание записи в инвентаре
+      const inventory = await this.userInventoryService.createInventory(
+        userId,
+        winner.skin,
+        caseEntity,
+      )
+
+      // Помечаем сид как использованный
+      await this.provablyFairService.markSeedAsUsed(provablyFair.id)
+
+      await this.userHistoryService.openCase(
+        userId,
+        caseId,
+        caseEntity.name,
+        caseEntity.case_price,
+        caseEntity.img_url,
+        provablyFair.server_seed,
+        winner.skin?.id,
+        winner.skin?.img_url,
+        winner.skin?.skin_price,
+      )
+
+      return {
+        results: [
+          {
+            winner,
+            inventory,
+            game_id: provablyFair.id,
+          },
+        ],
+        totalCost: caseEntity.case_price,
+      }
+    }
+
+    // Если открываем несколько кейсов
+    const totalCost = caseEntity.case_price * count
+
     // Проверка баланса и списание средств
-    await this.userService.validateAndDeductBalance(
-      userId,
-      caseEntity.case_price,
-    )
+    await this.userService.validateAndDeductBalance(userId, totalCost)
 
-    // Получение доступных скинов
-    const skinCases = await this.getAvailableSkins(caseId)
+    const results = []
 
-    // Проверка Provably Fair
-    // const provablyFair = await this.provablyFairService.getLastUnusedSeed(
-    //   userId,
-    //   GameType.CASE,
-    // )
+    // Открываем указанное количество кейсов
+    for (let i = 0; i < count; i++) {
+      // Получение доступных скинов
+      const skinCases = await this.getAvailableSkins(caseId)
 
-    const clientSeed = crypto.randomBytes(32).toString('hex')
+      // Генерация уникального сида для каждого кейса
+      const clientSeed = crypto.randomBytes(32).toString('hex')
 
-    const provablyFair = await this.provablyFairService.generateSeed(
-      userId,
-      clientSeed,
-      GameType.CASE,
-    )
+      const provablyFair = await this.provablyFairService.generateSeed(
+        userId,
+        clientSeed,
+        GameType.CASE,
+      )
 
-    // if (!provablyFair || provablyFair.client_seed !== clientSeed) {
-    //   throw new BadRequestException('Invalid or missing seed')
-    // }
+      // Генерация случайного числа
+      const randomNumber = this.provablyFairService.generateRandomNumber(
+        clientSeed,
+        provablyFair.server_seed,
+      )
 
-    // Генерация случайного числа
-    const randomNumber = this.provablyFairService.generateRandomNumber(
-      clientSeed,
-      provablyFair.server_seed,
-    )
+      // Подготовка и выбор победителя
+      const ticketRanges = this.prepareTicketRanges(skinCases)
+      const winner = this.selectWinner(ticketRanges, randomNumber)
 
-    // Подготовка и выбор победителя
-    const ticketRanges = this.prepareTicketRanges(skinCases)
-    const winner = this.selectWinner(ticketRanges, randomNumber)
+      // Создание записи в инвентаре
+      const inventory = await this.userInventoryService.createInventory(
+        userId,
+        winner.skin,
+        caseEntity,
+      )
 
-    // Создание записи в инвентаре
-    const inventory = await this.userInventoryService.createInventory(
-      userId,
-      winner.skin,
-      caseEntity,
-    )
+      // Помечаем сид как использованный
+      await this.provablyFairService.markSeedAsUsed(provablyFair.id)
 
-    // Помечаем сид как использованный
-    await this.provablyFairService.markSeedAsUsed(provablyFair.id)
+      // Записываем в историю
+      await this.userHistoryService.openCase(
+        userId,
+        caseId,
+        caseEntity.name,
+        caseEntity.case_price,
+        caseEntity.img_url,
+        provablyFair.server_seed,
+        winner.skin?.id,
+        winner.skin?.img_url,
+        winner.skin?.skin_price,
+      )
 
-    await this.userHistoryService.openCase(
-      userId,
-      caseId,
-      caseEntity.name,
-      caseEntity.case_price,
-      caseEntity.img_url,
-      provablyFair.server_seed,
-      winner.skin?.id,
-      winner.skin?.img_url,
-      winner.skin?.skin_price,
-    )
+      results.push({
+        winner,
+        inventory,
+        game_id: provablyFair.id,
+      })
+    }
 
     return {
-      winner,
-      inventory,
-      game_id: provablyFair.id,
+      results,
+      totalCost,
     }
   }
 }

@@ -46,6 +46,10 @@ export class CaseController {
       name: caseEntity.name,
       img_url: caseEntity.img_url,
       case_price: caseEntity.case_price,
+      max_count: caseEntity.max_count,
+      remaining_count: caseEntity.remaining_count,
+      is_limited: caseEntity.is_limited,
+      is_popular: caseEntity.is_popular,
       skins: caseEntity.skinCases.map(skinCase => ({
         id: skinCase.skin.id,
         name: skinCase.skin.name,
@@ -60,19 +64,21 @@ export class CaseController {
     return response
   }
 
-  @ApiOperation({ summary: 'Open case' })
-  @ApiResponse({ status: 200, description: 'Return opened case' })
+  @ApiOperation({ summary: 'Open case(s)' })
+  @ApiResponse({ status: 200, description: 'Return opened case(s)' })
   @UseGuards(AuthGuard('jwt'))
   @Post(':id/open')
   async openCase(
     @Param('id') id: number,
     @Req() req: Request & { user?: User },
-    // @Body('client_seed') clientSeed: string,
+    @Body('count') count: number = 1,
   ) {
     if (!req.user) {
       throw new UnauthorizedException('User not found')
     }
-    return this.caseService.openCase(id, req.user.id)
+
+    // Передаем параметры в обновленный метод openCase
+    return this.caseService.openCase(id, req.user.id, count)
   }
 
   @ApiOperation({ summary: 'Create a new case' })
