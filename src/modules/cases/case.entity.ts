@@ -18,6 +18,9 @@ export class Case {
   @PrimaryGeneratedColumn()
   id!: number
 
+  @Column({ type: 'varchar', length: 255 })
+  slug!: string
+
   @Column({ type: 'varchar', length: 100 })
   name!: string
 

@@ -34,42 +34,21 @@ export class CaseController {
     return this.caseService.findAll()
   }
 
-  @ApiOperation({ summary: 'Get case by ID' })
-  @ApiResponse({ status: 200, description: 'Return case by ID' })
-  // @UseGuards(AuthGuard('jwt'))
-  @Get(':id')
-  async findOne(@Param('id') id: number) {
-    const caseEntity = await this.caseService.findById(id)
-
-    const response = {
-      id: caseEntity.id,
-      name: caseEntity.name,
-      img_url: caseEntity.img_url,
-      case_price: caseEntity.case_price,
-      max_count: caseEntity.max_count,
-      remaining_count: caseEntity.remaining_count,
-      is_limited: caseEntity.is_limited,
-      is_popular: caseEntity.is_popular,
-      skins: caseEntity.skinCases.map(skinCase => ({
-        id: skinCase.skin.id,
-        name: skinCase.skin.name,
-        img_url: skinCase.skin.img_url,
-        rarity: skinCase.skin.rarity,
-        skin_price: skinCase.skin.skin_price,
-        chance: skinCase.chance,
-        is_drop_out: skinCase.is_drop_out,
-      })),
-    }
+  @ApiOperation({ summary: 'Get case by slug' })
+  @ApiResponse({ status: 200, description: 'Return case by slug' })
+  @Get(':slug')
+  async findBySlug(@Param('slug') slug: string) {
+    const response = await this.caseService.findBySlug(slug)
 
     return response
   }
 
-  @ApiOperation({ summary: 'Open case(s)' })
+  @ApiOperation({ summary: 'Open case(s) by slug' })
   @ApiResponse({ status: 200, description: 'Return opened case(s)' })
   @UseGuards(AuthGuard('jwt'))
-  @Post(':id/open')
-  async openCase(
-    @Param('id') id: number,
+  @Post(':slug/open')
+  async openCaseBySlug(
+    @Param('slug') slug: string,
     @Req() req: Request & { user?: User },
     @Body('count') count: number = 1,
   ) {
@@ -77,8 +56,9 @@ export class CaseController {
       throw new UnauthorizedException('User not found')
     }
 
-    // Передаем параметры в обновленный метод openCase
-    return this.caseService.openCase(id, req.user.id, count)
+    // Получаем кейс по slug и передаем его id в openCase
+    const caseEntity = await this.caseService.findBySlug(slug)
+    return this.caseService.openCase(caseEntity.id, req.user.id, count)
   }
 
   @ApiOperation({ summary: 'Create a new case' })

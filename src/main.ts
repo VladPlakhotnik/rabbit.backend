@@ -5,6 +5,7 @@ import * as dotenv from 'dotenv'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
 import { Logger } from '@nestjs/common'
+import { ConnectionManager } from './core/database/connection-manager'
 
 dotenv.config()
 
@@ -54,6 +55,35 @@ async function bootstrap() {
     await app.listen(port, () => {
       logger.log(`Server is running on ${baseUrl}`)
     })
+
+    // Graceful shutdown handling
+    const gracefulShutdown = async (signal: string) => {
+      logger.log(`Received ${signal}. Starting graceful shutdown...`)
+      try {
+        // Get connection count before closing
+        const connectionManager = ConnectionManager.getInstance()
+        const connectionCount = await connectionManager.getConnectionCount()
+        logger.log(`Active connections before shutdown: ${connectionCount}`)
+
+        // Close the application and all connections
+        await app.close()
+
+        // Close database connections explicitly
+        await connectionManager.closeConnection()
+
+        // Give some time for connections to close properly
+        await new Promise(resolve => setTimeout(resolve, 2000))
+
+        logger.log('Application closed successfully')
+        process.exit(0)
+      } catch (error) {
+        logger.error('Error during graceful shutdown:', error)
+        process.exit(1)
+      }
+    }
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
     process.on('unhandledRejection', (reason, promise) => {
       logger.error('Unhandled Rejection at:', promise, 'reason:', reason)

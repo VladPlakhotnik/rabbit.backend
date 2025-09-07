@@ -41,6 +41,13 @@ export class CaseService {
   async findAll(): Promise<Case[]> {
     return this.caseRepository.find({
       relations: ['skinCases', 'skinCases.skin'],
+      order: {
+        skinCases: {
+          skin: {
+            market_price: 'DESC',
+          },
+        },
+      },
     })
   }
 
@@ -48,6 +55,31 @@ export class CaseService {
     const caseEntity = await this.caseRepository.findOne({
       where: { id },
       relations: ['skinCases', 'skinCases.skin'],
+      order: {
+        skinCases: {
+          skin: {
+            market_price: 'DESC',
+          },
+        },
+      },
+    })
+    if (!caseEntity) {
+      throw new NotFoundException('Case not found')
+    }
+    return caseEntity
+  }
+
+  async findBySlug(slug: string): Promise<Case> {
+    const caseEntity = await this.caseRepository.findOne({
+      where: { slug },
+      relations: ['skinCases', 'skinCases.skin'],
+      order: {
+        skinCases: {
+          skin: {
+            market_price: 'DESC',
+          },
+        },
+      },
     })
     if (!caseEntity) {
       throw new NotFoundException('Case not found')
@@ -81,11 +113,11 @@ export class CaseService {
   private prepareTicketRanges(skinCases: SkinCase[]): TicketRange[] {
     let ticketStart = 1
     return skinCases.map(skinCase => {
-      if (!skinCase.hidden_chance || skinCase.hidden_chance <= 0) {
+      if (!skinCase.chance || skinCase.chance <= 0) {
         throw new BadRequestException('Invalid skin chance')
       }
 
-      const tickets = Math.floor(skinCase.hidden_chance * 100)
+      const tickets = Math.floor(skinCase.chance * 100)
       const range: TicketRange = {
         skinCase,
         start: ticketStart,
@@ -196,8 +228,8 @@ export class CaseService {
         caseEntity.img_url,
         provablyFair.server_seed,
         winner.skin?.id,
-        winner.skin?.img_url,
-        winner.skin?.skin_price,
+        winner.skin?.image,
+        winner.skin?.market_price,
       )
 
       return {
@@ -263,8 +295,8 @@ export class CaseService {
         caseEntity.img_url,
         provablyFair.server_seed,
         winner.skin?.id,
-        winner.skin?.img_url,
-        winner.skin?.skin_price,
+        winner.skin?.image,
+        winner.skin?.market_price,
       )
 
       results.push({

@@ -6,7 +6,7 @@ import {
   JoinColumn,
 } from 'typeorm'
 import { ClickerCase } from './clicker_case.entity'
-import { Skin } from '../../skins/skin.entity'
+import { CsgoSkin } from '../../skins/csgo-skin.entity'
 
 @Entity('clicker_skin_case')
 export class ClickerSkinCase {
@@ -17,9 +17,9 @@ export class ClickerSkinCase {
   @JoinColumn({ name: 'case_id' })
   case!: ClickerCase
 
-  @ManyToOne(() => Skin)
+  @ManyToOne(() => CsgoSkin)
   @JoinColumn({ name: 'skin_id' })
-  skin!: Skin
+  skin!: CsgoSkin
 
   @Column('numeric', { precision: 5, scale: 2 })
   chance!: number

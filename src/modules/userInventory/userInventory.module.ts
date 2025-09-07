@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { UserInventory } from './userInventory.entity'
-import { Skin } from '../skins/skin.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { Case } from '../cases/case.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { UserInventoryService } from './userInventory.service'
@@ -10,7 +10,7 @@ import { User } from '../users/user.entity'
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, UserInventory, Skin, Case, SkinCase]),
+    TypeOrmModule.forFeature([User, UserInventory, CsgoSkin, Case, SkinCase]),
   ],
   providers: [UserInventoryService],
   controllers: [UserInventoryController],

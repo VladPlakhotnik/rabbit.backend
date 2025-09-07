@@ -6,9 +6,10 @@ import {
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { User } from '../users/user.entity'
-import { Skin } from '../skins/skin.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UpgradeDto } from './dto/upgrade.dto'
+import { UserHistoryService } from '../userHistory/userHistory.service'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 
 interface UpgradeResult {
   success: boolean
@@ -44,10 +45,11 @@ export class UpgradeService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
-    @InjectRepository(Skin)
-    private readonly skinRepository: Repository<Skin>,
+    @InjectRepository(CsgoSkin)
+    private readonly csgoSkinRepository: Repository<CsgoSkin>,
     @InjectRepository(UserInventory)
     private readonly userInventoryRepository: Repository<UserInventory>,
+    private readonly userHistoryService: UserHistoryService,
   ) {}
 
   async performUpgrade(
@@ -62,8 +64,8 @@ export class UpgradeService {
       throw new NotFoundException('User not found')
     }
 
-    let usedSkin: Skin | null = null
-    let targetSkin: Skin | null = null
+    let usedSkin: CsgoSkin | null = null
+    let targetSkin: CsgoSkin | null = null
     let chance = 0
 
     if (upgradeDto.use_balance) {
@@ -83,13 +85,13 @@ export class UpgradeService {
       }
 
       // Генерируем случайный скин из маркета как цель
-      const allSkins = await this.skinRepository.find()
+      const allSkins = await this.csgoSkinRepository.find()
       targetSkin = allSkins[Math.floor(Math.random() * allSkins.length)]
 
       // Шанс зависит от соотношения потраченных денег к цене целевого скина
       chance = this.calculateChanceByPrice(
         upgradeDto.upgrade_amount,
-        Number(targetSkin.skin_price),
+        Number(targetSkin.market_price),
       )
 
       // Списываем деньги с баланса
@@ -120,7 +122,7 @@ export class UpgradeService {
       usedSkin = inventoryItem.skin
 
       if (upgradeDto.target_skin_id) {
-        targetSkin = await this.skinRepository.findOne({
+        targetSkin = await this.csgoSkinRepository.findOne({
           where: { id: upgradeDto.target_skin_id },
         })
 
@@ -136,15 +138,15 @@ export class UpgradeService {
 
       // Шанс зависит от соотношения цены используемого скина к целевому скину
       chance = this.calculateChanceByPrice(
-        Number(usedSkin.skin_price),
-        Number(targetSkin.skin_price),
+        Number(usedSkin.market_price),
+        Number(targetSkin.market_price),
       )
     }
 
     // Проверяем успешность апгрейда
     const isSuccess = Math.random() * 100 < chance
 
-    let upgradedSkin: Skin | null = null
+    let upgradedSkin: CsgoSkin | null = null
     let message = ''
 
     if (isSuccess) {
@@ -164,34 +166,43 @@ export class UpgradeService {
       message = 'Upgrade failed. Better luck next time!'
     }
 
+    // await this.userHistoryService.upgradeSkin(
+    //   userId,
+    //   targetSkin.id,
+    //   targetSkin.market_hash_name,
+    //   usedSkin?.quality || '',
+    //   targetSkin.quality,
+    //   upgradeDto.upgrade_amount || 0,
+    // )
+
     return {
       success: isSuccess,
       message,
       upgraded_skin: upgradedSkin
         ? {
             id: upgradedSkin.id,
-            name: upgradedSkin.name,
-            img_url: upgradedSkin.img_url,
-            rarity: upgradedSkin.rarity,
-            skin_price: Number(upgradedSkin.skin_price),
+            name: upgradedSkin.market_hash_name,
+            img_url: upgradedSkin.image,
+            rarity: upgradedSkin.quality,
+            skin_price: Number(upgradedSkin.market_price),
           }
         : undefined,
       used_skin: usedSkin
         ? {
             id: usedSkin.id,
-            name: usedSkin.name,
-            img_url: usedSkin.img_url,
-            rarity: usedSkin.rarity,
-            skin_price: Number(usedSkin.skin_price),
+            name: usedSkin.market_hash_name,
+            img_url: usedSkin.image,
+            rarity: usedSkin.quality,
+            skin_price: Number(usedSkin.market_price),
           }
         : undefined,
       target_skin: targetSkin
         ? {
             id: targetSkin.id,
-            name: targetSkin.name,
-            img_url: targetSkin.img_url,
-            rarity: targetSkin.rarity,
-            skin_price: Number(targetSkin.skin_price),
+            name: targetSkin.market_hash_name,
+            img_url: targetSkin.image,
+            rarity: targetSkin.quality,
+            skin_price: Number(targetSkin.market_price),
           }
         : undefined,
       chance,

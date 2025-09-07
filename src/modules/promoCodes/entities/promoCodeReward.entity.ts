@@ -6,7 +6,7 @@ import {
   JoinColumn,
 } from 'typeorm'
 import { PromoCode } from './promoCode.entity'
-import { Skin } from '../../skins/skin.entity'
+import { CsgoSkin } from '../../skins/csgo-skin.entity'
 import { numericTransformer } from '../../../common/helpers/numericTransformer'
 
 export enum RewardType {
@@ -37,9 +37,9 @@ export class PromoCodeReward {
   })
   value!: number
 
-  @ManyToOne(() => Skin, { nullable: true })
+  @ManyToOne(() => CsgoSkin, { nullable: true })
   @JoinColumn({ name: 'skin_id' })
-  skin!: Skin | null
+  skin!: CsgoSkin | null
 
   @Column({
     type: 'decimal',

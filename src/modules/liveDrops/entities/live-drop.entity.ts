@@ -7,16 +7,16 @@ import {
   JoinColumn,
 } from 'typeorm'
 import { Case } from '../../cases/case.entity'
-import { Skin } from '../../skins/skin.entity'
+import { CsgoSkin } from '../../skins/csgo-skin.entity'
 
 @Entity('live_drops')
 export class LiveDrop {
   @PrimaryGeneratedColumn()
   id!: number
 
-  @ManyToOne(() => Skin)
+  @ManyToOne(() => CsgoSkin)
   @JoinColumn({ name: 'skin_id' })
-  skin!: Skin
+  skin!: CsgoSkin
 
   @ManyToOne(() => Case)
   @JoinColumn({ name: 'case_id' })

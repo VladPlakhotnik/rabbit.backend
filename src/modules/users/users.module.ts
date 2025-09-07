@@ -4,7 +4,7 @@ import { User } from './user.entity'
 import { UserService } from './users.service'
 import { UserController } from './users.controller'
 import { UserInventory } from '../userInventory/userInventory.entity'
-import { Skin } from '../skins/skin.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { Case } from '../cases/case.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { Notification } from '../notifications/entities/notification.entity'
@@ -15,7 +15,7 @@ import { HttpModule } from '@nestjs/axios'
     TypeOrmModule.forFeature([
       User,
       UserInventory,
-      Skin,
+      CsgoSkin,
       Case,
       SkinCase,
       Notification,

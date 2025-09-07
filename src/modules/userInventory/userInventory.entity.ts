@@ -9,7 +9,7 @@ import {
   Check,
 } from 'typeorm'
 import { User } from '../users/user.entity'
-import { Skin } from '../skins/skin.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { Case } from '../cases/case.entity'
 
 @Entity('user_inventory')
@@ -24,9 +24,9 @@ export class UserInventory {
   @JoinColumn({ name: 'user_id' })
   user!: User
 
-  @ManyToOne(() => Skin, skin => skin.inventories)
+  @ManyToOne(() => CsgoSkin, skin => skin.id)
   @JoinColumn({ name: 'skin_id' })
-  skin!: Skin
+  skin!: CsgoSkin
 
   @ManyToOne(() => Case, caseEntity => caseEntity.inventories)
   @JoinColumn({ name: 'case_id' })

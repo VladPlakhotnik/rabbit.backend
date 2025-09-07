@@ -8,8 +8,8 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, In } from 'typeorm'
 import { UserInventory } from './userInventory.entity'
 import { User } from '../users/user.entity'
-import { Skin } from '../skins/skin.entity'
 import { Case } from '../cases/case.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 
 export interface SoldItem {
   id: number
@@ -99,7 +99,7 @@ export class UserInventoryService {
       }
 
       const user = inventoryItem.user
-      const skinPrice = inventoryItem.skin.skin_price
+      const skinPrice = inventoryItem.skin.market_price
       user.balance = Number(user.balance) + skinPrice
       await this.userRepository.save(user)
 
@@ -150,10 +150,10 @@ export class UserInventoryService {
             id: item.id,
             skin: {
               id: item.skin.id,
-              name: item.skin.name,
-              img_url: item.skin.img_url,
-              rarity: item.skin.rarity,
-              skin_price: item.skin.skin_price,
+              name: item.skin.market_hash_name,
+              img_url: item.skin.image,
+              rarity: item.skin.quality,
+              skin_price: item.skin.market_price,
             },
             obtained_at: item.obtained_at,
             is_sold: item.is_sold,
@@ -162,7 +162,7 @@ export class UserInventoryService {
       )
 
       const totalSellPrice = unsoldSkins.reduce(
-        (sum, item) => sum + Number(item.skin.skin_price),
+        (sum, item) => sum + Number(item.skin.market_price),
         0,
       )
 
@@ -185,7 +185,7 @@ export class UserInventoryService {
 
   async createInventory(
     userId: number,
-    skin: Skin,
+    skin: CsgoSkin,
     caseEntity: Case,
   ): Promise<UserInventory> {
     return this.userInventoryRepository.manager.transaction(async manager => {
@@ -253,10 +253,10 @@ export class UserInventoryService {
           id: item.id,
           skin: {
             id: item.skin.id,
-            name: item.skin.name,
-            img_url: item.skin.img_url,
-            rarity: item.skin.rarity,
-            skin_price: item.skin.skin_price,
+            name: item.skin.market_hash_name,
+            img_url: item.skin.image,
+            rarity: item.skin.quality,
+            skin_price: item.skin.market_price,
           },
           obtained_at: item.obtained_at,
           is_sold: true,
@@ -271,7 +271,7 @@ export class UserInventoryService {
 
         // Вычисляем общую стоимость
         const totalSellPrice = inventoryItems.reduce(
-          (sum, item) => sum + Number(item.skin.skin_price),
+          (sum, item) => sum + Number(item.skin.market_price),
           0,
         )
 
