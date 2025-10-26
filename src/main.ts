@@ -6,6 +6,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
 import { Logger } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
+import { json, urlencoded } from 'express'
 
 dotenv.config()
 
@@ -38,17 +39,15 @@ async function bootstrap() {
     SwaggerModule.setup('api', app, document)
 
     app.enableCors({
-      origin: [
-        'https://droplock-frontend.vercel.app',
-        'https://rabbit-frontend-jet.vercel.app',
-        'https://v1-rabbit.vercel.app',
-        process.env.FRONTEND_URL || '',
-        'http://localhost:3000',
-        'http://localhost:7000',
-      ],
-      methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+      origin: true, // Allow all origins for now to debug
+      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
       credentials: true,
+      allowedHeaders: '*', // Allow all headers to debug
+      exposedHeaders: ['Authorization', 'authorization'],
     })
+
+    app.use(json())
+    app.use(urlencoded({ extended: true }))
 
     // app.setGlobalPrefix('api/v1')
 

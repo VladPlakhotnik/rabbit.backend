@@ -1,4 +1,9 @@
-import { Module } from '@nestjs/common'
+import {
+  Module,
+  NestModule,
+  MiddlewareConsumer,
+  RequestMethod,
+} from '@nestjs/common'
 import { DatabaseModule } from './core/database/database.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { UserModule } from './modules/users/users.module'
@@ -20,6 +25,9 @@ import { ClickerEnergyLevelsModule } from './modules/clickerEnergyLevels/clicker
 import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
 import { UserHistoryModule } from './modules/userHistory/userHistory.module'
 import { UpgradeModule } from './modules/upgrade/upgrade.module'
+import { MinesModule } from './modules/mines/mines.module'
+import { LoggingMiddleware } from './common/middleware/logging.middleware'
+import { AuthDebugMiddleware } from './common/middleware/auth-debug.middleware'
 
 @Module({
   imports: [
@@ -43,9 +51,16 @@ import { UpgradeModule } from './modules/upgrade/upgrade.module'
     LiveDropsModule,
     UserHistoryModule,
     UpgradeModule,
+    MinesModule,
     // TO DO
     // PaymentModule,
   ],
   controllers: [AppController],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(AuthDebugMiddleware, LoggingMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL })
+  }
+}

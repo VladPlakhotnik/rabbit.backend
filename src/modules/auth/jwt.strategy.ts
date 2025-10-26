@@ -22,10 +22,25 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    const user = await this.userService.findBySteamId(payload.steam_id)
+    // Convert steam_id to number since it's stored as string in JWT but as number in database
+    const steamId =
+      typeof payload.steam_id === 'string'
+        ? parseInt(payload.steam_id, 10)
+        : payload.steam_id
+
+    // Check if steam_id is valid (not NaN)
+    if (isNaN(steamId)) {
+      throw new UnauthorizedException(
+        'Invalid token: steam_id is not a valid number',
+      )
+    }
+
+    const user = await this.userService.findBySteamId(steamId)
+
     if (!user) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
     }
+
     return user
   }
 }

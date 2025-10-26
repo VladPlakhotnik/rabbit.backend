@@ -7,7 +7,7 @@ import {
 } from '../../constants/common'
 
 export interface JwtPayload {
-  steam_id: number
+  steam_id: number | string
   sub: number
   iat?: number
   exp?: number

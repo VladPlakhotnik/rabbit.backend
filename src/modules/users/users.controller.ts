@@ -45,6 +45,8 @@ export class UserController {
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
   async getProfile(@Req() req: Request) {
+    this.logger.log('Getting profile for user')
+
     return req.user
   }
 
