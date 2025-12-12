@@ -38,9 +38,12 @@ export class UpgradeController {
         )
       }
     } else {
-      if (!upgradeDto.inventory_skin_id) {
+      if (
+        !upgradeDto.inventory_skin_ids ||
+        upgradeDto.inventory_skin_ids.length === 0
+      ) {
         throw new BadRequestException(
-          'inventory_skin_id is required when not using balance',
+          'inventory_skin_ids is required when not using balance',
         )
       }
     }

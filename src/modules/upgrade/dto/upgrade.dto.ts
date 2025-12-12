@@ -2,10 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger'
 
 export class UpgradeDto {
   @ApiPropertyOptional({
-    description: 'ID скина из инвентаря пользователя для апгрейда',
-    example: 123,
+    description: 'ID скинов из инвентаря пользователя для апгрейда',
+    example: [123, 456],
   })
-  inventory_skin_id?: number
+  inventory_skin_ids?: number[]
 
   @ApiPropertyOptional({
     description: 'ID скина из маркета, на который производится апгрейд',

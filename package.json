@@ -4,7 +4,7 @@
   "description": "Deadlock Backend",
   "private": false,
   "scripts": {
-    "prestart": "pnpm run build",
+    "prestart": "yarn build",
     "start": "node dist/main.js",
     "dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
@@ -12,7 +12,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
-    "postinstall": "pnpm run build"
+    "postinstall": "yarn build"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
@@ -37,6 +37,7 @@
     "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.3",
+    "cache-manager": "^7.2.5",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "cors": "^2.8.5",
@@ -45,9 +46,12 @@
     "express": "^4.21.2",
     "express-session": "^1.18.1",
     "jsonwebtoken": "^9.0.2",
+    "keyv": "^5.5.4",
     "mongoose": "^8.8.2",
     "morgan": "^1.10.0",
     "passport": "^0.7.0",
+    "passport-custom": "^1.1.1",
+    "passport-google-oauth20": "^2.0.0",
     "passport-jwt": "^4.0.1",
     "passport-steam": "^1.0.18",
     "pg": "^8.13.1",
@@ -63,6 +67,7 @@
   "devDependencies": {
     "@eslint/js": "^9.25.0",
     "@types/axios": "^0.14.4",
+    "@types/passport-google-oauth20": "^2.0.17",
     "@typescript-eslint/eslint-plugin": "^8.30.1",
     "@typescript-eslint/parser": "^8.30.1",
     "eslint": "^9.25.0",

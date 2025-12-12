@@ -8,8 +8,8 @@ export class User {
   @PrimaryGeneratedColumn()
   id!: number
 
-  @Column({ type: 'bigint', unique: true })
-  steam_id!: number
+  @Column({ type: 'bigint', unique: true, nullable: true })
+  steam_id!: number | null
 
   @Column({ type: 'varchar', length: 100 })
   display_name!: string
@@ -55,6 +55,30 @@ export class User {
 
   @Column({ type: 'int', nullable: true, name: 'referral_parent_id' })
   referral_parent_id?: number | null
+
+  @Column({
+    type: 'bigint',
+    nullable: true,
+    unique: true,
+    name: 'telegram_user_id',
+  })
+  telegram_user_id!: number | null
+
+  @Column({
+    type: 'varchar',
+    length: 255,
+    nullable: true,
+    unique: true,
+    name: 'google_id',
+  })
+  google_id!: string | null
+
+  @Column({
+    type: 'boolean',
+    default: false,
+    name: 'telegram_bonus_claimed',
+  })
+  telegram_bonus_claimed!: boolean
 
   @OneToMany(() => UserInventory, inventory => inventory.user)
   inventories!: UserInventory[]

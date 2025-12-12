@@ -1,15 +1,17 @@
 import { Module } from '@nestjs/common'
 import { PassportModule } from '@nestjs/passport'
 import { JwtModule } from '@nestjs/jwt'
+import { ConfigModule, ConfigService } from '@nestjs/config'
+import { CacheModule } from '@nestjs/cache-manager'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
 import { SteamStrategy } from './steam.strategy'
+import { TelegramStrategy } from './telegram.strategy'
+import { GoogleStrategy } from './google.strategy'
 import { UserModule } from '../users/users.module'
 import { ClickerUserModule } from '../clickerUser/clicker-user.module'
-import { ACCESS_TOKEN_EXPIRES } from '../../constants/common'
-import { ConfigModule } from '@nestjs/config'
-import { CacheModule } from '@nestjs/cache-manager'
+import { SocialModule } from '../social/social.module'
 
 @Module({
   imports: [
@@ -22,17 +24,28 @@ import { CacheModule } from '@nestjs/cache-manager'
       },
     }),
     PassportModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET,
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        secret: configService.get<string>('JWT_SECRET'),
+      }),
+      inject: [ConfigService],
     }),
     UserModule,
     ClickerUserModule,
+    SocialModule,
     CacheModule.register({
       ttl: 300, // 5 minutes
       max: 100, // 100 requests
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy, SteamStrategy],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    SteamStrategy,
+    TelegramStrategy,
+    GoogleStrategy,
+  ],
 })
 export class AuthModule {}

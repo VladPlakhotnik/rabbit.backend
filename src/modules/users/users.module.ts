@@ -9,6 +9,7 @@ import { Case } from '../cases/case.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { Notification } from '../notifications/entities/notification.entity'
 import { HttpModule } from '@nestjs/axios'
+import { SocialModule } from '../social/social.module'
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { HttpModule } from '@nestjs/axios'
       Notification,
     ]),
     HttpModule,
+    SocialModule,
   ],
   providers: [UserService],
   controllers: [UserController],

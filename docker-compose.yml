@@ -33,4 +33,4 @@ services:
       retries: 3
       start_period: 40s
     restart: unless-stopped
-    command: pnpm dev
+    command: yarn dev

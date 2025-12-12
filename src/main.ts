@@ -6,7 +6,6 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
 import { Logger } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
-import { json, urlencoded } from 'express'
 
 dotenv.config()
 
@@ -38,16 +37,16 @@ async function bootstrap() {
     const document = SwaggerModule.createDocument(app, config)
     SwaggerModule.setup('api', app, document)
 
+    // Configure CORS with explicit origins
     app.enableCors({
-      origin: true, // Allow all origins for now to debug
-      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+      origin: '*', // Specify your frontend origins
+      methods: '*',
       credentials: true,
-      allowedHeaders: '*', // Allow all headers to debug
-      exposedHeaders: ['Authorization', 'authorization'],
+      allowedHeaders: '*',
+      exposedHeaders: '*',
+      preflightContinue: false,
+      optionsSuccessStatus: 204,
     })
-
-    app.use(json())
-    app.use(urlencoded({ extended: true }))
 
     // app.setGlobalPrefix('api/v1')
 
@@ -56,42 +55,42 @@ async function bootstrap() {
     })
 
     // Graceful shutdown handling
-    const gracefulShutdown = async (signal: string) => {
-      logger.log(`Received ${signal}. Starting graceful shutdown...`)
-      try {
-        // Get connection count before closing
-        const connectionManager = ConnectionManager.getInstance()
-        const connectionCount = await connectionManager.getConnectionCount()
-        logger.log(`Active connections before shutdown: ${connectionCount}`)
+    // const gracefulShutdown = async (signal: string) => {
+    //   logger.log(`Received ${signal}. Starting graceful shutdown...`)
+    //   try {
+    //     // Get connection count before closing
+    //     const connectionManager = ConnectionManager.getInstance()
+    //     const connectionCount = await connectionManager.getConnectionCount()
+    //     logger.log(`Active connections before shutdown: ${connectionCount}`)
 
-        // Close the application and all connections
-        await app.close()
+    //     // Close the application and all connections
+    //     await app.close()
 
-        // Close database connections explicitly
-        await connectionManager.closeConnection()
+    //     // Close database connections explicitly
+    //     await connectionManager.closeConnection()
 
-        // Give some time for connections to close properly
-        await new Promise(resolve => setTimeout(resolve, 2000))
+    //     // Give some time for connections to close properly
+    //     await new Promise(resolve => setTimeout(resolve, 2000))
 
-        logger.log('Application closed successfully')
-        process.exit(0)
-      } catch (error) {
-        logger.error('Error during graceful shutdown:', error)
-        process.exit(1)
-      }
-    }
+    //     logger.log('Application closed successfully')
+    //     process.exit(0)
+    //   } catch (error) {
+    //     logger.error('Error during graceful shutdown:', error)
+    //     process.exit(1)
+    //   }
+    // }
 
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'))
+    // process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
+    // process.on('SIGINT', () => gracefulShutdown('SIGINT'))
 
-    process.on('unhandledRejection', (reason, promise) => {
-      logger.error('Unhandled Rejection at:', promise, 'reason:', reason)
-    })
+    // process.on('unhandledRejection', (reason, promise) => {
+    //   logger.error('Unhandled Rejection at:', promise, 'reason:', reason)
+    // })
 
-    process.on('uncaughtException', error => {
-      logger.error('Uncaught Exception:', error)
-      process.exit(1)
-    })
+    // process.on('uncaughtException', error => {
+    //   logger.error('Uncaught Exception:', error)
+    //   process.exit(1)
+    // })
   } catch (error) {
     logger.error('Failed to start application:', error)
     process.exit(1)

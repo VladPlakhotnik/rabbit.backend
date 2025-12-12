@@ -1,7 +1,10 @@
 import { Injectable, UnauthorizedException, Logger } from '@nestjs/common'
 import { PassportStrategy } from '@nestjs/passport'
+import { ConfigService } from '@nestjs/config'
 import { Strategy } from 'passport-steam'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
+
+import type { SteamAuthResult } from './types/auth.types'
 
 interface SteamProfile {
   id: string
@@ -10,13 +13,6 @@ interface SteamProfile {
   _json?: {
     profileurl?: string
   }
-}
-
-interface SteamAuthResult {
-  steam_id: string
-  display_name: string
-  avatar: string | null
-  profile_url: string | null
 }
 
 /**
@@ -29,21 +25,25 @@ interface SteamAuthResult {
 export class SteamStrategy extends PassportStrategy(Strategy, 'steam') {
   private readonly logger = new Logger(SteamStrategy.name)
 
-  constructor() {
+  constructor(private readonly configService: ConfigService) {
+    const baseUrl = configService.get<string>(
+      'BASE_URL',
+      'http://localhost:5000',
+    )
+    const steamApiKey = configService.get<string>('STEAM_API_KEY')
+
     super({
-      returnURL: `${process.env.BASE_URL}/auth/steam/return`,
-      realm: process.env.BASE_URL,
-      apiKey: process.env.STEAM_API_KEY,
+      returnURL: `${baseUrl}/auth/steam/return`,
+      realm: baseUrl,
+      apiKey: steamApiKey,
       profile: true,
     })
 
     this.logger.log(
-      `Initializing Steam strategy with returnURL: ${process.env.BASE_URL}/auth/steam/return`,
+      `Initializing Steam strategy with returnURL: ${baseUrl}/auth/steam/return`,
     )
     this.logger.log(
-      `Using Steam API key: ${
-        process.env.STEAM_API_KEY ? 'Present' : 'Missing'
-      }`,
+      `Using Steam API key: ${steamApiKey ? 'Present' : 'Missing'}`,
     )
   }
 

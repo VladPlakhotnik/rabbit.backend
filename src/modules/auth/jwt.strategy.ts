@@ -1,6 +1,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common'
 import { PassportStrategy } from '@nestjs/passport'
 import { Strategy, ExtractJwt } from 'passport-jwt'
+import { ConfigService } from '@nestjs/config'
 import { UserService } from '../users/users.service'
 import type { JwtPayload } from './auth.service'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
@@ -13,29 +14,33 @@ import { ERROR_MESSAGES } from '../../constants/errorMessages'
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
-  constructor(private readonly userService: UserService) {
+  constructor(
+    private readonly userService: UserService,
+    private readonly configService: ConfigService,
+  ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET,
+      secretOrKey: configService.get<string>('JWT_SECRET'),
     })
   }
 
   async validate(payload: JwtPayload) {
-    // Convert steam_id to number since it's stored as string in JWT but as number in database
-    const steamId =
-      typeof payload.steam_id === 'string'
-        ? parseInt(payload.steam_id, 10)
-        : payload.steam_id
+    // Convert sub (user ID) to number since JWT may store it as string
+    const userId =
+      typeof payload.sub === 'string' ? parseInt(payload.sub, 10) : payload.sub
 
-    // Check if steam_id is valid (not NaN)
-    if (isNaN(steamId)) {
-      throw new UnauthorizedException(
-        'Invalid token: steam_id is not a valid number',
-      )
+    // Check if user ID is valid
+    if (isNaN(userId) || userId <= 0) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_TOKEN)
     }
 
-    const user = await this.userService.findBySteamId(steamId)
+    // At least one auth method should be present
+    if (!payload.steam_id && !payload.telegram_id && !payload.google_id) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_TOKEN)
+    }
+
+    const user = await this.userService.findById(userId)
 
     if (!user) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
