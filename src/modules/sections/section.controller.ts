@@ -1,11 +1,34 @@
-import { Controller, Get, Param, Post, Body, Query, Req } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Param,
+  Post,
+  Body,
+  Query,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
 import { SectionService } from './section.service'
 import { Request } from 'express'
+import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { AuthGuard } from '@nestjs/passport'
+import { RolesGuard } from '../../core/guards/roles.guard'
+import { Roles } from '../../core/decorators/roles.decorator'
+import { OptionalAuthGuard } from '../../core/guards/optional-auth.guard'
 
+/**
+ * Controller for working with sections
+ * @class SectionController
+ */
+
+@ApiTags('sections')
 @Controller('sections')
 export class SectionController {
   constructor(private readonly sectionService: SectionService) {}
 
+  @ApiOperation({ summary: 'Get all sections' })
+  @ApiResponse({ status: 200, description: 'Return all sections' })
+  @UseGuards(OptionalAuthGuard)
   @Get()
   async getSections(
     @Req() req: Request,
@@ -14,8 +37,8 @@ export class SectionController {
     @Query('maxPrice') maxPrice?: string,
     @Query('enoughBalance') enoughBalance?: string,
   ) {
-    const user = req.user // Приведение типа, замените на ваш тип пользователя
-    const userBalance = user ? user.balance : undefined // Предполагаем, что баланс хранится в user.balance
+    const user = req.user
+    const userBalance = user ? user.balance : undefined
 
     const applyEnoughBalance =
       enoughBalance === 'true' && userBalance !== undefined
@@ -25,15 +48,21 @@ export class SectionController {
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       applyEnoughBalance,
-      userBalance, // Передаём баланс пользователя вместо параметра из запроса
+      userBalance,
     })
   }
 
+  @ApiOperation({ summary: 'Get section by ID' })
+  @ApiResponse({ status: 200, description: 'Return section by ID' })
   @Get(':id')
   async findOne(@Param('id') id: number) {
     return this.sectionService.findById(id)
   }
 
+  @ApiOperation({ summary: 'Create a new section' })
+  @ApiResponse({ status: 200, description: 'Return created section' })
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
   @Post()
   async create(@Body('name') name: string) {
     return this.sectionService.create(name)

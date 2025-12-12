@@ -18,6 +18,9 @@ export class Case {
   @PrimaryGeneratedColumn()
   id!: number
 
+  @Column({ type: 'varchar', length: 255 })
+  slug!: string
+
   @Column({ type: 'varchar', length: 100 })
   name!: string
 
@@ -31,6 +34,18 @@ export class Case {
     transformer: numericTransformer,
   })
   case_price!: number
+
+  @Column({ type: 'integer' })
+  remaining_count!: number
+
+  @Column({ type: 'integer' })
+  max_count!: number
+
+  @Column({ type: 'boolean', default: false })
+  is_popular!: boolean
+
+  @Column({ type: 'boolean', default: false })
+  is_limited!: boolean
 
   @OneToMany(() => UserInventory, inventory => inventory.case)
   inventories!: UserInventory[]

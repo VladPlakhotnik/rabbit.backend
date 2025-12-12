@@ -8,10 +8,10 @@ import {
   JoinColumn,
 } from 'typeorm'
 import { Case } from '../cases/case.entity'
-import { Skin } from '../skins/skin.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
 
-@Entity('skincase')
+@Entity('skin_case')
 export class SkinCase {
   @PrimaryGeneratedColumn()
   id!: number
@@ -20,9 +20,15 @@ export class SkinCase {
   @JoinColumn({ name: 'case_id' })
   case!: Case
 
-  @ManyToOne(() => Skin, skin => skin.skinCases)
-  @JoinColumn({ name: 'skin_id' })
-  skin!: Skin
+  @Column({ type: 'varchar', nullable: true })
+  skin_hash_name?: string
+
+  @ManyToOne(() => CsgoSkin, { nullable: true })
+  @JoinColumn({
+    name: 'skin_hash_name',
+    referencedColumnName: 'market_hash_name',
+  })
+  skin!: CsgoSkin
 
   @Column({
     type: 'numeric',
@@ -31,14 +37,6 @@ export class SkinCase {
     transformer: numericTransformer,
   })
   chance!: number
-
-  @Column({
-    type: 'numeric',
-    precision: 5,
-    scale: 2,
-    transformer: numericTransformer,
-  })
-  hidden_chance!: number
 
   @Column({ type: 'boolean' })
   is_drop_out!: boolean

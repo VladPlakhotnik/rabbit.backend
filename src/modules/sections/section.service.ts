@@ -41,10 +41,12 @@ export class SectionService {
     // Применение фильтра на баланс пользователя
     if (applyEnoughBalance && userBalance !== undefined) {
       queryBuilder.andWhere('cases.case_price <= :userBalance', { userBalance })
+      // Исключаем секции без подходящих кейсов
+      queryBuilder.andWhere('cases.id IS NOT NULL')
     }
 
     // Сортировка результатов
-    queryBuilder.orderBy('section.name', 'ASC').addOrderBy('cases.name', 'ASC')
+    queryBuilder.orderBy('section.id', 'ASC').addOrderBy('cases.name', 'ASC')
 
     // Выполнение запроса и возврат результатов
     return queryBuilder.getMany()

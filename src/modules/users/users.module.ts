@@ -4,29 +4,25 @@ import { User } from './user.entity'
 import { UserService } from './users.service'
 import { UserController } from './users.controller'
 import { UserInventory } from '../userInventory/userInventory.entity'
-import { Skin } from '../skins/skin.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { Case } from '../cases/case.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
-import { Bonus } from '../bonuses/bonus.entity'
-import { Notification } from '../notifications/notification.entity'
-import { PromoCode } from '../promoCodes/promoCode.entity'
-import { PromoCodeBonus } from '../promoCodeBonuses/promoCodeBonus.entity'
-import { PromoCodeDeposit } from '../promoCodeDeposits/promoCodeDeposit.entity'
+import { Notification } from '../notifications/entities/notification.entity'
+import { HttpModule } from '@nestjs/axios'
+import { SocialModule } from '../social/social.module'
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       User,
       UserInventory,
-      Skin,
+      CsgoSkin,
       Case,
       SkinCase,
-      Bonus,
       Notification,
-      PromoCode,
-      PromoCodeBonus,
-      PromoCodeDeposit,
     ]),
+    HttpModule,
+    SocialModule,
   ],
   providers: [UserService],
   controllers: [UserController],
