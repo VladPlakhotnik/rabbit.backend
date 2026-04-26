@@ -9,6 +9,28 @@ import {
 import { SkinService } from './skin.service'
 import { SkinSyncService } from './skins-sync'
 
+// Coerce a query-string value to a positive integer. Returns `undefined` for
+// missing / empty / non-numeric / non-positive values so the service-side
+// defaults can take over instead of receiving NaN.
+const parsePositiveInt = (raw: string | undefined): number | undefined => {
+  if (raw === undefined || raw === '') return undefined
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+const parseFloatOrUndefined = (raw: string | undefined): number | undefined => {
+  if (raw === undefined || raw === '') return undefined
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+const parseBoolOrUndefined = (raw: string | undefined): boolean | undefined => {
+  if (raw === undefined || raw === '') return undefined
+  if (raw === 'true' || raw === '1') return true
+  if (raw === 'false' || raw === '0') return false
+  return undefined
+}
+
 @ApiTags('skins')
 @Controller('skins')
 export class SkinController {
@@ -82,41 +104,51 @@ export class SkinController {
   })
   @Get('/')
   async getAllSkins(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('inStock') inStock?: boolean,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('inStock') inStock?: string,
     @Query('game') game?: string,
     @Query('category') category?: string,
     @Query('itemType') itemType?: string,
     @Query('search') search?: string,
-    @Query('minPrice') minPrice?: number,
-    @Query('maxPrice') maxPrice?: number,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
     @Query('quality') quality?: string,
     @Query('exterior') exterior?: string,
     @Query('collection') collection?: string,
   ) {
     try {
+      // Query strings always arrive as `string | undefined`. Coerce to the
+      // shapes the service expects, treating empty / non-numeric values as
+      // "not set" so callers don't have to worry about `?page=&limit=` style
+      // empty strings. Default page/limit kicks in inside the service.
+      const parsedPage = parsePositiveInt(page)
+      const parsedLimit = parsePositiveInt(limit)
+      const parsedMinPrice = parseFloatOrUndefined(minPrice)
+      const parsedMaxPrice = parseFloatOrUndefined(maxPrice)
+      const parsedInStock = parseBoolOrUndefined(inStock)
+      const trimmedSearch = search && search.trim() !== '' ? search.trim() : undefined
+
       const filters = {
-        inStock,
+        inStock: parsedInStock,
         game,
         category,
         itemType,
-        search,
-        minPrice,
-        maxPrice,
+        search: trimmedSearch,
+        minPrice: parsedMinPrice,
+        maxPrice: parsedMaxPrice,
         quality,
         exterior,
         collection,
       }
 
-      // Remove undefined values
       const cleanFilters = Object.fromEntries(
         Object.entries(filters).filter(([_, value]) => value !== undefined),
       )
 
       const result = await this.marketSkinSyncService.getAllSkinsFromDatabase(
-        page,
-        limit,
+        parsedPage,
+        parsedLimit,
         Object.keys(cleanFilters).length > 0 ? cleanFilters : undefined,
       )
 
@@ -213,7 +245,7 @@ export class SkinController {
   @Get('/search')
   async searchSkins(
     @Query('q') searchTerm: string,
-    @Query('limit') limit?: number,
+    @Query('limit') limit?: string,
   ) {
     try {
       if (!searchTerm || searchTerm.trim().length === 0) {
@@ -224,9 +256,11 @@ export class SkinController {
         }
       }
 
+      const parsedLimit = parsePositiveInt(limit) ?? 20
+
       const skins = await this.marketSkinSyncService.searchSimilarSkins(
         searchTerm.trim(),
-        limit || 20,
+        parsedLimit,
       )
 
       return {

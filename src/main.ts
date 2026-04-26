@@ -4,7 +4,7 @@ import { AppModule } from './app.module'
 import * as dotenv from 'dotenv'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
-import { Logger } from '@nestjs/common'
+import { Logger, ValidationPipe } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
 
 dotenv.config()
@@ -15,6 +15,13 @@ const logger = new Logger('Bootstrap')
 async function bootstrap() {
   try {
     const app = await NestFactory.create(AppModule)
+
+    // Tell Nest to listen for SIGINT/SIGTERM and run lifecycle hooks
+    // (`OnModuleDestroy`, `OnApplicationShutdown`). Without this, Ctrl+C in
+    // dev exits immediately without draining the TypeORM pool — leaked
+    // connections then sit `idle` on the managed Postgres server until the
+    // host evicts them, eating into the per-role connection limit.
+    app.enableShutdownHooks()
 
     const port = parseInt(process.env.PORT || '5000', 10)
     if (isNaN(port)) {
@@ -37,6 +44,24 @@ async function bootstrap() {
     const document = SwaggerModule.createDocument(app, config)
     SwaggerModule.setup('api', app, document)
 
+    // Reject unknown fields, instantiate DTO classes from JSON bodies, surface
+    // class-validator errors as 400. Modules that haven't migrated to
+    // decorator-based DTOs keep working — they just don't get the extra checks.
+    //
+    // `enableImplicitConversion` is intentionally OFF: with it on, missing
+    // query params like `?page=` arrive as `NaN` (because `Number(undefined)`
+    // is `NaN`), which silently breaks endpoints that rely on TS default
+    // values like `page: number = 1`. Per-endpoint conversion via
+    // `@Type(() => Number)` on a query DTO is the recommended pattern when
+    // numeric coercion is actually wanted.
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    )
+
     // Configure CORS with explicit origins
     app.enableCors({
       origin: '*', // Specify your frontend origins
@@ -54,43 +79,25 @@ async function bootstrap() {
       logger.log(`Server is running on ${baseUrl}`)
     })
 
-    // Graceful shutdown handling
-    // const gracefulShutdown = async (signal: string) => {
-    //   logger.log(`Received ${signal}. Starting graceful shutdown...`)
-    //   try {
-    //     // Get connection count before closing
-    //     const connectionManager = ConnectionManager.getInstance()
-    //     const connectionCount = await connectionManager.getConnectionCount()
-    //     logger.log(`Active connections before shutdown: ${connectionCount}`)
+    // Belt-and-suspenders: even with `enableShutdownHooks`, `nodemon` /
+    // `ts-node-dev` sometimes deliver a second SIGTERM before Nest finishes
+    // closing. Closing the DataSource explicitly here drains the pool so
+    // sockets get a proper FIN before the process dies.
+    const gracefulShutdown = async (signal: string): Promise<void> => {
+      logger.log(`Received ${signal}, closing app...`)
+      try {
+        await app.close()
+        await ConnectionManager.getInstance().closeConnection()
+        logger.log('Shutdown complete')
+        process.exit(0)
+      } catch (error) {
+        logger.error('Error during graceful shutdown', error)
+        process.exit(1)
+      }
+    }
 
-    //     // Close the application and all connections
-    //     await app.close()
-
-    //     // Close database connections explicitly
-    //     await connectionManager.closeConnection()
-
-    //     // Give some time for connections to close properly
-    //     await new Promise(resolve => setTimeout(resolve, 2000))
-
-    //     logger.log('Application closed successfully')
-    //     process.exit(0)
-    //   } catch (error) {
-    //     logger.error('Error during graceful shutdown:', error)
-    //     process.exit(1)
-    //   }
-    // }
-
-    // process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))
-    // process.on('SIGINT', () => gracefulShutdown('SIGINT'))
-
-    // process.on('unhandledRejection', (reason, promise) => {
-    //   logger.error('Unhandled Rejection at:', promise, 'reason:', reason)
-    // })
-
-    // process.on('uncaughtException', error => {
-    //   logger.error('Uncaught Exception:', error)
-    //   process.exit(1)
-    // })
+    process.on('SIGTERM', () => void gracefulShutdown('SIGTERM'))
+    process.on('SIGINT', () => void gracefulShutdown('SIGINT'))
   } catch (error) {
     logger.error('Failed to start application:', error)
     process.exit(1)

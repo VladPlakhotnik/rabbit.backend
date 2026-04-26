@@ -1,17 +1,32 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
+import { ThrottlerModule } from '@nestjs/throttler'
 import { UpgradeController } from './upgrade.controller'
 import { UpgradeService } from './upgrade.service'
 import { User } from '../users/user.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UserHistory } from '../userHistory/userHistory.entity'
-import { UserHistoryModule } from '../userHistory/userHistory.module'
+import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([User, CsgoSkin, UserInventory, UserHistory]),
-    UserHistoryModule,
+    TypeOrmModule.forFeature([
+      User,
+      CsgoSkin,
+      UserInventory,
+      UserHistory,
+      UpgradeHistory,
+    ]),
+    // Hard cap per IP: 10 upgrade attempts per minute. Cheap to bypass for a
+    // motivated attacker (could rotate IPs), but stops trivial spamming
+    // against a Math.random-based roll.
+    ThrottlerModule.forRoot([
+      {
+        ttl: 60000,
+        limit: 10,
+      },
+    ]),
   ],
   controllers: [UpgradeController],
   providers: [UpgradeService],

@@ -5,7 +5,21 @@ import { ConnectionManager } from './connection-manager'
 import { DataSource } from 'typeorm'
 
 /**
- * Module for setting up a database connection
+ * Module for setting up a database connection.
+ *
+ * Hosted PostgreSQL deployments (AWS RDS / managed providers) usually impose a
+ * per-role `CONNECTION LIMIT`. The previous configuration combined a pool that
+ * was reluctant to release sockets (`keepConnectionAlive: true`,
+ * `keepAlive: true`, `allowExitOnIdle: false`, `min: 1`) with a database-backed
+ * query cache that consumed an extra slot — a single dev restart leaked
+ * connections that lingered until the host evicted them, eventually starving
+ * everything else (pgAdmin, parallel processes) under the same role.
+ *
+ * The new configuration is "release-eagerly": pool size of 1..3, idle sockets
+ * closed after 5s, no OS-level TCP keep-alive, no `keepConnectionAlive` (Nest
+ * keeps the DataSource — we don't need an extra layer holding sockets), and
+ * an in-memory query cache (so the cache doesn't burn connections).
+ *
  * @module DatabaseModule
  */
 @Module({
@@ -22,47 +36,44 @@ import { DataSource } from 'typeorm'
       type: 'postgres',
       url: process.env.DATABASE_URL,
       ssl: {
-        rejectUnauthorized: false, // Allows connection to a server with a self-signed certificate
+        rejectUnauthorized: false,
       },
-      autoLoadEntities: true, // Automatically load entities
-      synchronize: false, // Only for development. Disable on production!
-      retryAttempts: 3, // Number of retry attempts
-      retryDelay: 3000, // Delay between retry attempts
-      // Connection pool configuration to prevent "too many connections" error
+      autoLoadEntities: true,
+      synchronize: false,
+      retryAttempts: 3,
+      retryDelay: 3000,
+      // Pool tuned for a managed Postgres with a low per-role CONNECTION LIMIT.
+      // Keep the footprint as small as possible and release sockets quickly so
+      // pgAdmin / parallel tools can connect under the same role.
       extra: {
-        // Pool configuration
-        max: 3, // Maximum number of connections in the pool (reduced further)
-        min: 1, // Minimum number of connections in the pool
-        idleTimeoutMillis: 30000, // Close idle connections after 30 seconds
-        connectionTimeoutMillis: 10000, // Return an error after 10 seconds if connection could not be established
-        maxUses: 10000, // Close (and replace) a connection after it has been used this many times
-        acquireTimeoutMillis: 15000, // Maximum time to wait for a connection
-        createTimeoutMillis: 15000, // Maximum time to create a connection
-        destroyTimeoutMillis: 10000, // Maximum time to destroy a connection
-        reapIntervalMillis: 2000, // How often to check for idle connections
-        createRetryIntervalMillis: 500, // How long to wait before retrying connection creation
-
-        // Pool management
-        allowExitOnIdle: false, // Don't exit when pool is idle
-        keepAlive: true, // Keep connections alive
-        keepAliveInitialDelayMillis: 0, // Start keep-alive immediately
-
-        // Connection reuse
-        statement_timeout: 30000, // 30 seconds statement timeout
-        query_timeout: 30000, // 30 seconds query timeout
-        application_name: 'droplock-backend', // Application name for connection identification
+        max: 3,
+        // Important: 0 means the pool can fully drain when idle. Setting this
+        // to 1+ keeps a dedicated socket open forever per running process and
+        // is the main reason "too many connections" recurred after dev restarts.
+        min: 0,
+        // Aggressively reap idle sockets — within 5s of being unused.
+        idleTimeoutMillis: 5000,
+        connectionTimeoutMillis: 10000,
+        acquireTimeoutMillis: 15000,
+        // Cycle each connection after a fixed number of uses so a leaked
+        // server-side state on one socket can't poison the whole pool.
+        maxUses: 7500,
+        reapIntervalMillis: 1000,
+        application_name: 'droplock-backend',
+        // Statement-level safety net so a runaway query can't park a connection
+        // for hours on the server.
+        statement_timeout: 30000,
+        query_timeout: 30000,
       },
-      // Connection options
-      connectTimeoutMS: 15000, // Give up initial connection after 15 seconds
-      logging: false, // Disable logging to reduce overhead
-      // Keep connection alive
-      keepConnectionAlive: true,
-      // Cache prepared statements
-      cache: {
-        type: 'database',
-        tableName: 'query_result_cache',
-        duration: 30000, // 30 seconds cache duration
-      },
+      connectTimeoutMS: 15000,
+      logging: false,
+      // Was `true`. Combined with `min: 1` + `keepAlive: true` it kept sockets
+      // alive across reloads and made connection leaks effectively permanent.
+      keepConnectionAlive: false,
+      // In-memory cache instead of `type: 'database'`. The DB-backed variant
+      // dedicated an extra connection slot for cache I/O, doubling the impact
+      // of every restart on the per-role connection limit.
+      cache: false,
     }),
   ],
 })
@@ -70,12 +81,11 @@ export class DatabaseModule implements OnModuleInit {
   constructor(private dataSource: DataSource) {}
 
   async onModuleInit() {
-    // Set the DataSource in ConnectionManager singleton
     const connectionManager = ConnectionManager.getInstance()
     connectionManager.setDataSource(this.dataSource)
 
-    // Log connection information
     const connectionCount = await connectionManager.getConnectionCount()
+    // eslint-disable-next-line no-console
     console.log(
       `Database module initialized. Active connections: ${connectionCount}`,
     )

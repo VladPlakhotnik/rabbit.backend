@@ -50,17 +50,58 @@ export class UserInventoryService {
     private readonly userInventoryRepository: Repository<UserInventory>,
   ) {}
 
-  async getUserInventory(userId: number): Promise<UserInventory[]> {
+  async getUserInventory(
+    userId: number,
+    filters?: {
+      search?: string
+      maxPrice?: number
+      excludeSold?: boolean
+      excludeWithdrawn?: boolean
+    },
+  ): Promise<UserInventory[]> {
     try {
       if (!userId) {
         throw new BadRequestException('User ID is required')
       }
-      const inventories = await this.userInventoryRepository.find({
-        where: { user: { id: userId } },
-        relations: ['skin'],
-        order: { obtained_at: 'DESC' },
-      })
-      return inventories
+
+      // Use a query builder so we can mix scalar filters with a `LIKE` over
+      // the joined `skin` table — `find({ where: {...} })` doesn't compose
+      // those well in TypeORM. Default behavior (no filters) still returns
+      // the full inventory so other pages keep working.
+      const query = this.userInventoryRepository
+        .createQueryBuilder('inv')
+        .leftJoinAndSelect('inv.skin', 'skin')
+        .where('inv.user_id = :userId', { userId })
+
+      if (filters?.excludeSold) {
+        query.andWhere('inv.is_sold = false')
+      }
+
+      if (filters?.excludeWithdrawn) {
+        query.andWhere('inv.is_withdrawn = false')
+      }
+
+      if (filters?.search && filters.search.trim() !== '') {
+        // Case-insensitive substring match against the most recognizable
+        // skin field (`market_hash_name`, e.g. "AK-47 | Redline").
+        query.andWhere('skin.market_hash_name ILIKE :search', {
+          search: `%${filters.search.trim()}%`,
+        })
+      }
+
+      if (
+        filters?.maxPrice !== undefined &&
+        Number.isFinite(filters.maxPrice) &&
+        filters.maxPrice > 0
+      ) {
+        query.andWhere('skin.market_price <= :maxPrice', {
+          maxPrice: filters.maxPrice,
+        })
+      }
+
+      query.orderBy('inv.obtained_at', 'DESC')
+
+      return await query.getMany()
     } catch (error: unknown) {
       this.logger.error(
         `Error getting inventory for user ${userId}: ${
@@ -72,49 +113,73 @@ export class UserInventoryService {
   }
 
   async sellSkin(inventoryId: number, userId: number): Promise<UserInventory> {
-    try {
-      if (!inventoryId || !userId) {
-        throw new BadRequestException('Inventory ID and User ID are required')
-      }
-
-      const inventoryItem = await this.userInventoryRepository.findOne({
-        where: { id: inventoryId },
-        relations: ['user', 'skin'],
-      })
-
-      if (!inventoryItem) {
-        throw new NotFoundException('Inventory item not found')
-      }
-
-      if (inventoryItem.user.id !== userId) {
-        throw new BadRequestException('You do not own this item')
-      }
-
-      if (inventoryItem.is_sold) {
-        throw new BadRequestException('Item has already been sold')
-      }
-
-      if (inventoryItem.is_withdrawn) {
-        throw new BadRequestException('Cannot sell a withdrawn item')
-      }
-
-      const user = inventoryItem.user
-      const skinPrice = inventoryItem.skin.market_price
-      user.balance = Number(user.balance) + skinPrice
-      await this.userRepository.save(user)
-
-      inventoryItem.is_sold = true
-      await this.userInventoryRepository.save(inventoryItem)
-
-      return inventoryItem
-    } catch (error: unknown) {
-      this.logger.error(
-        `Error selling skin ${inventoryId} for user ${userId}: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
-      )
-      throw error
+    if (!inventoryId || !userId) {
+      throw new BadRequestException('Inventory ID and User ID are required')
     }
+
+    // Run inside a transaction with row-level locks so a double-click on
+    // Sell can't credit the user twice. Without this, two parallel reads
+    // both see `is_sold: false` and both add the price to the balance — the
+    // first save wins on `is_sold`, but `balance` is incremented twice.
+    return this.userInventoryRepository.manager.transaction(async manager => {
+      try {
+        const user = await manager.findOne(User, {
+          where: { id: userId },
+          lock: { mode: 'pessimistic_write' },
+        })
+
+        if (!user) {
+          throw new NotFoundException('User not found')
+        }
+
+        // `setLock` with the third argument scopes `FOR UPDATE OF inv` to the
+        // inventory table only — Postgres rejects plain `FOR UPDATE` when the
+        // query joins related tables ("FOR UPDATE cannot be applied to the
+        // nullable side of an outer join").
+        const inventoryItem = await manager
+          .createQueryBuilder(UserInventory, 'inv')
+          .leftJoinAndSelect('inv.skin', 'skin')
+          .leftJoinAndSelect('inv.user', 'user')
+          .where('inv.id = :id', { id: inventoryId })
+          .setLock('pessimistic_write', undefined, ['inv'])
+          .getOne()
+
+        if (!inventoryItem) {
+          throw new NotFoundException('Inventory item not found')
+        }
+
+        if (inventoryItem.user.id !== userId) {
+          throw new BadRequestException('You do not own this item')
+        }
+
+        if (inventoryItem.is_sold) {
+          throw new BadRequestException('Item has already been sold')
+        }
+
+        if (inventoryItem.is_withdrawn) {
+          throw new BadRequestException('Cannot sell a withdrawn item')
+        }
+
+        const skinPrice = Number(inventoryItem.skin.market_price)
+        user.balance = Number(user.balance) + skinPrice
+        await manager.save(user)
+
+        inventoryItem.is_sold = true
+        // Reflect the locked-and-updated balance on the returned entity so
+        // the controller can serialize the post-sell value.
+        inventoryItem.user = user
+        await manager.save(inventoryItem)
+
+        return inventoryItem
+      } catch (error: unknown) {
+        this.logger.error(
+          `Error selling skin ${inventoryId} for user ${userId}: ${
+            error instanceof Error ? error.message : 'Unknown error'
+          }`,
+        )
+        throw error
+      }
+    })
   }
 
   async sellAllSkins(userId: number): Promise<SellAllResult> {

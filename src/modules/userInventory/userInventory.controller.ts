@@ -10,12 +10,21 @@ import {
   UnauthorizedException,
   Logger,
   Body,
+  Query,
 } from '@nestjs/common'
 import { SoldItem, UserInventoryService } from './userInventory.service'
 import { AuthGuard } from '@nestjs/passport'
 import { Request } from 'express'
 import { User } from '../users/user.entity'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger'
+
+// Coerce a query-string value to a positive float. Empty / non-numeric values
+// fall back to `undefined` so the service-side filter is skipped.
+const parsePositiveFloat = (raw: string | undefined): number | undefined => {
+  if (raw === undefined || raw === '') return undefined
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
 
 interface SellSkinResponse {
   message: string
@@ -62,15 +71,43 @@ export class UserInventoryController {
 
   constructor(private readonly userInventoryService: UserInventoryService) {}
 
-  @ApiOperation({ summary: 'Get current user inventory' })
+  @ApiOperation({
+    summary:
+      'Get current user inventory (active items only — sold and withdrawn are excluded server-side)',
+  })
   @ApiResponse({ status: 200, description: 'Return current user inventory' })
+  @ApiQuery({
+    name: 'search',
+    description: 'Substring match on skin.market_hash_name (case-insensitive)',
+    required: false,
+  })
+  @ApiQuery({
+    name: 'maxPrice',
+    description: 'Only return skins priced ≤ this value',
+    required: false,
+  })
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
-  async getMyInventory(@Req() req: Request) {
+  async getMyInventory(
+    @Req() req: Request,
+    @Query('search') search?: string,
+    @Query('maxPrice') maxPrice?: string,
+  ) {
     try {
       const user = req.user as User
+      // `/me` always returns active inventory — sold/withdrawn items aren't
+      // part of "what I have right now", and exposing those flags as query
+      // params let any caller spoof "show me everything" which is rarely
+      // what they actually want. Admin-style "full inventory" lookups go
+      // through `GET /:id` (or a future explicit admin endpoint).
       const inventories = await this.userInventoryService.getUserInventory(
         user.id,
+        {
+          search,
+          maxPrice: parsePositiveFloat(maxPrice),
+          excludeSold: true,
+          excludeWithdrawn: true,
+        },
       )
       return inventories
     } catch (error: unknown) {
