@@ -48,6 +48,18 @@ export class UpgradeHistory {
   })
   cost!: number
 
+  // Snapshot of the target skin's price at the moment of the upgrade. Stored
+  // alongside `materials` so a repriced or removed `csgo_skin` can't make a
+  // history row render the wrong number. Nullable for pre-migration rows.
+  @Column({
+    type: 'decimal',
+    precision: 10,
+    scale: 2,
+    nullable: true,
+    transformer: numericTransformer,
+  })
+  skin_price!: number | null
+
   // Whether the upgrade roll succeeded. Nullable for backwards compat with
   // pre-migration rows where this field did not exist.
   @Column({ type: 'boolean', nullable: true })

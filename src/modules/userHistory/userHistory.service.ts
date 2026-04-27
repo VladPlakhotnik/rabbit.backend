@@ -1,9 +1,18 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { In, Repository } from 'typeorm'
 import { UserHistory } from './userHistory.entity'
 import { CaseHistory } from './entities/case-history.entity'
-import { UpgradeHistory } from './entities/upgrade-history.entity'
+import {
+  UpgradeHistory,
+  UpgradeHistoryMaterial,
+} from './entities/upgrade-history.entity'
+import { UpgradeHistoryItemDto } from './dto/upgrade-history-item.dto'
+import {
+  UpgradeHistoryDetailDto,
+  UpgradeMaterialDetailDto,
+} from './dto/upgrade-history-detail.dto'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
 
 @Injectable()
 export class UserHistoryService {
@@ -14,6 +23,8 @@ export class UserHistoryService {
     private readonly caseHistoryRepository: Repository<CaseHistory>,
     @InjectRepository(UpgradeHistory)
     private readonly upgradeHistoryRepository: Repository<UpgradeHistory>,
+    @InjectRepository(CsgoSkin)
+    private readonly csgoSkinRepository: Repository<CsgoSkin>,
   ) {}
 
   async addHistory(
@@ -113,11 +124,104 @@ export class UserHistoryService {
     })
   }
 
-  async getUpgradeHistory(userId: number) {
-    return this.upgradeHistoryRepository.find({
+  // Detail view for one upgrade — powers the Figma "Результат игры" modal
+  // (node 68:31192). Snapshot-first: name / price / rarity come from the
+  // upgrade row itself (so removed catalog skins still render correctly),
+  // and `image` is JOINed live because it isn't snapshotted. NotFound when
+  // either the row doesn't exist OR it belongs to a different user — same
+  // 404 either way to avoid leaking ownership.
+  async getUpgradeHistoryDetail(
+    userId: number,
+    id: number,
+  ): Promise<UpgradeHistoryDetailDto> {
+    const row = await this.upgradeHistoryRepository.findOne({
+      where: { id, user_id: userId },
+    })
+
+    if (!row) {
+      throw new NotFoundException('Upgrade history entry not found')
+    }
+
+    const targetSkin = await this.csgoSkinRepository.findOne({
+      where: { id: row.skin_id },
+      select: ['id', 'image'],
+    })
+
+    const materials: UpgradeMaterialDetailDto[] = await this.hydrateMaterials(
+      row.materials ?? [],
+    )
+
+    const cost = Number(row.cost)
+    const skinPrice = row.skin_price != null ? Number(row.skin_price) : 0
+    const multiplier = cost > 0 ? Number((skinPrice / cost).toFixed(2)) : 0
+
+    return {
+      id: row.id,
+      cost,
+      chance: row.chance != null ? Number(row.chance) : 0,
+      skin_price: skinPrice,
+      multiplier,
+      success: row.success ?? false,
+      // Mode is null only for pre-migration rows; default to 'inventory'
+      // since balance mode landed together with the `mode` column.
+      mode: row.mode ?? 'inventory',
+      created_at: row.created_at,
+      target: {
+        id: row.skin_id,
+        name: row.skin_name,
+        rarity: row.new_rarity,
+        price: skinPrice,
+        image: targetSkin?.image ?? null,
+      },
+      materials,
+    }
+  }
+
+  // Bulk-loads images for the snapshotted materials in a single query so we
+  // don't fan out N selects for an upgrade with many materials. Skins removed
+  // from the catalog surface as `image: null` instead of breaking the row.
+  private async hydrateMaterials(
+    snapshot: readonly UpgradeHistoryMaterial[],
+  ): Promise<UpgradeMaterialDetailDto[]> {
+    if (snapshot.length === 0) return []
+
+    const skinIds = snapshot.map(m => m.skin_id)
+    const skins = await this.csgoSkinRepository.find({
+      where: { id: In(skinIds) },
+      select: ['id', 'image'],
+    })
+    const imageById = new Map(skins.map(s => [s.id, s.image]))
+
+    return snapshot.map(material => ({
+      skin_id: material.skin_id,
+      name: material.name,
+      rarity: material.rarity,
+      price: Number(material.price),
+      image: imageById.get(material.skin_id) ?? null,
+    }))
+  }
+
+  async getUpgradeHistory(userId: number): Promise<UpgradeHistoryItemDto[]> {
+    const rows = await this.upgradeHistoryRepository.find({
       where: { user_id: userId },
       order: { created_at: 'DESC' },
     })
+
+    // Map to DTO so the wire contract stays narrow. `chance`, `skin_price`,
+    // and `success` are nullable in the entity for backwards compat with
+    // pre-migration rows — collapse to safe defaults here so the frontend
+    // can type the row as fully populated. A pre-migration row therefore
+    // surfaces as a "lost upgrade" with `0` skin_price, which matches the
+    // history table's loss state.
+    return rows.map(row => ({
+      id: row.id,
+      cost: Number(row.cost),
+      chance: row.chance != null ? Number(row.chance) : 0,
+      skin_price: row.skin_price != null ? Number(row.skin_price) : 0,
+      success: row.success ?? false,
+      skin_id: row.skin_id,
+      created_at: row.created_at,
+    }))
   }
 
   // Метод для получения детальной информации по generic FK

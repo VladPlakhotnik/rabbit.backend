@@ -1,8 +1,20 @@
-import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common'
+import {
+  Controller,
+  Get,
+  Param,
+  ParseIntPipe,
+  Query,
+  UseGuards,
+  Req,
+} from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import { UserHistoryService } from './userHistory.service'
 import { Request } from 'express'
+import { UpgradeHistoryItemDto } from './dto/upgrade-history-item.dto'
+import { UpgradeHistoryDetailDto } from './dto/upgrade-history-detail.dto'
 
+@ApiTags('history')
 @Controller('history')
 export class UserHistoryController {
   constructor(private readonly userHistoryService: UserHistoryService) {}
@@ -37,11 +49,42 @@ export class UserHistoryController {
     return this.userHistoryService.getCaseHistory(req.user.id)
   }
 
+  @ApiOperation({ summary: 'Upgrade history for the current user' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Upgrade attempts (both wins and losses), most recent first. Pre-migration rows ' +
+      'surface with chance/skin_price = 0 and success = false.',
+    type: [UpgradeHistoryItemDto],
+  })
+  @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
   @UseGuards(AuthGuard('jwt'))
   @Get('me/upgrades')
-  async getMyUpgradeHistory(@Req() req: Request) {
+  async getMyUpgradeHistory(
+    @Req() req: Request,
+  ): Promise<UpgradeHistoryItemDto[]> {
     // @ts-ignore
     return this.userHistoryService.getUpgradeHistory(req.user.id)
+  }
+
+  @ApiOperation({
+    summary:
+      'Detailed view of a single upgrade — powers the "Результат игры" modal',
+  })
+  @ApiResponse({ status: 200, type: UpgradeHistoryDetailDto })
+  @ApiResponse({ status: 401, description: 'Missing or invalid JWT' })
+  @ApiResponse({
+    status: 404,
+    description: 'Upgrade not found or belongs to a different user',
+  })
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/upgrades/:id')
+  async getMyUpgradeHistoryDetail(
+    @Req() req: Request,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<UpgradeHistoryDetailDto> {
+    // @ts-ignore
+    return this.userHistoryService.getUpgradeHistoryDetail(req.user.id, id)
   }
 
   // Детальная история с полной информацией для текущего пользователя

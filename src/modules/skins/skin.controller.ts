@@ -102,6 +102,12 @@ export class SkinController {
     description: 'Filter by collection',
     required: false,
   })
+  @ApiQuery({
+    name: 'sortDir',
+    description:
+      'Sort direction by market_price: "asc" or "desc" (default: "desc")',
+    required: false,
+  })
   @Get('/')
   async getAllSkins(
     @Query('page') page?: string,
@@ -116,6 +122,7 @@ export class SkinController {
     @Query('quality') quality?: string,
     @Query('exterior') exterior?: string,
     @Query('collection') collection?: string,
+    @Query('sortDir') sortDir?: string,
   ) {
     try {
       // Query strings always arrive as `string | undefined`. Coerce to the
@@ -129,6 +136,11 @@ export class SkinController {
       const parsedInStock = parseBoolOrUndefined(inStock)
       const trimmedSearch = search && search.trim() !== '' ? search.trim() : undefined
 
+      // Whitelist sort direction — anything else falls through as undefined
+      // so the service-side default (DESC) kicks in.
+      const parsedSortDir =
+        sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined
+
       const filters = {
         inStock: parsedInStock,
         game,
@@ -140,6 +152,7 @@ export class SkinController {
         quality,
         exterior,
         collection,
+        sortDir: parsedSortDir,
       }
 
       const cleanFilters = Object.fromEntries(

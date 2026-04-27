@@ -4,11 +4,14 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common'
-import { InjectRepository } from '@nestjs/typeorm'
-import { Repository, EntityManager } from 'typeorm'
+import { InjectEntityManager } from '@nestjs/typeorm'
+import { EntityManager } from 'typeorm'
 import { User } from '../users/user.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UpgradeDto } from './dto/upgrade.dto'
+import { UpgradeResultDto } from './dto/upgrade-result.dto'
+import { UpgradeLimitsDto } from './dto/upgrade-limits.dto'
+import { UPGRADE_LIMITS } from './upgrade.constants'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import {
   UpgradeHistory,
@@ -18,10 +21,6 @@ import {
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { HistoryAction } from '../userHistory/enums/history-action.enum'
 
-const MIN_UPGRADE_AMOUNT = 1
-const MIN_SKINS_FOR_UPGRADE = 1
-const MAX_SKINS_FOR_UPGRADE = 50
-const MAX_CHANCE = 100
 const RARITY_COLUMN_LIMIT = 50
 // Sentinels stored in `old_rarity` / `new_rarity` for cases where there is no
 // real rarity to record (balance-mode source, failed roll).
@@ -29,24 +28,10 @@ const BALANCE_RARITY = 'balance'
 const FAILED_RARITY = 'failed'
 const UNKNOWN_RARITY = 'unknown'
 
-interface UpgradeResult {
-  success: boolean
-  upgraded_skin?: CsgoSkin
-  // ID of the freshly created `user_inventory` row. Frontend needs this to
-  // wire the Sell button — selling is by inventory id, not by skin id.
-  upgraded_inventory_id?: number
-  chance: number
-  // Actual random value rolled against `chance` (0..100). Frontend uses this
-  // to stop the wheel pointer at the exact percentage that came up — so a
-  // chance=50 / roll=70 attempt visibly lands on 70% in the lose zone,
-  // instead of somewhere random inside the lose arc.
-  roll: number
-  new_balance?: number
-}
-
 interface BalanceUpgradeContext {
   targetSkin: CsgoSkin
   chance: number
+  upgradeAmount: number
 }
 
 interface InventoryUpgradeContext {
@@ -60,16 +45,22 @@ interface InventoryUpgradeContext {
 export class UpgradeService {
   private readonly logger = new Logger(UpgradeService.name)
 
+  // Entire service is transactional — every read/write goes through the
+  // `manager` inside `performUpgrade.transaction(...)`. Injecting
+  // `EntityManager` (instead of a single repository) makes that explicit and
+  // documents that the service touches multiple tables (User, UserInventory,
+  // CsgoSkin, UpgradeHistory, UserHistory) without scattering repository
+  // injections that would never be used outside the transaction anyway.
   constructor(
-    @InjectRepository(User)
-    private readonly userRepository: Repository<User>,
+    @InjectEntityManager()
+    private readonly entityManager: EntityManager,
   ) {}
 
   async performUpgrade(
     userId: number,
     upgradeDto: UpgradeDto,
-  ): Promise<UpgradeResult> {
-    return this.userRepository.manager.transaction(async manager => {
+  ): Promise<UpgradeResultDto> {
+    return this.entityManager.transaction(async manager => {
       // Pessimistic write lock. Without this, two concurrent upgrades from the
       // same user can both pass the balance / inventory checks and both
       // succeed — user pays once, rolls twice.
@@ -100,7 +91,7 @@ export class UpgradeService {
         )
         targetSkin = result.targetSkin
         chance = result.chance
-        totalUsedPrice = upgradeDto.upgrade_amount ?? 0
+        totalUsedPrice = result.upgradeAmount
       } else {
         const result = await this.processInventoryUpgrade(
           manager,
@@ -134,7 +125,7 @@ export class UpgradeService {
         `upgrade userId=${userId} mode=${mode} cost=${totalUsedPrice} chance=${chance} roll=${roll} success=${isSuccess} target_skin_id=${targetSkin.id}`,
       )
 
-      return this.buildUpgradeResult(
+      return this.buildUpgradeResultDto(
         isSuccess,
         created?.skin ?? null,
         created?.inventoryId ?? null,
@@ -152,19 +143,14 @@ export class UpgradeService {
     user: User,
     upgradeDto: UpgradeDto,
   ): Promise<BalanceUpgradeContext> {
-    if (!upgradeDto.upgrade_amount) {
-      throw new BadRequestException(
-        'upgrade_amount is required when using balance',
-      )
-    }
+    // Presence + min(1) of `upgrade_amount` is enforced by the DTO via
+    // `@ValidateIf(o => o.use_balance === true)`. The non-null cast below is
+    // safe inside the `use_balance: true` branch.
+    const upgradeAmount = upgradeDto.upgrade_amount as number
 
-    if (upgradeDto.upgrade_amount < MIN_UPGRADE_AMOUNT) {
-      throw new BadRequestException(
-        `Minimum upgrade amount is ${MIN_UPGRADE_AMOUNT}`,
-      )
-    }
-
-    if (Number(user.balance) < upgradeDto.upgrade_amount) {
+    // `[MIN_AMOUNT, MAX_AMOUNT]` is enforced by the DTO via `@Min/@Max` —
+    // no need to re-check here. We only verify the user-specific constraint.
+    if (Number(user.balance) < upgradeAmount) {
       throw new BadRequestException('Insufficient balance for upgrade')
     }
 
@@ -181,23 +167,12 @@ export class UpgradeService {
       throw new BadRequestException('Target skin has invalid price')
     }
 
-    if (
-      await this.userOwnsTargetSkin(manager, userId, upgradeDto.target_skin_id)
-    ) {
-      throw new BadRequestException(
-        'You already have this skin in your inventory',
-      )
-    }
+    const chance = this.calculateChanceByPrice(upgradeAmount, targetPrice)
 
-    const chance = this.calculateChanceByPrice(
-      upgradeDto.upgrade_amount,
-      targetPrice,
-    )
-
-    user.balance = Number(user.balance) - upgradeDto.upgrade_amount
+    user.balance = Number(user.balance) - upgradeAmount
     await manager.save(user)
 
-    return { targetSkin, chance }
+    return { targetSkin, chance, upgradeAmount }
   }
 
   private async processInventoryUpgrade(
@@ -205,32 +180,11 @@ export class UpgradeService {
     userId: number,
     upgradeDto: UpgradeDto,
   ): Promise<InventoryUpgradeContext> {
-    if (
-      !upgradeDto.inventory_skin_ids ||
-      upgradeDto.inventory_skin_ids.length === 0
-    ) {
-      throw new BadRequestException(
-        'Inventory skin IDs are required when not using balance',
-      )
-    }
-
-    if (upgradeDto.inventory_skin_ids.length < MIN_SKINS_FOR_UPGRADE) {
-      throw new BadRequestException(
-        `Minimum ${MIN_SKINS_FOR_UPGRADE} skin(s) required for upgrade`,
-      )
-    }
-
-    if (upgradeDto.inventory_skin_ids.length > MAX_SKINS_FOR_UPGRADE) {
-      throw new BadRequestException(
-        `Maximum ${MAX_SKINS_FOR_UPGRADE} skins allowed for upgrade`,
-      )
-    }
-
-    if (upgradeDto.inventory_skin_ids.includes(upgradeDto.target_skin_id)) {
-      throw new BadRequestException(
-        'Target skin cannot be used as upgrade material',
-      )
-    }
+    // Presence, min/max length, uniqueness of ids, and per-element shape are
+    // enforced by the DTO via `@ValidateIf(o => o.use_balance !== true)` +
+    // `@ArrayMinSize/@ArrayMaxSize/@ArrayUnique/@IsInt/@IsPositive`. The
+    // non-null cast is safe inside the inventory branch.
+    const inventorySkinIds = upgradeDto.inventory_skin_ids as number[]
 
     // Lock the rows so no concurrent upgrade / sell / withdrawal can touch
     // them between the check and the actual remove call.
@@ -243,16 +197,14 @@ export class UpgradeService {
     const inventoryItems = await manager
       .createQueryBuilder(UserInventory, 'inv')
       .leftJoinAndSelect('inv.skin', 'skin')
-      .where('inv.id IN (:...ids)', {
-        ids: upgradeDto.inventory_skin_ids,
-      })
+      .where('inv.id IN (:...ids)', { ids: inventorySkinIds })
       .andWhere('inv.user_id = :userId', { userId })
       .andWhere('inv.is_sold = false')
       .andWhere('inv.is_withdrawn = false')
       .setLock('pessimistic_write', undefined, ['inv'])
       .getMany()
 
-    if (inventoryItems.length !== upgradeDto.inventory_skin_ids.length) {
+    if (inventoryItems.length !== inventorySkinIds.length) {
       throw new NotFoundException(
         'Some skins not found in inventory or already used',
       )
@@ -262,10 +214,23 @@ export class UpgradeService {
       (item: UserInventory) => item.skin,
     )
 
-    const uniqueSkinIds = new Set(usedSkins.map((skin: CsgoSkin) => skin.id))
-    if (uniqueSkinIds.size !== usedSkins.length) {
+    // Note: we do NOT dedupe by `csgo_skin.id` here. Two distinct
+    // `UserInventory` rows pointing to the same skin (e.g. the user owns
+    // 2× "AK-47 | Redline") are a legitimate stack and both should be
+    // usable as materials. The DTO's `@ArrayUnique` already guarantees the
+    // *inventory* ids in the request don't repeat, which is the only
+    // constraint that matters.
+
+    // Block "play a skin against itself": user can't sacrifice a copy of
+    // skin X while also picking X as the target. Compares csgo_skin.id on
+    // both sides — unlike the old `inventorySkinIds.includes(target_skin_id)`
+    // which compared UserInventory.id to CsgoSkin.id and could trigger by
+    // accident on numeric collisions. Owning another copy of the target
+    // skin (not used as material) is fine — see commit history for the
+    // dropped `userOwnsTargetSkin` check.
+    if (usedSkins.some(skin => skin.id === upgradeDto.target_skin_id)) {
       throw new BadRequestException(
-        'Cannot use multiple instances of the same skin for upgrade',
+        'Target skin cannot be used as upgrade material',
       )
     }
 
@@ -281,6 +246,20 @@ export class UpgradeService {
       0,
     )
 
+    // Σ material prices must fit the same envelope as `upgrade_amount` in
+    // balance mode. DTO can't enforce this (it doesn't know prices), so we
+    // check after summing.
+    if (totalUsedPrice < UPGRADE_LIMITS.MIN_AMOUNT) {
+      throw new BadRequestException(
+        `Total material value must be at least ${UPGRADE_LIMITS.MIN_AMOUNT}`,
+      )
+    }
+    if (totalUsedPrice > UPGRADE_LIMITS.MAX_AMOUNT) {
+      throw new BadRequestException(
+        `Total material value must not exceed ${UPGRADE_LIMITS.MAX_AMOUNT}`,
+      )
+    }
+
     const targetSkin = await manager.findOne(CsgoSkin, {
       where: { id: upgradeDto.target_skin_id },
     })
@@ -294,36 +273,11 @@ export class UpgradeService {
       throw new BadRequestException('Target skin has invalid price')
     }
 
-    if (
-      await this.userOwnsTargetSkin(manager, userId, upgradeDto.target_skin_id)
-    ) {
-      throw new BadRequestException(
-        'You already have this skin in your inventory',
-      )
-    }
-
     await manager.remove(UserInventory, inventoryItems)
 
     const chance = this.calculateChanceByPrice(totalUsedPrice, targetPrice)
 
     return { usedSkins, targetSkin, chance, totalUsedPrice }
-  }
-
-  private async userOwnsTargetSkin(
-    manager: EntityManager,
-    userId: number,
-    targetSkinId: number,
-  ): Promise<boolean> {
-    const existing = await manager.findOne(UserInventory, {
-      where: {
-        user: { id: userId },
-        skin: { id: targetSkinId },
-        is_sold: false,
-        is_withdrawn: false,
-      },
-    })
-
-    return existing !== null
   }
 
   // Returns both the boolean outcome AND the actual rolled value so the
@@ -412,6 +366,7 @@ export class UpgradeService {
       user_id: userId,
       skin_id: targetSkin.id,
       skin_name: targetSkin.market_hash_name.slice(0, 100),
+      skin_price: Number(targetSkin.market_price),
       old_rarity: oldRarity,
       new_rarity: newRarity,
       cost,
@@ -431,7 +386,7 @@ export class UpgradeService {
     await manager.save(userHistory)
   }
 
-  private buildUpgradeResult(
+  private buildUpgradeResultDto(
     isSuccess: boolean,
     upgradedSkin: CsgoSkin | null,
     upgradedInventoryId: number | null,
@@ -439,7 +394,7 @@ export class UpgradeService {
     roll: number,
     upgradeDto: UpgradeDto,
     user: User,
-  ): UpgradeResult {
+  ): UpgradeResultDto {
     return {
       success: isSuccess,
       upgraded_skin: upgradedSkin ?? undefined,
@@ -450,9 +405,11 @@ export class UpgradeService {
     }
   }
 
-  // Mirrors the frontend's `calculateWinChance`: linear ratio of used to target
-  // price, clamped to [0..100]. Downgrades (used >= target) are rejected here,
-  // matching the frontend's `MarketSection.isCardDisabled` rule.
+  // Mirrors the frontend's `calculateWinChance`: linear ratio of used to
+  // target price, then bounded by `[MIN_CHANCE, MAX_CHANCE]`. Both edges
+  // throw 400 — out-of-bounds targets are filtered out on the frontend
+  // already (`MarketSection.isCardDisabled`), so reaching this branch means
+  // either a stale UI or a hand-crafted request.
   private calculateChanceByPrice(
     usedPrice: number,
     targetPrice: number,
@@ -465,15 +422,31 @@ export class UpgradeService {
       throw new BadRequestException('Used price must be greater than zero')
     }
 
-    if (usedPrice >= targetPrice) {
+    const rawChance = (usedPrice / targetPrice) * 100
+    const chance = Math.round(rawChance * 100) / 100
+
+    if (chance < UPGRADE_LIMITS.MIN_CHANCE) {
       throw new BadRequestException(
-        'Target skin must be more expensive than the upgrade material',
+        `Chance ${chance}% is below the minimum allowed (${UPGRADE_LIMITS.MIN_CHANCE}%) — pick a cheaper target`,
+      )
+    }
+    if (chance > UPGRADE_LIMITS.MAX_CHANCE) {
+      throw new BadRequestException(
+        `Chance ${chance}% is above the maximum allowed (${UPGRADE_LIMITS.MAX_CHANCE}%) — pick a more expensive target`,
       )
     }
 
-    const chance = (usedPrice / targetPrice) * MAX_CHANCE
-    const clamped = Math.min(MAX_CHANCE, Math.max(0, chance))
+    return chance
+  }
 
-    return Math.round(clamped * 100) / 100
+  getLimits(): UpgradeLimitsDto {
+    return {
+      min_chance: UPGRADE_LIMITS.MIN_CHANCE,
+      max_chance: UPGRADE_LIMITS.MAX_CHANCE,
+      min_amount: UPGRADE_LIMITS.MIN_AMOUNT,
+      max_amount: UPGRADE_LIMITS.MAX_AMOUNT,
+      min_materials: UPGRADE_LIMITS.MIN_MATERIALS,
+      max_materials: UPGRADE_LIMITS.MAX_MATERIALS,
+    }
   }
 }

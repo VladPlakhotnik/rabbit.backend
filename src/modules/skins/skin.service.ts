@@ -582,6 +582,7 @@ export class SkinService {
       quality?: string
       exterior?: string
       collection?: string
+      sortDir?: 'asc' | 'desc'
     },
   ): Promise<{
     skins: CsgoSkin[]
@@ -711,8 +712,11 @@ export class SkinService {
       }
     }
 
-    // Order by price descending
-    queryBuilder.orderBy('skin.market_price', 'DESC')
+    // Order by price — default DESC (cheapest-last); the upgrade page flips
+    // to ASC when the user has selected source materials so the closest-to-
+    // affordable targets show first.
+    const orderDir = filters?.sortDir === 'asc' ? 'ASC' : 'DESC'
+    queryBuilder.orderBy('skin.market_price', orderDir)
 
     // Apply pagination
     queryBuilder.skip((page - 1) * limit).take(limit)
