@@ -2,6 +2,8 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  forwardRef,
+  Inject,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
@@ -14,6 +16,7 @@ import { PromoCodeReward, RewardType } from './entities/promoCodeReward.entity'
 import { User } from '../users/user.entity'
 import { UserService } from '../users/users.service'
 import { UserBonusService } from '../userBonuses/userBonus.service'
+import { PartnerService } from '../partners/partner.service'
 import { UpdatePromoCodeDto } from './promoCode.controller'
 
 @Injectable()
@@ -25,6 +28,8 @@ export class PromoCodeService {
     private promoCodeRewardRepository: Repository<PromoCodeReward>,
     private readonly userService: UserService,
     private readonly userBonusService: UserBonusService,
+    @Inject(forwardRef(() => PartnerService))
+    private readonly partnerService: PartnerService,
   ) {}
 
   async findAll(): Promise<PromoCode[]> {
@@ -34,10 +39,12 @@ export class PromoCodeService {
   }
 
   async findByCode(code: string): Promise<PromoCode> {
-    const promoCode = await this.promoCodeRepository.findOne({
-      where: { code },
-      relations: ['rewards'],
-    })
+    const promoCode = await this.promoCodeRepository
+      .createQueryBuilder('p')
+      .leftJoinAndSelect('p.rewards', 'rewards')
+      .leftJoinAndSelect('p.created_by', 'created_by')
+      .where('UPPER(p.code) = UPPER(:code)', { code })
+      .getOne()
 
     if (!promoCode) {
       throw new NotFoundException('Promo code not found')
@@ -165,6 +172,12 @@ export class PromoCodeService {
       throw new NotFoundException('User not found')
     }
 
+    // Реферальные коды: привязываем родителя. Денежные награды (если когда-то добавим)
+    // обрабатываются ниже общим путём.
+    if (promoCode.type === PromoCodeType.REFERRAL) {
+      await this.partnerService.attachReferralParent(userId, promoCode.code)
+    }
+
     // Обрабатываем каждую награду
     const results = []
     for (const reward of promoCode.rewards) {
@@ -201,11 +214,13 @@ export class PromoCodeService {
       }
     }
 
-    await this.userBonusService.createPromoBonus(
-      userId,
-      promoCode.id,
-      promoCode.expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000),
-    )
+    if (results.length > 0) {
+      await this.userBonusService.createPromoBonus(
+        userId,
+        promoCode.id,
+        promoCode.expires_at || new Date(Date.now() + 24 * 60 * 60 * 1000),
+      )
+    }
 
     // Увеличиваем счетчик использований
     promoCode.current_uses++
