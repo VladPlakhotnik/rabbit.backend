@@ -16,6 +16,9 @@ import { UserService } from '../users/users.service'
 import { UserInventoryService } from '../userInventory/userInventory.service'
 import { UserHistoryService } from '../userHistory/userHistory.service'
 import { HistoryAction } from '../userHistory/enums/history-action.enum'
+import { LiveDropsService } from '../liveDrops/liveDrops.service'
+import type { LiveDropPayload } from '../liveDrops/types'
+import { User } from '../users/user.entity'
 
 interface TicketRange {
   skinCase: SkinCase
@@ -36,7 +39,67 @@ export class CaseService {
     private readonly provablyFairService: ProvablyFairService,
     private readonly userInventoryService: UserInventoryService,
     private readonly userHistoryService: UserHistoryService,
+    private readonly liveDropsService: LiveDropsService,
   ) {}
+
+  /**
+   * Publish a real (non-bot) drop to the LiveDrop feed.
+   *
+   * Takes a pre-loaded `user` instead of fetching it inside — for a
+   * `count=5` multi-open this turns 5 redundant SELECTs into 1. Caller is
+   * expected to pass null if the user lookup failed; we'll fall back to a
+   * generated handle so the feed entry still publishes.
+   *
+   * Errors here must not break the case-opening flow — pushDrop swallows
+   * Redis failures internally, so the worst case is a missing feed entry.
+   */
+  private async publishLiveDrop(
+    winner: SkinCase,
+    caseEntity: Case,
+    userId: number,
+    user: User | null,
+  ): Promise<void> {
+    const username = user?.display_name || `Player${userId}`
+    const avatar = user?.avatar || null
+
+    const payload: LiveDropPayload = {
+      id: crypto.randomUUID(),
+      user: { id: userId, username, avatar },
+      skin: {
+        id: winner.skin.id,
+        name: winner.skin.name,
+        market_hash_name: winner.skin.market_hash_name,
+        image: winner.skin.image,
+        market_price: winner.skin.market_price,
+        quality: winner.skin.quality,
+        name_color: winner.skin.name_color,
+        background_color: winner.skin.background_color,
+      },
+      case: {
+        id: caseEntity.id,
+        slug: caseEntity.slug,
+        name: caseEntity.name,
+        img_url: caseEntity.img_url,
+      },
+      isBot: false,
+      ts: Date.now(),
+    }
+
+    await this.liveDropsService.pushDrop(payload)
+  }
+
+  /**
+   * Best-effort user lookup for LiveDrop publishing. Wrapped so a failure
+   * here can never propagate up and abort openCase — feed enrichment is
+   * cosmetic, the case opening itself is the user's intent.
+   */
+  private async loadUserForLiveDrop(userId: number): Promise<User | null> {
+    try {
+      return await this.userService.findById(userId)
+    } catch {
+      return null
+    }
+  }
 
   async findAll(): Promise<Case[]> {
     return this.caseRepository.find({
@@ -181,83 +244,37 @@ export class CaseService {
       throw new BadRequestException('Count must be between 1 and 5')
     }
 
-    // Если открываем один кейс
-    if (count === 1) {
-      // Проверка баланса и списание средств
-      await this.userService.validateAndDeductBalance(
-        userId,
-        caseEntity.case_price,
-      )
-
-      // Получение доступных скинов
-      const skinCases = await this.getAvailableSkins(caseId)
-
-      const clientSeed = crypto.randomBytes(32).toString('hex')
-
-      const provablyFair = await this.provablyFairService.generateSeed(
-        userId,
-        clientSeed,
-        GameType.CASE,
-      )
-
-      // Генерация случайного числа
-      const randomNumber = this.provablyFairService.generateRandomNumber(
-        clientSeed,
-        provablyFair.server_seed,
-      )
-
-      // Подготовка и выбор победителя
-      const ticketRanges = this.prepareTicketRanges(skinCases)
-      const winner = this.selectWinner(ticketRanges, randomNumber)
-
-      // Создание записи в инвентаре
-      const inventory = await this.userInventoryService.createInventory(
-        userId,
-        winner.skin,
-        caseEntity,
-      )
-
-      // Помечаем сид как использованный
-      await this.provablyFairService.markSeedAsUsed(provablyFair.id)
-
-      await this.userHistoryService.openCase(
-        userId,
-        caseId,
-        caseEntity.name,
-        caseEntity.case_price,
-        caseEntity.img_url,
-        provablyFair.server_seed,
-        winner.skin?.id,
-        winner.skin?.image,
-        winner.skin?.market_price,
-      )
-
-      return {
-        results: [
-          {
-            winner,
-            inventory,
-            game_id: provablyFair.id,
-          },
-        ],
-        totalCost: caseEntity.case_price,
-      }
-    }
-
-    // Если открываем несколько кейсов
     const totalCost = caseEntity.case_price * count
 
-    // Проверка баланса и списание средств
+    // Проверка баланса и списание средств — один раз на всё событие.
     await this.userService.validateAndDeductBalance(userId, totalCost)
 
-    const results = []
+    // Single user lookup reused for all LiveDrop publishes in this call.
+    // Loaded eagerly so the feed entry doesn't add latency to the
+    // openCase response.
+    const userPromise = this.loadUserForLiveDrop(userId)
 
-    // Открываем указанное количество кейсов
+    const results: Array<{
+      winner: SkinCase
+      inventory: UserInventory
+      game_id: number
+    }> = []
+    // Drops are accumulated across the loop and persisted as one history
+    // row at the end — that's the whole point of this refactor.
+    const historyDrops: Array<{
+      skin_id?: number
+      skin_name?: string
+      skin_img?: string
+      skin_price?: number
+      server_seed?: string
+    }> = []
+
     for (let i = 0; i < count; i++) {
       // Получение доступных скинов
       const skinCases = await this.getAvailableSkins(caseId)
 
-      // Генерация уникального сида для каждого кейса
+      // Каждый дроп получает свой clientSeed/serverSeed — провабли-фейр
+      // верификация работает per-drop даже внутри одного события.
       const clientSeed = crypto.randomBytes(32).toString('hex')
 
       const provablyFair = await this.provablyFairService.generateSeed(
@@ -266,44 +283,54 @@ export class CaseService {
         GameType.CASE,
       )
 
-      // Генерация случайного числа
       const randomNumber = this.provablyFairService.generateRandomNumber(
         clientSeed,
         provablyFair.server_seed,
       )
 
-      // Подготовка и выбор победителя
       const ticketRanges = this.prepareTicketRanges(skinCases)
       const winner = this.selectWinner(ticketRanges, randomNumber)
 
-      // Создание записи в инвентаре
       const inventory = await this.userInventoryService.createInventory(
         userId,
         winner.skin,
         caseEntity,
       )
 
-      // Помечаем сид как использованный
       await this.provablyFairService.markSeedAsUsed(provablyFair.id)
 
-      // Записываем в историю
-      await this.userHistoryService.openCase(
-        userId,
-        caseId,
-        caseEntity.name,
-        caseEntity.case_price,
-        caseEntity.img_url,
-        provablyFair.server_seed,
-        winner.skin?.id,
-        winner.skin?.image,
-        winner.skin?.market_price,
-      )
+      historyDrops.push({
+        skin_id: winner.skin?.id,
+        skin_name: winner.skin?.market_hash_name,
+        skin_img: winner.skin?.image,
+        skin_price: winner.skin?.market_price,
+        server_seed: provablyFair.server_seed,
+      })
 
       results.push({
         winner,
         inventory,
         game_id: provablyFair.id,
       })
+    }
+
+    // One history row per event — replaces the previous one-row-per-drop
+    // pattern. For a count=5 multi-open this is now 1 INSERT instead of 5.
+    await this.userHistoryService.openCase(
+      userId,
+      caseId,
+      caseEntity.name,
+      caseEntity.case_price,
+      caseEntity.img_url,
+      historyDrops,
+    )
+
+    // LiveDrop is still per-drop — the feed should reflect each box
+    // landing, not collapse a multi-open into one card. publishLiveDrop
+    // resolves the user once via the shared promise.
+    const user = await userPromise
+    for (const result of results) {
+      await this.publishLiveDrop(result.winner, caseEntity, userId, user)
     }
 
     return {

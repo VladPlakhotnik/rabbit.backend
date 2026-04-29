@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { In, Repository } from 'typeorm'
 import { UserHistory } from './userHistory.entity'
-import { CaseHistory } from './entities/case-history.entity'
+import { CaseHistory, CaseHistoryDrop } from './entities/case-history.entity'
 import {
   UpgradeHistory,
   UpgradeHistoryMaterial,
@@ -42,28 +42,43 @@ export class UserHistoryService {
     return this.userHistoryRepository.save(history)
   }
 
+  /**
+   * Records one open-case *event* (1..N boxes opened atomically).
+   *
+   * The whole event is a single row — `drops` carries the per-box
+   * results in a JSONB array. Legacy single-skin columns are populated
+   * from the first drop for backward compatibility with anything still
+   * reading the old shape; new readers should consume `drops`.
+   */
   async openCase(
     userId: number,
     caseId: number,
     caseName: string,
     casePrice: number,
-    caseImg?: string,
-    serverSeed?: string,
-    skinId?: number,
-    skinImg?: string,
-    skinPrice?: number,
+    caseImg: string | undefined,
+    drops: CaseHistoryDrop[],
   ) {
-    // Сохраняем детальную информацию в case_history
+    const totalDrops = drops.length
+    const totalCost = casePrice * totalDrops
+    // Mirror first drop into legacy columns so any reader that hasn't
+    // migrated to `drops[]` still gets a sensible single-skin view of
+    // the event (preview image, last server_seed, etc.).
+    const first = drops[0]
+
     const caseHistory = this.caseHistoryRepository.create({
       user_id: userId,
       case_id: caseId,
       case_name: caseName,
       case_price: casePrice,
       case_img: caseImg,
-      server_seed: serverSeed,
-      skin_id: skinId,
-      skin_img: skinImg,
-      skin_price: skinPrice,
+      total_drops: totalDrops,
+      total_cost: totalCost,
+      drops,
+      server_seed: first?.server_seed,
+      skin_id: first?.skin_id,
+      skin_img: first?.skin_img,
+      skin_price: first?.skin_price,
+      skin_name: first?.skin_name,
     })
     const savedCaseHistory = await this.caseHistoryRepository.save(caseHistory)
 

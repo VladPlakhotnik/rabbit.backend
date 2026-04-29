@@ -14,6 +14,8 @@ import { Roles } from '../../core/decorators/roles.decorator'
 import { AuthGuard } from '@nestjs/passport'
 import { RolesGuard } from '../../core/guards/roles.guard'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { Throttle } from '@nestjs/throttler'
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 import { User } from '../users/user.entity'
 
 /**
@@ -21,6 +23,10 @@ import { User } from '../users/user.entity'
  * @class CaseController
  */
 
+// Apply rate limiting to every method. Per-user (or per-IP for anonymous)
+// limits come from CaseModule's ThrottlerModule.forRoot — see there for
+// defaults. Specific methods can override with @Throttle.
+@UseGuards(UserThrottlerGuard)
 @ApiTags('cases')
 @Controller('cases')
 export class CaseController {
@@ -45,6 +51,11 @@ export class CaseController {
 
   @ApiOperation({ summary: 'Open case(s) by slug' })
   @ApiResponse({ status: 200, description: 'Return opened case(s)' })
+  // Burst protection on a money-spending endpoint. Allows ~5 opens/sec
+  // (handles the user spamming the open button) while blocking automated
+  // 100/sec floods. Each open also publishes a LiveDrop, so this doubles
+  // as protection for the feed against a single client flooding it.
+  @Throttle({ default: { ttl: 1_000, limit: 5 } })
   @UseGuards(AuthGuard('jwt'))
   @Post(':slug/open')
   async openCaseBySlug(

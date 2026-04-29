@@ -13,13 +13,13 @@ import { ProvablyFairService } from './provably-fair.service'
 import { Request } from 'express'
 import { User } from '../users/user.entity'
 import { AuthGuard } from '@nestjs/passport'
-import { ThrottlerGuard } from '@nestjs/throttler'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { GameType } from './enums/game-type.enum'
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 
 @ApiTags('provably-fair')
 @Controller('provably-fair')
-@UseGuards(ThrottlerGuard)
+@UseGuards(UserThrottlerGuard)
 export class ProvablyFairController {
   constructor(private readonly provablyFairService: ProvablyFairService) {}
 

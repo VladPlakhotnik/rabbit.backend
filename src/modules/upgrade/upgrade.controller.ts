@@ -9,17 +9,17 @@ import {
 } from '@nestjs/common'
 import { Request } from 'express'
 import { AuthGuard } from '@nestjs/passport'
-import { ThrottlerGuard } from '@nestjs/throttler'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { UpgradeService } from './upgrade.service'
 import { UpgradeDto } from './dto/upgrade.dto'
 import { UpgradeResultDto } from './dto/upgrade-result.dto'
 import { UpgradeLimitsDto } from './dto/upgrade-limits.dto'
 import { User } from '../users/user.entity'
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 
 @ApiTags('upgrade')
 @Controller('upgrade')
-@UseGuards(ThrottlerGuard)
+@UseGuards(UserThrottlerGuard)
 export class UpgradeController {
   constructor(private readonly upgradeService: UpgradeService) {}
 
