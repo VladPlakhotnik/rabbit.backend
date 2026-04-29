@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common'
 import { DatabaseModule } from './core/database/database.module'
+import { RedisModule } from './core/redis/redis.module'
+import { PresenceModule } from './core/presence/presence.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { UserModule } from './modules/users/users.module'
 import { CaseModule } from './modules/cases/case.module'
@@ -27,6 +29,8 @@ import { NewsModule } from './modules/news/news.module'
 @Module({
   imports: [
     DatabaseModule,
+    RedisModule,
+    PresenceModule,
     AuthModule,
     UserModule,
     SectionModule,

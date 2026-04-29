@@ -1,23 +1,40 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: rabbit-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: rabbit-backend
     ports:
       - '5000:5000'
     volumes:
       - .:/app
       - /app/node_modules
+    env_file:
+      - .env
     environment:
       - NODE_ENV=development
       - PORT=5000
       - BASE_URL=http://localhost:5000
       - FRONTEND_URL=http://localhost:3000
-      - JWT_SECRET=c8acebea15bea92d11329f81af72540370ec578d7e010d3934a81b6139ed8c17240ebc075a667985fd0e385fc766ddd7606d7146218b90a1048d64419e02a323
-      - DATABASE_URL=postgres://uf4g4cphgq8hkv:p2f1eb6ffe1d2250b61c873cd5a68c85394ba61668bb7d0aca5e57eb7de30610a@c7lolh640htr57.cluster-czz5s0kz4scl.eu-west-1.rds.amazonaws.com:5432/d4sd6t86qkh6dr
-      - STEAM_API_KEY=4C7DF8B10C4C11DEF164E81518423B6E
-      - STRIPE_SECRET_KEY=sk_test_51QRnQiDYLLmleiKQbOfdXsiTtUDdCZdlJFLviC5UHtM9IiFkdxpNIvchHhfBRnPW4WN2FEJqejQ9iwJZRc6QmqG600EzM2lNXM
-      - MARKET_CSGO_API_KEY=EI4F14k374Ff4l6YMJtgIDqIlNSV69v
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -34,3 +51,6 @@ services:
       start_period: 40s
     restart: unless-stopped
     command: yarn dev
+
+volumes:
+  redis_data:

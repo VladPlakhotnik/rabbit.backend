@@ -1,13 +1,20 @@
+// MUST be first — populates process.env before any other module reads it
+// at import time (CORS allowlist, gateway config, etc.).
+import './core/config/load-env'
 import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
-import * as dotenv from 'dotenv'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
+import helmet from 'helmet'
 import { Logger, ValidationPipe } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
+import { getCorsOrigins } from './core/config/cors'
+import { validateEnv } from './core/config/validate-env'
 
-dotenv.config()
+// Crash early on a misconfigured environment. Better than serving 500s
+// on the first request that needs the missing variable.
+validateEnv()
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '')
 const logger = new Logger('Bootstrap')
@@ -44,6 +51,16 @@ async function bootstrap() {
     const document = SwaggerModule.createDocument(app, config)
     SwaggerModule.setup('api', app, document)
 
+    // Sets a baseline of security headers on every response. CSP is left to
+    // the SPA frontend (different origin), and crossOriginEmbedderPolicy is
+    // off so Swagger UI keeps loading its bundled assets.
+    app.use(
+      helmet({
+        contentSecurityPolicy: false,
+        crossOriginEmbedderPolicy: false,
+      }),
+    )
+
     // Reject unknown fields, instantiate DTO classes from JSON bodies, surface
     // class-validator errors as 400. Modules that haven't migrated to
     // decorator-based DTOs keep working — they just don't get the extra checks.
@@ -62,9 +79,14 @@ async function bootstrap() {
       }),
     )
 
-    // Configure CORS with explicit origins
+    // Origin is locked to the env-driven allowlist (see core/config/cors.ts).
+    // Methods/headers stay permissive — the security boundary is the origin
+    // check, not header surface. `credentials: true` works correctly now
+    // that origin is no longer "*" (the spec forbids that combination).
+    const corsOrigins = getCorsOrigins()
+    logger.log(`CORS allowlist: ${corsOrigins.join(', ')}`)
     app.enableCors({
-      origin: '*', // Specify your frontend origins
+      origin: corsOrigins,
       methods: '*',
       credentials: true,
       allowedHeaders: '*',
