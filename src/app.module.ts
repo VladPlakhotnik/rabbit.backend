@@ -26,6 +26,7 @@ import { MinesModule } from './modules/mines/mines.module'
 import { GiveawaysModule } from './modules/giveaways/giveaways.module'
 import { NewsModule } from './modules/news/news.module'
 import { PartnerModule } from './modules/partners/partner.module'
+import { StatsModule } from './modules/stats/stats.module'
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { PartnerModule } from './modules/partners/partner.module'
     GiveawaysModule,
     NewsModule,
     PartnerModule,
+    StatsModule,
     // TO DO
     // PaymentModule,
   ],
