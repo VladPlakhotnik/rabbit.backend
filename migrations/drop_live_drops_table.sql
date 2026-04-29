@@ -1,0 +1,12 @@
+-- Drop the legacy `live_drops` table.
+--
+-- The LiveDrop feed moved to Redis (see liveDrops.service.ts: LPUSH +
+-- LTRIM keeps the last 15 drops in `livedrop:feed`, fan-out via Pub/Sub
+-- on `livedrop:new`). The Postgres table stopped being written to when
+-- liveDrops.module.ts removed its TypeOrmModule.forFeature registration,
+-- so this table now just holds historical noise from the previous
+-- implementation.
+--
+-- Safe to drop: no entity references it, no service reads from it, and
+-- nothing in the new flow falls back to it.
+DROP TABLE IF EXISTS live_drops;
