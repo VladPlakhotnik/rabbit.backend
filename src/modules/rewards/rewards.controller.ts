@@ -17,30 +17,25 @@ import { User } from '../users/user.entity'
 export class RewardsController {
   constructor(private readonly rewardsService: RewardsService) {}
 
-  @ApiOperation({ summary: 'Check if spin is available' })
-  @ApiResponse({ status: 200, description: 'Returns spin availability' })
+  @ApiOperation({ summary: 'Get bonus wheel spin status (cooldown + last spin)' })
+  @ApiResponse({ status: 200, description: 'Returns spin status' })
   @UseGuards(AuthGuard('jwt'))
   @Get('check-spin')
   async checkCanSpin(@Req() req: Request & { user?: User }) {
     if (!req.user) {
       throw new UnauthorizedException('User not authenticated')
     }
-    const canSpin = await this.rewardsService.canUserSpin(req.user.id)
-    return { canSpin }
+    return this.rewardsService.getSpinStatus(req.user.id)
   }
 
-  @ApiOperation({ summary: 'Spin the wheel' })
-  @ApiResponse({ status: 200, description: 'Returns the reward' })
+  @ApiOperation({ summary: 'Spin the bonus wheel' })
+  @ApiResponse({ status: 200, description: 'Returns the won reward + sector index' })
   @UseGuards(AuthGuard('jwt'))
   @Post('spin')
   async spin(@Req() req: Request & { user?: User }) {
     if (!req.user) {
       throw new UnauthorizedException('User not authenticated')
     }
-    const reward = await this.rewardsService.spin(req.user.id)
-    return {
-      message: 'Spin successful',
-      reward,
-    }
+    return this.rewardsService.spin(req.user.id)
   }
 }

@@ -1,5 +1,8 @@
 export enum RewardType {
-  ITEM = 'ITEM',
   CODE = 'CODE',
-  MONEY = 'MONEY',
+  CASE = 'CASE',
+  CASHBACK = 'CASHBACK',
+  RESPIN = 'RESPIN',
+  ITEM = 'ITEM',
+  BALANCE = 'BALANCE',
 }
