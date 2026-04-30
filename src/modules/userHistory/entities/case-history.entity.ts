@@ -8,11 +8,18 @@ import {
 // Per-drop record stored inside the `drops` JSONB array. One open-case
 // event can carry 1..N of these (multi-open ×5 produces 5 entries in
 // one row instead of 5 rows).
+//
+// `game_type` discriminates which catalog `skin_id` references —
+// csgo_skins.id vs dota_skins.id. A multi-open event is currently
+// always one game (the case has a single game_type), so all drops in
+// the array share the same value, but the field lives per-drop to
+// keep the JSON self-describing for ad-hoc queries.
 export interface CaseHistoryDrop {
   skin_id?: number
   skin_name?: string
   skin_img?: string
   skin_price?: number
+  game_type?: 'csgo' | 'dota'
   // Per-drop seed kept here so provably-fair verification still works on
   // a single drop within a multi-open event.
   server_seed?: string
@@ -31,6 +38,14 @@ export class CaseHistory {
 
   @Column({ type: 'varchar', length: 100 })
   case_name!: string
+
+  // Discriminator for the case's game (csgo / dota). Mirrors
+  // cases.game_type at the moment of opening; not a FK, so future
+  // schema changes to cases don't propagate here. Defaults 'csgo' for
+  // backwards-compat with rows written before the polymorphic_user_history
+  // migration.
+  @Column({ type: 'varchar', length: 16, default: 'csgo' })
+  game_type!: 'csgo' | 'dota'
 
   // Per-case price (i.e. one box). Total spent on this event is
   // `case_price * total_drops` and is also denormalised below.

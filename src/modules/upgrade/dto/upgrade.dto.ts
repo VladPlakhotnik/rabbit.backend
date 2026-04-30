@@ -5,6 +5,7 @@ import {
   ArrayUnique,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
   IsNumber,
   IsOptional,
@@ -14,6 +15,8 @@ import {
   ValidateIf,
 } from 'class-validator'
 import { UPGRADE_LIMITS } from '../upgrade.constants'
+
+export type UpgradeGameType = 'csgo' | 'dota'
 
 // Mode-specific shape: in inventory mode `inventory_skin_ids` is required;
 // in balance mode `upgrade_amount` is required. `@ValidateIf` makes class-
@@ -63,4 +66,15 @@ export class UpgradeDto {
   @Min(UPGRADE_LIMITS.MIN_AMOUNT)
   @Max(UPGRADE_LIMITS.MAX_AMOUNT)
   upgrade_amount?: number
+
+  @ApiProperty({
+    description:
+      'Игра, к которой относятся скины: "csgo" или "dota". Все материалы (если режим инвентаря) должны быть из этой игры; target_skin_id ищется в соответствующем каталоге (csgo_skins или dota_skins).',
+    enum: ['csgo', 'dota'],
+    example: 'csgo',
+    default: 'csgo',
+  })
+  @IsOptional()
+  @IsIn(['csgo', 'dota'])
+  game_type?: UpgradeGameType
 }

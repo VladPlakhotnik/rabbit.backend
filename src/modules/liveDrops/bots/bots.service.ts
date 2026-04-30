@@ -5,10 +5,12 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { Repository, In } from 'typeorm'
 import * as crypto from 'crypto'
 import { Case } from '../../cases/case.entity'
 import { SkinCase } from '../../skinCase/skinCase.entity'
+import { CsgoSkin } from '../../skins/csgo-skin.entity'
+import { DotaSkin } from '../../skins/dota-skin.entity'
 import { LiveDropsService } from '../liveDrops.service'
 import type { LiveDropPayload } from '../types'
 import { BOT_NAMES } from './bot-names'
@@ -46,6 +48,17 @@ const PRICE_BOOST_JACKPOT = 5
 const PRICE_BOOST_MIDDLE = 2
 const PRICE_BOOST_COMMON = 1
 
+// Per-game probability the bot picks from. Tuned to mirror the real
+// CS-vs-Dota audience split — currently CS dominates traffic, so
+// fake feed activity should reflect that. If both pools have cases
+// available, a uniform random over `cases` would over-represent
+// whichever has more cases configured; the explicit weights here
+// decouple feed mix from catalog size. Values must sum to 1.
+const GAME_PICK_WEIGHTS: Record<'csgo' | 'dota', number> = {
+  csgo: 0.9,
+  dota: 0.1,
+}
+
 const sleep = (ms: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, ms))
 
@@ -71,6 +84,8 @@ export class LiveDropBotsService
     private readonly caseRepository: Repository<Case>,
     @InjectRepository(SkinCase)
     private readonly skinCaseRepository: Repository<SkinCase>,
+    @InjectRepository(DotaSkin)
+    private readonly dotaSkinRepository: Repository<DotaSkin>,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -126,28 +141,80 @@ export class LiveDropBotsService
     return cases
   }
 
+  /**
+   * Pick a random case for the next bot drop, with a configurable
+   * CS-vs-Dota split.
+   *
+   * Roll a game first (90/10 weighted), then pick uniformly within
+   * that game's case pool. This keeps the feed mix independent of
+   * catalog size — adding 50 Dota cases doesn't suddenly skew the
+   * feed toward Dota.
+   *
+   * Falls back gracefully:
+   *   - If the rolled game has no available cases, switch to the other.
+   *   - If neither game has cases, return null (caller skips this tick).
+   */
   private async pickRandomCase(): Promise<Case | null> {
     const cases = await this.getCachedCases()
     if (cases.length === 0) return null
-    return cases[Math.floor(Math.random() * cases.length)]
+
+    const csgoCases = cases.filter(c => c.game_type === 'csgo')
+    const dotaCases = cases.filter(c => c.game_type === 'dota')
+
+    const rolled: 'csgo' | 'dota' =
+      Math.random() < GAME_PICK_WEIGHTS.csgo ? 'csgo' : 'dota'
+
+    // Primary pool first, fall back to the other if it's empty.
+    const primary = rolled === 'csgo' ? csgoCases : dotaCases
+    const fallback = rolled === 'csgo' ? dotaCases : csgoCases
+    const pool = primary.length > 0 ? primary : fallback
+
+    if (pool.length === 0) return null
+    return pool[Math.floor(Math.random() * pool.length)]
   }
 
-  private async loadSkinCases(caseId: number): Promise<SkinCase[]> {
+  private async loadSkinCases(caseEntity: Case): Promise<SkinCase[]> {
     const now = Date.now()
-    const cached = this.skinCasesCache.get(caseId)
+    const cached = this.skinCasesCache.get(caseEntity.id)
     if (cached && now - cached.loadedAt < CASE_CACHE_TTL_MS) {
       return cached.skinCases
     }
 
     const all = await this.skinCaseRepository.find({
-      where: { case: { id: caseId }, is_drop_out: true },
+      where: { case: { id: caseEntity.id }, is_drop_out: true },
       relations: ['skin'],
     })
-    // Defensive — `skin` is nullable in the schema, and a NULL would crash
-    // the payload builder. Filter rather than throw.
+
+    // Polymorphism: SkinCase.@ManyToOne resolves only against
+    // csgo_skins, so for Dota cases the JOIN comes back null. Hydrate
+    // those rows from dota_skins manually. See case.service.ts for
+    // the same pattern.
+    if (caseEntity.game_type === 'dota') {
+      const missing = all
+        .filter(sc => !sc.skin && sc.skin_hash_name)
+        .map(sc => sc.skin_hash_name as string)
+
+      if (missing.length > 0) {
+        const dotaSkins = await this.dotaSkinRepository.find({
+          where: { market_hash_name: In(missing) },
+        })
+        const byHashName = new Map(
+          dotaSkins.map(s => [s.market_hash_name, s]),
+        )
+        for (const sc of all) {
+          if (!sc.skin && sc.skin_hash_name) {
+            const dotaSkin = byHashName.get(sc.skin_hash_name)
+            if (dotaSkin) sc.skin = dotaSkin as unknown as CsgoSkin
+          }
+        }
+      }
+    }
+
+    // Defensive — drop rows whose skin still couldn't be resolved (e.g.
+    // legacy data with a hash_name pointing to a now-deleted skin).
     const skinCases = all.filter(sc => sc.skin != null)
 
-    this.skinCasesCache.set(caseId, { skinCases, loadedAt: now })
+    this.skinCasesCache.set(caseEntity.id, { skinCases, loadedAt: now })
     return skinCases
   }
 
@@ -231,7 +298,7 @@ export class LiveDropBotsService
         return
       }
 
-      const skinCases = await this.loadSkinCases(caseEntity.id)
+      const skinCases = await this.loadSkinCases(caseEntity)
       if (skinCases.length === 0) {
         this.logger.warn(
           `Case ${caseEntity.slug} has no drop-out skins — skipping`,

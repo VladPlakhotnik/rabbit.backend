@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common'
+import { ScheduleModule } from '@nestjs/schedule'
 import { DatabaseModule } from './core/database/database.module'
 import { RedisModule } from './core/redis/redis.module'
 import { PresenceModule } from './core/presence/presence.module'
@@ -27,9 +28,14 @@ import { GiveawaysModule } from './modules/giveaways/giveaways.module'
 import { NewsModule } from './modules/news/news.module'
 import { PartnerModule } from './modules/partners/partner.module'
 import { StatsModule } from './modules/stats/stats.module'
+import { WithdrawModule } from './modules/withdraw/withdraw.module'
 
 @Module({
   imports: [
+    // Cron scheduler — used by sync jobs (skin price / catalog) and any
+    // future timed tasks. Module is global; @Cron on a provider method
+    // is enough to register a job.
+    ScheduleModule.forRoot(),
     DatabaseModule,
     RedisModule,
     PresenceModule,
@@ -57,6 +63,7 @@ import { StatsModule } from './modules/stats/stats.module'
     NewsModule,
     PartnerModule,
     StatsModule,
+    WithdrawModule,
     // TO DO
     // PaymentModule,
   ],

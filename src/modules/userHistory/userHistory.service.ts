@@ -13,6 +13,9 @@ import {
   UpgradeMaterialDetailDto,
 } from './dto/upgrade-history-detail.dto'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
+
+type HistoryGameType = 'csgo' | 'dota'
 
 @Injectable()
 export class UserHistoryService {
@@ -25,6 +28,8 @@ export class UserHistoryService {
     private readonly upgradeHistoryRepository: Repository<UpgradeHistory>,
     @InjectRepository(CsgoSkin)
     private readonly csgoSkinRepository: Repository<CsgoSkin>,
+    @InjectRepository(DotaSkin)
+    private readonly dotaSkinRepository: Repository<DotaSkin>,
   ) {}
 
   async addHistory(
@@ -57,6 +62,7 @@ export class UserHistoryService {
     casePrice: number,
     caseImg: string | undefined,
     drops: CaseHistoryDrop[],
+    gameType: HistoryGameType = 'csgo',
   ) {
     const totalDrops = drops.length
     const totalCost = casePrice * totalDrops
@@ -65,15 +71,24 @@ export class UserHistoryService {
     // the event (preview image, last server_seed, etc.).
     const first = drops[0]
 
+    // Stamp game_type on every drop (caller may have left it unset on
+    // some entries). Cheap normalisation — keeps the JSON
+    // self-describing for any future ad-hoc query.
+    const dropsWithGame: CaseHistoryDrop[] = drops.map(d => ({
+      ...d,
+      game_type: d.game_type ?? gameType,
+    }))
+
     const caseHistory = this.caseHistoryRepository.create({
       user_id: userId,
       case_id: caseId,
       case_name: caseName,
       case_price: casePrice,
       case_img: caseImg,
+      game_type: gameType,
       total_drops: totalDrops,
       total_cost: totalCost,
-      drops,
+      drops: dropsWithGame,
       server_seed: first?.server_seed,
       skin_id: first?.skin_id,
       skin_img: first?.skin_img,
@@ -100,6 +115,7 @@ export class UserHistoryService {
     oldRarity: string,
     newRarity: string,
     cost: number,
+    gameType: HistoryGameType = 'csgo',
   ) {
     // Сохраняем детальную информацию в upgrade_history
     const upgradeHistory = this.upgradeHistoryRepository.create({
@@ -109,6 +125,7 @@ export class UserHistoryService {
       old_rarity: oldRarity,
       new_rarity: newRarity,
       cost,
+      game_type: gameType,
     })
     const savedUpgradeHistory = await this.upgradeHistoryRepository.save(
       upgradeHistory,
@@ -157,13 +174,15 @@ export class UserHistoryService {
       throw new NotFoundException('Upgrade history entry not found')
     }
 
-    const targetSkin = await this.csgoSkinRepository.findOne({
-      where: { id: row.skin_id },
-      select: ['id', 'image'],
-    })
+    // Polymorphic image lookup — pick the right catalog based on the
+    // upgrade's game_type. Pre-migration rows default to 'csgo' which
+    // matches their actual game (only CSGO upgrades existed before
+    // the discriminator was added).
+    const targetImage = await this.lookupSkinImage(row.skin_id, row.game_type)
 
     const materials: UpgradeMaterialDetailDto[] = await this.hydrateMaterials(
       row.materials ?? [],
+      row.game_type,
     )
 
     const cost = Number(row.cost)
@@ -186,26 +205,68 @@ export class UserHistoryService {
         name: row.skin_name,
         rarity: row.new_rarity,
         price: skinPrice,
-        image: targetSkin?.image ?? null,
+        image: targetImage,
       },
       materials,
     }
   }
 
+  /**
+   * Single-skin image lookup, polymorphic on game_type.
+   *
+   * Used by the upgrade-detail view to render the target skin's image.
+   * `materials` get bulk-loaded by `hydrateMaterials` below — this
+   * helper is the per-row equivalent for things like the upgrade
+   * target where we only need one row.
+   */
+  private async lookupSkinImage(
+    skinId: number,
+    gameType: 'csgo' | 'dota' | null | undefined,
+  ): Promise<string | null> {
+    if (gameType === 'dota') {
+      const dotaSkin = await this.dotaSkinRepository.findOne({
+        where: { id: skinId },
+        select: ['id', 'image'],
+      })
+      return dotaSkin?.image ?? null
+    }
+    const csgoSkin = await this.csgoSkinRepository.findOne({
+      where: { id: skinId },
+      select: ['id', 'image'],
+    })
+    return csgoSkin?.image ?? null
+  }
+
   // Bulk-loads images for the snapshotted materials in a single query so we
   // don't fan out N selects for an upgrade with many materials. Skins removed
   // from the catalog surface as `image: null` instead of breaking the row.
+  //
+  // Polymorphic: dispatches to csgo_skins / dota_skins based on the
+  // upgrade's game_type. Mixed-game materials inside one upgrade aren't
+  // supported (the upgrade flow itself disallows them), so a single
+  // batch-load against one catalog is enough.
   private async hydrateMaterials(
     snapshot: readonly UpgradeHistoryMaterial[],
+    gameType: 'csgo' | 'dota' | null | undefined,
   ): Promise<UpgradeMaterialDetailDto[]> {
     if (snapshot.length === 0) return []
 
     const skinIds = snapshot.map(m => m.skin_id)
-    const skins = await this.csgoSkinRepository.find({
-      where: { id: In(skinIds) },
-      select: ['id', 'image'],
-    })
-    const imageById = new Map(skins.map(s => [s.id, s.image]))
+    const imageById = new Map<number, string | null>()
+
+    if (gameType === 'dota') {
+      const skins = await this.dotaSkinRepository.find({
+        where: { id: In(skinIds) },
+        select: ['id', 'image'],
+      })
+      for (const s of skins) imageById.set(s.id, s.image)
+    } else {
+      const skins = await this.csgoSkinRepository.find({
+        where: { id: In(skinIds) },
+        select: ['id', 'image'],
+      })
+      for (const s of skins) imageById.set(s.id, s.image)
+    }
 
     return snapshot.map(material => ({
       skin_id: material.skin_id,

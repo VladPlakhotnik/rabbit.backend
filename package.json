@@ -12,7 +12,13 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint": "eslint \"{src,test}/**/*.ts\" --fix",
     "lint:check": "eslint \"{src,test}/**/*.ts\"",
-    "postinstall": "yarn build"
+    "postinstall": "yarn build",
+    "sync:csgo": "ts-node --transpile-only scripts/sync-prices-once.ts",
+    "sync:dota": "ts-node --transpile-only scripts/sync-dota-prices-once.ts",
+    "sync:csgo:catalog": "ts-node --transpile-only scripts/sync-csgo-catalog-once.ts",
+    "sync:dota:catalog": "ts-node --transpile-only scripts/sync-dota-catalog-once.ts",
+    "sync:csgo:class-instance": "ts-node --transpile-only scripts/sync-csgo-class-instance-once.ts",
+    "sync:dota:class-instance": "ts-node --transpile-only scripts/sync-dota-class-instance-once.ts"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
@@ -61,8 +67,10 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "socket.io": "^4.8.1",
+    "stream-json": "^2.1.0",
     "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
+    "tweetnacl": "^1.0.3",
     "typeorm": "^0.3.22",
     "typescript": "^5.7.2"
   },

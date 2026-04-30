@@ -16,12 +16,25 @@ export class SectionService {
     maxPrice?: number
     applyEnoughBalance?: boolean
     userBalance?: number
+    // PR3a: filters cases by their game_type column. Sections with
+    // only off-game cases come back with an empty `cases` array; the
+    // frontend already skips empty sections in its render path.
+    gameType?: 'csgo' | 'dota'
   }): Promise<Section[]> {
-    const { name, minPrice, maxPrice, applyEnoughBalance, userBalance } =
+    const { name, minPrice, maxPrice, applyEnoughBalance, userBalance, gameType } =
       filters
 
     const queryBuilder = this.sectionRepository.createQueryBuilder('section')
     queryBuilder.leftJoinAndSelect('section.cases', 'cases')
+
+    // Filter applied to the JOINed cases only — sections themselves
+    // aren't game-typed, the partition is per-case. A section that
+    // only carries off-game cases falls out of the result set
+    // implicitly when its `cases` array becomes empty (FE filters
+    // those).
+    if (gameType) {
+      queryBuilder.andWhere('cases.game_type = :gameType', { gameType })
+    }
 
     // Применение фильтра по имени
     if (name) {

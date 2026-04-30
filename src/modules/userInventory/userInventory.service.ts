@@ -6,10 +6,11 @@ import {
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository, In } from 'typeorm'
-import { UserInventory } from './userInventory.entity'
+import { UserInventory, GameType } from './userInventory.entity'
 import { User } from '../users/user.entity'
 import { Case } from '../cases/case.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
 
 export interface SoldItem {
   id: number
@@ -65,12 +66,18 @@ export class UserInventoryService {
       }
 
       // Use a query builder so we can mix scalar filters with a `LIKE` over
-      // the joined `skin` table — `find({ where: {...} })` doesn't compose
+      // the joined skin tables — `find({ where: {...} })` doesn't compose
       // those well in TypeORM. Default behavior (no filters) still returns
       // the full inventory so other pages keep working.
+      //
+      // Polymorphism: an inventory row points at exactly one of
+      // csgoSkin / dotaSkin (XOR). We left-join both; the @AfterLoad
+      // hook on UserInventory then exposes a unified `skin` getter so
+      // callers don't need to know which game it is.
       const query = this.userInventoryRepository
         .createQueryBuilder('inv')
-        .leftJoinAndSelect('inv.skin', 'skin')
+        .leftJoinAndSelect('inv.csgoSkin', 'csgoSkin')
+        .leftJoinAndSelect('inv.dotaSkin', 'dotaSkin')
         .where('inv.user_id = :userId', { userId })
 
       if (filters?.excludeSold) {
@@ -82,11 +89,13 @@ export class UserInventoryService {
       }
 
       if (filters?.search && filters.search.trim() !== '') {
-        // Case-insensitive substring match against the most recognizable
-        // skin field (`market_hash_name`, e.g. "AK-47 | Redline").
-        query.andWhere('skin.market_hash_name ILIKE :search', {
-          search: `%${filters.search.trim()}%`,
-        })
+        // Case-insensitive substring on whichever skin column is non-null
+        // for the row. The unmatched side is null, so its ILIKE evaluates
+        // to NULL → false in OR, which is what we want.
+        query.andWhere(
+          '(csgoSkin.market_hash_name ILIKE :search OR dotaSkin.market_hash_name ILIKE :search)',
+          { search: `%${filters.search.trim()}%` },
+        )
       }
 
       if (
@@ -94,9 +103,10 @@ export class UserInventoryService {
         Number.isFinite(filters.maxPrice) &&
         filters.maxPrice > 0
       ) {
-        query.andWhere('skin.market_price <= :maxPrice', {
-          maxPrice: filters.maxPrice,
-        })
+        query.andWhere(
+          '(csgoSkin.market_price <= :maxPrice OR dotaSkin.market_price <= :maxPrice)',
+          { maxPrice: filters.maxPrice },
+        )
       }
 
       query.orderBy('inv.obtained_at', 'DESC')
@@ -138,7 +148,8 @@ export class UserInventoryService {
         // nullable side of an outer join").
         const inventoryItem = await manager
           .createQueryBuilder(UserInventory, 'inv')
-          .leftJoinAndSelect('inv.skin', 'skin')
+          .leftJoinAndSelect('inv.csgoSkin', 'csgoSkin')
+          .leftJoinAndSelect('inv.dotaSkin', 'dotaSkin')
           .leftJoinAndSelect('inv.user', 'user')
           .where('inv.id = :id', { id: inventoryId })
           .setLock('pessimistic_write', undefined, ['inv'])
@@ -199,7 +210,7 @@ export class UserInventoryService {
 
       const unsoldSkins = await this.userInventoryRepository.find({
         where: { user: { id: userId }, is_sold: false, is_withdrawn: false },
-        relations: ['skin'],
+        relations: ['csgoSkin', 'dotaSkin'],
       })
 
       if (unsoldSkins.length === 0) {
@@ -248,22 +259,47 @@ export class UserInventoryService {
     }
   }
 
+  /**
+   * Create an inventory row for a skin won from a case.
+   *
+   * Polymorphic: takes `gameType` to decide whether the skin lands in
+   * the CSGO or Dota FK column. @AfterLoad doesn't fire on save (it's
+   * a load-only TypeORM lifecycle hook), so we manually populate the
+   * unified `skin` getter on the returned entity for callers that want
+   * to read it without re-fetching.
+   */
   async createInventory(
     userId: number,
-    skin: CsgoSkin,
+    skin: CsgoSkin | DotaSkin,
+    gameType: GameType,
     caseEntity: Case,
   ): Promise<UserInventory> {
     return this.userInventoryRepository.manager.transaction(async manager => {
       const inventory = manager.create(UserInventory, {
         user: { id: userId },
-        skin,
+        game_type: gameType,
+        // Set exactly one of the two FK columns. The XOR check at the
+        // DB level enforces this; the ternary below makes it explicit.
+        csgo_skin_id: gameType === 'csgo' ? skin.id : null,
+        dota_skin_id: gameType === 'dota' ? skin.id : null,
         case: caseEntity,
         obtained_at: new Date(),
         is_sold: false,
         is_withdrawn: false,
         withdrawn_at: null,
       })
-      return manager.save(inventory)
+      const saved = await manager.save(inventory)
+      // Surface the freshly-saved skin on the unified getter so
+      // downstream callers (publishLiveDrop, history dump) don't need
+      // to re-load. `skin` is typed CsgoSkin on the entity for
+      // downstream compatibility — see UserInventory.skin docstring.
+      saved.skin = skin as unknown as CsgoSkin
+      if (gameType === 'csgo') {
+        saved.csgoSkin = skin as CsgoSkin
+      } else {
+        saved.dotaSkin = skin as DotaSkin
+      }
+      return saved
     })
   }
 
@@ -291,7 +327,7 @@ export class UserInventoryService {
 
         const inventoryItems = await manager.find(UserInventory, {
           where: { id: In(inventoryIds) },
-          relations: ['skin', 'user'],
+          relations: ['csgoSkin', 'dotaSkin', 'user'],
         })
 
         if (inventoryItems.length === 0) {

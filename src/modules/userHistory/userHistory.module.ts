@@ -6,14 +6,23 @@ import { UpgradeHistory } from './entities/upgrade-history.entity'
 import { UserHistoryService } from './userHistory.service'
 import { UserHistoryController } from './userHistory.controller'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
 
 @Module({
-  // CsgoSkin is registered here so the upgrade-history detail endpoint can
-  // join `csgo_skins` for the target / material images. The history rows
-  // themselves still snapshot name + price + rarity, so the JOIN is purely
-  // for the picture and stays optional (LEFT JOIN; null for removed skins).
+  // CsgoSkin + DotaSkin are registered here so the upgrade-history
+  // detail endpoint can join the right catalog for the target /
+  // material images, polymorphic on the upgrade row's `game_type`.
+  // History rows themselves snapshot name + price + rarity, so the
+  // JOIN is purely for the picture and stays optional (null for
+  // removed skins).
   imports: [
-    TypeOrmModule.forFeature([UserHistory, CaseHistory, UpgradeHistory, CsgoSkin]),
+    TypeOrmModule.forFeature([
+      UserHistory,
+      CaseHistory,
+      UpgradeHistory,
+      CsgoSkin,
+      DotaSkin,
+    ]),
   ],
   providers: [UserHistoryService],
   controllers: [UserHistoryController],

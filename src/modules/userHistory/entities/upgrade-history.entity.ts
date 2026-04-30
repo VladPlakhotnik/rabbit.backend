@@ -9,13 +9,20 @@ import { numericTransformer } from '../../../common/helpers/numericTransformer'
 export type UpgradeMode = 'inventory' | 'balance'
 
 // Snapshot of one upgrade material at the moment of the upgrade. Stored as a
-// jsonb array so deletion of the source skin from `csgo_skins` doesn't break
-// history rows.
+// jsonb array so deletion of the source skin from the catalog doesn't
+// break history rows.
+//
+// `game_type` discriminates which catalog `skin_id` belongs to. Today an
+// upgrade is single-game (you can't mix CSGO + Dota materials), so all
+// materials in one row share the value with the upgrade-level
+// `UpgradeHistory.game_type` — the field is duplicated per-material to
+// keep the JSON self-describing.
 export interface UpgradeHistoryMaterial {
   skin_id: number
   name: string
   rarity: string
   price: number
+  game_type?: 'csgo' | 'dota'
 }
 
 @Entity('upgrade_history')
@@ -28,6 +35,13 @@ export class UpgradeHistory {
 
   @Column({ type: 'integer' })
   skin_id!: number
+
+  // Discriminator for both `skin_id` (target) and the materials JSONB
+  // — values 'csgo' / 'dota'. Default 'csgo' for pre-migration rows.
+  // The hydrate path in UserHistoryService dispatches catalog lookup
+  // (image, etc.) based on this column.
+  @Column({ type: 'varchar', length: 16, default: 'csgo' })
+  game_type!: 'csgo' | 'dota'
 
   @Column({ type: 'varchar', length: 100 })
   skin_name!: string

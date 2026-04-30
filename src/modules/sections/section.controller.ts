@@ -36,6 +36,7 @@ export class SectionController {
     @Query('minPrice') minPrice?: string,
     @Query('maxPrice') maxPrice?: string,
     @Query('enoughBalance') enoughBalance?: string,
+    @Query('game') game?: string,
   ) {
     const user = req.user
     const userBalance = user ? user.balance : undefined
@@ -43,12 +44,19 @@ export class SectionController {
     const applyEnoughBalance =
       enoughBalance === 'true' && userBalance !== undefined
 
+    // Whitelist game-type values; bad input falls through to "no
+    // filter" rather than throwing — keeps the catalog endpoint
+    // forgiving for stale frontends.
+    const gameType =
+      game === 'csgo' || game === 'dota' ? (game as 'csgo' | 'dota') : undefined
+
     return this.sectionService.findAll({
       name,
       minPrice: minPrice ? Number(minPrice) : undefined,
       maxPrice: maxPrice ? Number(maxPrice) : undefined,
       applyEnoughBalance,
       userBalance,
+      gameType,
     })
   }
 

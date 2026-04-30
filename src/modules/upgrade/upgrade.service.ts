@@ -13,11 +13,14 @@ import { UpgradeResultDto } from './dto/upgrade-result.dto'
 import { UpgradeLimitsDto } from './dto/upgrade-limits.dto'
 import { UPGRADE_LIMITS } from './upgrade.constants'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
 import {
   UpgradeHistory,
   UpgradeHistoryMaterial,
   UpgradeMode,
 } from '../userHistory/entities/upgrade-history.entity'
+
+type UpgradeGameType = 'csgo' | 'dota'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { HistoryAction } from '../userHistory/enums/history-action.enum'
 
@@ -77,6 +80,11 @@ export class UpgradeService {
         ? 'balance'
         : 'inventory'
 
+      // Default 'csgo' for clients that haven't been updated to send
+      // game_type yet — preserves the existing CSGO upgrade behaviour
+      // for old frontend builds while letting new ones target Dota.
+      const gameType: UpgradeGameType = upgradeDto.game_type ?? 'csgo'
+
       let usedSkins: CsgoSkin[] = []
       let targetSkin: CsgoSkin
       let chance: number
@@ -88,6 +96,7 @@ export class UpgradeService {
           userId,
           user,
           upgradeDto,
+          gameType,
         )
         targetSkin = result.targetSkin
         chance = result.chance
@@ -97,6 +106,7 @@ export class UpgradeService {
           manager,
           userId,
           upgradeDto,
+          gameType,
         )
         usedSkins = result.usedSkins
         targetSkin = result.targetSkin
@@ -106,7 +116,7 @@ export class UpgradeService {
 
       const { success: isSuccess, roll } = this.rollUpgrade(chance)
       const created = isSuccess
-        ? await this.createUpgradedSkin(manager, userId, targetSkin)
+        ? await this.createUpgradedSkin(manager, userId, targetSkin, gameType)
         : null
 
       await this.recordHistory(manager, {
@@ -117,6 +127,7 @@ export class UpgradeService {
         chance,
         mode,
         usedSkins,
+        gameType,
       })
 
       // Single structured line per attempt — enough to debug "why did my
@@ -142,6 +153,7 @@ export class UpgradeService {
     userId: number,
     user: User,
     upgradeDto: UpgradeDto,
+    gameType: UpgradeGameType,
   ): Promise<BalanceUpgradeContext> {
     // Presence + min(1) of `upgrade_amount` is enforced by the DTO via
     // `@ValidateIf(o => o.use_balance === true)`. The non-null cast below is
@@ -154,13 +166,11 @@ export class UpgradeService {
       throw new BadRequestException('Insufficient balance for upgrade')
     }
 
-    const targetSkin = await manager.findOne(CsgoSkin, {
-      where: { id: upgradeDto.target_skin_id },
-    })
-
-    if (!targetSkin) {
-      throw new NotFoundException('Target skin not found')
-    }
+    const targetSkin = await this.loadTargetSkin(
+      manager,
+      upgradeDto.target_skin_id,
+      gameType,
+    )
 
     const targetPrice = Number(targetSkin.market_price)
     if (!targetSkin.market_price || targetPrice <= 0) {
@@ -175,10 +185,44 @@ export class UpgradeService {
     return { targetSkin, chance, upgradeAmount }
   }
 
+  /**
+   * Load the upgrade target from the catalog matching the game.
+   *
+   * Returns CsgoSkin type for downstream compatibility — for Dota the
+   * actual instance is a DotaSkin and gets cast through. Both entities
+   * share the columns used downstream (id, market_hash_name,
+   * market_price, image, quality), so consumers don't see any
+   * runtime difference.
+   */
+  private async loadTargetSkin(
+    manager: EntityManager,
+    targetSkinId: number,
+    gameType: UpgradeGameType,
+  ): Promise<CsgoSkin> {
+    if (gameType === 'dota') {
+      const dotaSkin = await manager.findOne(DotaSkin, {
+        where: { id: targetSkinId },
+      })
+      if (!dotaSkin) {
+        throw new NotFoundException('Target skin not found')
+      }
+      return dotaSkin as unknown as CsgoSkin
+    }
+
+    const csgoSkin = await manager.findOne(CsgoSkin, {
+      where: { id: targetSkinId },
+    })
+    if (!csgoSkin) {
+      throw new NotFoundException('Target skin not found')
+    }
+    return csgoSkin
+  }
+
   private async processInventoryUpgrade(
     manager: EntityManager,
     userId: number,
     upgradeDto: UpgradeDto,
+    gameType: UpgradeGameType,
   ): Promise<InventoryUpgradeContext> {
     // Presence, min/max length, uniqueness of ids, and per-element shape are
     // enforced by the DTO via `@ValidateIf(o => o.use_balance !== true)` +
@@ -196,7 +240,8 @@ export class UpgradeService {
     // the nullable side of an outer join").
     const inventoryItems = await manager
       .createQueryBuilder(UserInventory, 'inv')
-      .leftJoinAndSelect('inv.skin', 'skin')
+      .leftJoinAndSelect('inv.csgoSkin', 'csgoSkin')
+      .leftJoinAndSelect('inv.dotaSkin', 'dotaSkin')
       .where('inv.id IN (:...ids)', { ids: inventorySkinIds })
       .andWhere('inv.user_id = :userId', { userId })
       .andWhere('inv.is_sold = false')
@@ -210,7 +255,21 @@ export class UpgradeService {
       )
     }
 
+    // All materials must be from the same game as the target. Mixing
+    // CSGO and Dota materials is disallowed: prices in different games
+    // aren't directly comparable for chance calculation, and the result
+    // skin lands in one game's inventory so the materials must match it.
+    const wrongGame = inventoryItems.find(item => item.game_type !== gameType)
+    if (wrongGame) {
+      throw new BadRequestException(
+        `All upgrade materials must be ${gameType} skins`,
+      )
+    }
+
     const usedSkins: CsgoSkin[] = inventoryItems.map(
+      // `inv.skin` is set by @AfterLoad on UserInventory; type-narrowed
+      // to CsgoSkin for downstream compatibility (runtime is DotaSkin
+      // for Dota inventory rows, sharing the columns we read).
       (item: UserInventory) => item.skin,
     )
 
@@ -260,13 +319,11 @@ export class UpgradeService {
       )
     }
 
-    const targetSkin = await manager.findOne(CsgoSkin, {
-      where: { id: upgradeDto.target_skin_id },
-    })
-
-    if (!targetSkin) {
-      throw new NotFoundException('Target skin not found')
-    }
+    const targetSkin = await this.loadTargetSkin(
+      manager,
+      upgradeDto.target_skin_id,
+      gameType,
+    )
 
     const targetPrice = Number(targetSkin.market_price)
     if (!targetSkin.market_price || targetPrice <= 0) {
@@ -295,10 +352,17 @@ export class UpgradeService {
     manager: EntityManager,
     userId: number,
     targetSkin: CsgoSkin,
+    gameType: UpgradeGameType,
   ): Promise<{ skin: CsgoSkin; inventoryId: number }> {
+    // Polymorphic insert — populate exactly one of csgo_skin_id /
+    // dota_skin_id (XOR check on user_inventory enforces this at the
+    // DB level). The `case` relation is null because upgrade-won skins
+    // didn't come from a case open.
     const newInventoryItem = manager.create(UserInventory, {
       user: { id: userId },
-      skin: targetSkin,
+      game_type: gameType,
+      csgo_skin_id: gameType === 'csgo' ? targetSkin.id : null,
+      dota_skin_id: gameType === 'dota' ? targetSkin.id : null,
       obtained_at: new Date(),
       is_sold: false,
       is_withdrawn: false,
@@ -344,10 +408,19 @@ export class UpgradeService {
       chance: number
       mode: UpgradeMode
       usedSkins: readonly CsgoSkin[]
+      gameType: UpgradeGameType
     },
   ): Promise<void> {
-    const { userId, targetSkin, isSuccess, cost, chance, mode, usedSkins } =
-      params
+    const {
+      userId,
+      targetSkin,
+      isSuccess,
+      cost,
+      chance,
+      mode,
+      usedSkins,
+      gameType,
+    } = params
 
     const oldRarity =
       mode === 'balance' ? BALANCE_RARITY : this.pickOldRarity(usedSkins)
@@ -360,11 +433,13 @@ export class UpgradeService {
       name: skin.market_hash_name,
       rarity: this.safeRarity(skin.quality),
       price: Number(skin.market_price),
+      game_type: gameType,
     }))
 
     const upgradeHistory = manager.create(UpgradeHistory, {
       user_id: userId,
       skin_id: targetSkin.id,
+      game_type: gameType,
       skin_name: targetSkin.market_hash_name.slice(0, 100),
       skin_price: Number(targetSkin.market_price),
       old_rarity: oldRarity,

@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Param,
+  Query,
   Req,
   Post,
   Body,
@@ -13,7 +14,7 @@ import { CaseService } from './case.service'
 import { Roles } from '../../core/decorators/roles.decorator'
 import { AuthGuard } from '@nestjs/passport'
 import { RolesGuard } from '../../core/guards/roles.guard'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger'
 import { Throttle } from '@nestjs/throttler'
 import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 import { User } from '../users/user.entity'
@@ -32,12 +33,24 @@ import { User } from '../users/user.entity'
 export class CaseController {
   constructor(private readonly caseService: CaseService) {}
 
-  @ApiOperation({ summary: 'Get all cases' })
-  @ApiResponse({ status: 200, description: 'Return all cases' })
+  @ApiOperation({ summary: 'Get all cases (optionally filtered by game)' })
+  @ApiResponse({ status: 200, description: 'Return cases' })
+  @ApiQuery({
+    name: 'game',
+    required: false,
+    description: 'Filter by game type: "csgo" or "dota"',
+  })
   @UseGuards(AuthGuard('jwt'))
   @Get()
-  async findAll() {
-    return this.caseService.findAll()
+  async findAll(@Query('game') game?: string) {
+    // Whitelist the value — anything else falls through to "all
+    // games", same behaviour as omitting the param. Belt-and-braces
+    // even though the DB-side CHECK constraint would also reject
+    // bad values.
+    const gameType =
+      game === 'csgo' || game === 'dota' ? (game as 'csgo' | 'dota') : undefined
+
+    return this.caseService.findAll(gameType)
   }
 
   @ApiOperation({ summary: 'Get case by slug' })

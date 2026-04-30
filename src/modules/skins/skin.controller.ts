@@ -1,17 +1,28 @@
-import { Controller, Get, Post, Body, Query, Param } from '@nestjs/common'
+import { Controller, Get, Post, Query, Param, UseGuards } from '@nestjs/common'
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiQuery,
   ApiParam,
+  ApiBearerAuth,
 } from '@nestjs/swagger'
-import { SkinService } from './skin.service'
-import { SkinSyncService } from './skins-sync'
+import { AuthGuard } from '@nestjs/passport'
+import { CsgoSkinService, SkinFilters } from './csgo/csgo-skin.service'
+import { CsgoSyncService } from './csgo/csgo-sync.service'
+import { DotaSkinService, DotaSkinFilters } from './dota/dota-skin.service'
+import { DotaSyncService } from './dota/dota-sync.service'
+import { Roles } from '../../core/decorators/roles.decorator'
+import { RolesGuard } from '../../core/guards/roles.guard'
 
-// Coerce a query-string value to a positive integer. Returns `undefined` for
-// missing / empty / non-numeric / non-positive values so the service-side
-// defaults can take over instead of receiving NaN.
+// HTTP surface for the CSGO skin module.
+//
+// Public endpoints (paginated catalog, search, single-item lookup) are
+// reachable without auth — the case page and the upgrade market both
+// hit them. Admin-only endpoints (manual sync triggers) sit behind a
+// JWT + admin role guard so a leaked bearer can't kick off heavyweight
+// sync runs.
+
 const parsePositiveInt = (raw: string | undefined): number | undefined => {
   if (raw === undefined || raw === '') return undefined
   const parsed = Number.parseInt(raw, 10)
@@ -35,85 +46,37 @@ const parseBoolOrUndefined = (raw: string | undefined): boolean | undefined => {
 @Controller('skins')
 export class SkinController {
   constructor(
-    private readonly marketSkinSyncService: SkinService,
-    private readonly skinSyncService: SkinSyncService,
+    private readonly skins: CsgoSkinService,
+    private readonly sync: CsgoSyncService,
+    private readonly dotaSkins: DotaSkinService,
+    private readonly dotaSync: DotaSyncService,
   ) {}
 
-  @ApiOperation({
-    summary: 'Get all skins from database with pagination and filters',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Return paginated list of skins with filters applied',
-  })
-  @ApiQuery({ name: 'page', description: 'Page number', required: false })
-  @ApiQuery({
-    name: 'limit',
-    description: 'Number of items per page',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'inStock',
-    description: 'Filter by availability (true = in stock only)',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'game',
-    description: 'Filter by game (CS2, Dota 2)',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'category',
-    description: 'Filter by category',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'itemType',
-    description: 'Filter by item type',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'search',
-    description: 'Search by name or market hash name',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'minPrice',
-    description: 'Minimum price filter',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'maxPrice',
-    description: 'Maximum price filter',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'quality',
-    description: 'Filter by quality (FN, MW, FT, WW, BS)',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'exterior',
-    description: 'Filter by exterior',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'collection',
-    description: 'Filter by collection',
-    required: false,
-  })
-  @ApiQuery({
-    name: 'sortDir',
-    description:
-      'Sort direction by market_price: "asc" or "desc" (default: "desc")',
-    required: false,
-  })
-  @Get('/')
+  // ---- Public read endpoints ----------------------------------------
+
+  @ApiOperation({ summary: 'Get paginated list of CSGO skins with filters' })
+  @ApiResponse({ status: 200, description: 'Paginated skins + total + hasMore flag' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'inStock', required: false })
+  @ApiQuery({ name: 'category', required: false })
+  @ApiQuery({ name: 'itemType', required: false })
+  @ApiQuery({ name: 'search', required: false })
+  @ApiQuery({ name: 'minPrice', required: false })
+  @ApiQuery({ name: 'maxPrice', required: false })
+  @ApiQuery({ name: 'quality', required: false })
+  @ApiQuery({ name: 'exterior', required: false })
+  @ApiQuery({ name: 'collection', required: false })
+  @ApiQuery({ name: 'sortDir', required: false })
+  // Two paths for the same handler — `/skins` is the legacy CSGO entry
+  // (predates Dota), `/skins/csgo` is the symmetric form that matches
+  // `/skins/dota`. Frontend uses `/csgo` for new code; the bare path
+  // stays for backwards compat with anything older.
+  @Get(['/', '/csgo'])
   async getAllSkins(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('inStock') inStock?: string,
-    @Query('game') game?: string,
     @Query('category') category?: string,
     @Query('itemType') itemType?: string,
     @Query('search') search?: string,
@@ -125,44 +88,23 @@ export class SkinController {
     @Query('sortDir') sortDir?: string,
   ) {
     try {
-      // Query strings always arrive as `string | undefined`. Coerce to the
-      // shapes the service expects, treating empty / non-numeric values as
-      // "not set" so callers don't have to worry about `?page=&limit=` style
-      // empty strings. Default page/limit kicks in inside the service.
-      const parsedPage = parsePositiveInt(page)
-      const parsedLimit = parsePositiveInt(limit)
-      const parsedMinPrice = parseFloatOrUndefined(minPrice)
-      const parsedMaxPrice = parseFloatOrUndefined(maxPrice)
-      const parsedInStock = parseBoolOrUndefined(inStock)
-      const trimmedSearch = search && search.trim() !== '' ? search.trim() : undefined
-
-      // Whitelist sort direction — anything else falls through as undefined
-      // so the service-side default (DESC) kicks in.
-      const parsedSortDir =
-        sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined
-
-      const filters = {
-        inStock: parsedInStock,
-        game,
+      const filters: SkinFilters = {
+        inStock: parseBoolOrUndefined(inStock),
         category,
         itemType,
-        search: trimmedSearch,
-        minPrice: parsedMinPrice,
-        maxPrice: parsedMaxPrice,
+        search: search?.trim() || undefined,
+        minPrice: parseFloatOrUndefined(minPrice),
+        maxPrice: parseFloatOrUndefined(maxPrice),
         quality,
         exterior,
         collection,
-        sortDir: parsedSortDir,
+        sortDir: sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
       }
 
-      const cleanFilters = Object.fromEntries(
-        Object.entries(filters).filter(([_, value]) => value !== undefined),
-      )
-
-      const result = await this.marketSkinSyncService.getAllSkinsFromDatabase(
-        parsedPage,
-        parsedLimit,
-        Object.keys(cleanFilters).length > 0 ? cleanFilters : undefined,
+      const result = await this.skins.findAllPaginated(
+        parsePositiveInt(page),
+        parsePositiveInt(limit),
+        filters,
       )
 
       return {
@@ -172,7 +114,7 @@ export class SkinController {
         limit: result.limit,
         hasMore: result.hasMore,
         skins: result.skins,
-        filters: cleanFilters,
+        filters,
       }
     } catch (error) {
       return {
@@ -182,170 +124,266 @@ export class SkinController {
     }
   }
 
-  @Post('/sync-market')
-  async syncSkinData(@Body() body?: { startCursor?: string }) {
-    try {
-      const result = await this.marketSkinSyncService.syncSkinMarket(
-        body?.startCursor,
-      )
-      return {
-        success: result.success,
-        message: result.success
-          ? `Synchronization completed. Pages processed: ${result.pagesProcessed}, Updated: ${result.updated}, Errors: ${result.errors}`
-          : 'Synchronization failed',
-        updated: result.updated,
-        errors: result.errors,
-        pagesProcessed: result.pagesProcessed,
-        lastCursor: result.lastCursor,
-        source: 'DMarket API',
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'DMarket API',
-      }
-    }
-  }
-
+  @ApiOperation({ summary: 'Total count of available CSGO skins' })
   @Get('/status')
   async getTotalSkinsCount() {
     try {
-      const count = await this.marketSkinSyncService.getTotalSkinsCount()
-      return {
-        success: true,
-        count: count,
-        source: 'Database',
-      }
+      const { count } = await this.skins.getTotalSkinsCount()
+      return { success: true, count, source: 'Database' }
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'Database',
-      }
-    }
-  }
-
-  @Post('/update-prices')
-  async updatePrices() {
-    try {
-      const result = await this.skinSyncService.updateSkinsPrices()
-      return {
-        success: true,
-        message: `Prices updated successfully. Updated: ${result.updated}, Created: ${result.created}, Errors: ${result.errors}`,
-        updated: result.updated,
-        created: result.created,
-        errors: result.errors,
-        source: 'Market.csgo.com API',
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'Market.csgo.com API',
       }
     }
   }
 
   @ApiOperation({ summary: 'Search for similar skins by market_hash_name' })
-  @ApiResponse({ status: 200, description: 'Return similar skins' })
-  @ApiQuery({ name: 'q', description: 'Search term', required: true })
-  @ApiQuery({
-    name: 'limit',
-    description: 'Maximum number of results',
-    required: false,
-  })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'limit', required: false })
   @Get('/search')
-  async searchSkins(
-    @Query('q') searchTerm: string,
-    @Query('limit') limit?: string,
-  ) {
+  async searchSkins(@Query('q') q: string, @Query('limit') limit?: string) {
     try {
-      if (!searchTerm || searchTerm.trim().length === 0) {
-        return {
-          success: false,
-          error: 'Search term is required',
-          source: 'Database',
-        }
-      }
+      const term = q?.trim()
 
-      const parsedLimit = parsePositiveInt(limit) ?? 20
+      if (!term) return { success: false, error: 'Search term is required' }
 
-      const skins = await this.marketSkinSyncService.searchSimilarSkins(
-        searchTerm.trim(),
-        parsedLimit,
-      )
-
-      return {
-        success: true,
-        count: skins.length,
-        searchTerm: searchTerm.trim(),
-        skins: skins,
-        source: 'Database',
-      }
+      const skins = await this.skins.searchSimilar(term, parsePositiveInt(limit) ?? 20)
+      return { success: true, count: skins.length, searchTerm: term, skins }
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'Database',
       }
     }
   }
 
   @ApiOperation({ summary: 'Get exact skin by market_hash_name' })
-  @ApiResponse({ status: 200, description: 'Return skin details' })
-  @ApiParam({ name: 'hashName', description: 'Market hash name of the skin' })
+  @ApiParam({ name: 'hashName' })
   @Get('/skin/:hashName')
   async getSkinByHashName(@Param('hashName') hashName: string) {
     try {
-      if (!hashName || hashName.trim().length === 0) {
-        return {
-          success: false,
-          error: 'Hash name is required',
-          source: 'Database',
-        }
-      }
+      const decoded = decodeURIComponent(hashName ?? '').trim()
 
-      const skin = await this.marketSkinSyncService.findSkinByHashName(
-        decodeURIComponent(hashName.trim()),
-      )
+      if (!decoded) return { success: false, error: 'Hash name is required' }
 
-      if (!skin) {
-        return {
-          success: false,
-          error: 'Skin not found',
-          source: 'Database',
-        }
-      }
+      const skin = await this.skins.findByHashName(decoded)
 
-      return {
-        success: true,
-        skin: skin,
-        source: 'Database',
-      }
+      return skin
+        ? { success: true, skin }
+        : { success: false, error: 'Skin not found' }
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'Database',
       }
     }
   }
 
-  @Get('/dmarket')
-  async getDMarketSkinsList() {
+  // ---- Admin-only sync triggers -------------------------------------
+  //
+  // Sync also runs on cron via SyncSchedulerService; these endpoints
+  // exist for ops use ("re-sync now after a marketplace recovery").
+  // Guarded by JWT + admin role — without that, a leaked URL could
+  // burn a daily DMarket rate-limit budget and cost the project money.
+
+  @ApiOperation({ summary: 'Manually trigger CSGO catalog sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/sync-market')
+  async syncCatalog() {
     try {
-      const count = await this.marketSkinSyncService.getCS2SkinsList()
+      const report = await this.sync.syncCatalog()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Manually trigger CSGO price sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/update-prices')
+  async updatePrices() {
+    try {
+      const report = await this.sync.syncPrices()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Manually trigger CSGO class_instance metadata sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/sync-class-instance')
+  async syncClassInstance() {
+    try {
+      const report = await this.sync.syncClassInstanceMetadata()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  // ---- Dota 2 (parallel routes under /skins/dota/...) ---------------
+  //
+  // Kept under the same controller so Swagger groups them together;
+  // a separate `dota-skin.controller.ts` would also work but multiplies
+  // module wiring with no real isolation benefit.
+
+  @ApiOperation({ summary: 'Get paginated list of Dota 2 skins with filters' })
+  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'inStock', required: false })
+  @ApiQuery({ name: 'category', required: false })
+  @ApiQuery({ name: 'itemType', required: false })
+  @ApiQuery({ name: 'search', required: false })
+  @ApiQuery({ name: 'minPrice', required: false })
+  @ApiQuery({ name: 'maxPrice', required: false })
+  @ApiQuery({ name: 'hero', required: false })
+  @ApiQuery({ name: 'rarity', required: false })
+  @ApiQuery({ name: 'slot', required: false })
+  @ApiQuery({ name: 'quality', required: false })
+  @ApiQuery({ name: 'collection', required: false })
+  @ApiQuery({ name: 'sortDir', required: false })
+  @Get('/dota')
+  async getAllDotaSkins(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('inStock') inStock?: string,
+    @Query('category') category?: string,
+    @Query('itemType') itemType?: string,
+    @Query('search') search?: string,
+    @Query('minPrice') minPrice?: string,
+    @Query('maxPrice') maxPrice?: string,
+    @Query('hero') hero?: string,
+    @Query('rarity') rarity?: string,
+    @Query('slot') slot?: string,
+    @Query('quality') quality?: string,
+    @Query('collection') collection?: string,
+    @Query('sortDir') sortDir?: string,
+  ) {
+    try {
+      const filters: DotaSkinFilters = {
+        inStock: parseBoolOrUndefined(inStock),
+        category,
+        itemType,
+        search: search?.trim() || undefined,
+        minPrice: parseFloatOrUndefined(minPrice),
+        maxPrice: parseFloatOrUndefined(maxPrice),
+        hero,
+        rarity,
+        slot,
+        quality,
+        collection,
+        sortDir: sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
+      }
+
+      const result = await this.dotaSkins.findAllPaginated(
+        parsePositiveInt(page),
+        parsePositiveInt(limit),
+        filters,
+      )
+
       return {
         success: true,
-        count: count,
-        source: 'Database',
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        hasMore: result.hasMore,
+        skins: result.skins,
+        filters,
       }
     } catch (error) {
       return {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
-        source: 'Database',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Get exact Dota 2 skin by market_hash_name' })
+  @ApiParam({ name: 'hashName' })
+  @Get('/dota/skin/:hashName')
+  async getDotaSkinByHashName(@Param('hashName') hashName: string) {
+    try {
+      const decoded = decodeURIComponent(hashName ?? '').trim()
+
+      if (!decoded) return { success: false, error: 'Hash name is required' }
+
+      const skin = await this.dotaSkins.findByHashName(decoded)
+
+      return skin
+        ? { success: true, skin }
+        : { success: false, error: 'Skin not found' }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Manually trigger Dota 2 catalog sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/dota/sync-market')
+  async syncDotaCatalog() {
+    try {
+      const report = await this.dotaSync.syncCatalog()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Manually trigger Dota 2 price sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/dota/update-prices')
+  async updateDotaPrices() {
+    try {
+      const report = await this.dotaSync.syncPrices()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Manually trigger Dota 2 class_instance metadata sync (admin only)' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles('admin')
+  @Post('/dota/sync-class-instance')
+  async syncDotaClassInstance() {
+    try {
+      const report = await this.dotaSync.syncClassInstanceMetadata()
+      return { success: report.errors === 0, ...report }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
       }
     }
   }

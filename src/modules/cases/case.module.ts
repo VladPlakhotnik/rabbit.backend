@@ -6,6 +6,8 @@ import { CaseService } from './case.service'
 import { CaseController } from './case.controller'
 import { Section } from '../sections/section.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
+import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
 import { ProvablyFairModule } from '../provably-fair/provably-fair.module'
 import { UserInventoryModule } from '../userInventory/userInventory.module'
 import { UserModule } from '../users/users.module'
@@ -14,7 +16,12 @@ import { LiveDropsModule } from '../liveDrops/liveDrops.module'
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Case, Section, SkinCase]),
+    // CsgoSkin + DotaSkin repos are injected into CaseService for
+    // polymorphic case-opening: a Dota case's skin_case rows reference
+    // hash_names in dota_skins, which the legacy ManyToOne to CsgoSkin
+    // can't resolve, so the service hydrates them manually after
+    // the initial JOIN.
+    TypeOrmModule.forFeature([Case, Section, SkinCase, CsgoSkin, DotaSkin]),
     ProvablyFairModule,
     UserInventoryModule,
     UserModule,
