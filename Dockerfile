@@ -1,21 +1,28 @@
-FROM node:18-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
-# Копирование файлов зависимостей и конфигов
+# Dependencies + lockfile first — keeps the layer cache warm when only
+# source files change (re-run yarn install only on lockfile diff).
 COPY package.json yarn.lock tsconfig.json nest-cli.json ./
 
-# Установка зависимостей
+# Frozen lockfile blocks any unintentional dep drift between dev and
+# the deployed image.
 RUN yarn install --frozen-lockfile
 
-# Копирование исходного кода
+# Source last so unrelated edits don't invalidate the deps layer.
 COPY . .
 
-# Сборка проекта
+# Pre-build to dist/ so the runtime container doesn't need TypeScript
+# or the Nest CLI loaded at start.
 RUN yarn build
 
-# Открытие порта
+# Fly.io / Heroku inject PORT; src/main.ts reads process.env.PORT and
+# falls back to 5000 locally. EXPOSE here is documentation, not a
+# binding — Fly's [http_service] internal_port is the real bind.
 EXPOSE 5000
 
-# Запуск приложения
-CMD ["yarn", "dev"] 
+# Run the compiled JS directly. `yarn start` would re-trigger the
+# `prestart: yarn build` hook on every container start, wasting boot
+# time; the build was already done above.
+CMD ["node", "dist/main.js"]
