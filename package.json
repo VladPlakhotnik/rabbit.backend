@@ -76,6 +76,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",
+    "@flydotio/dockerfile": "^0.7.10",
     "@types/axios": "^0.14.4",
     "@types/passport-google-oauth20": "^2.0.17",
     "@typescript-eslint/eslint-plugin": "^8.30.1",

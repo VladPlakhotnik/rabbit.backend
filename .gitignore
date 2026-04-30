@@ -154,3 +154,6 @@ dist
 .pnp.*
 # Personal Claude Code instructions — never commit
 CLAUDE.md
+
+# Postgres dump files (never commit DB backups)
+*.dump
