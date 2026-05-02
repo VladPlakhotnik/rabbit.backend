@@ -17,6 +17,8 @@ export interface ClickAckPayload {
   level: number | null
   clickLevel: number | null
   energyLevel: number | null
+  /** How many of the accepted clicks landed a 10× crit. 0 when skill not unlocked. */
+  critCount: number
 }
 
 export interface UpgradeAckPayload {

@@ -37,6 +37,8 @@ export interface ClickResult {
   level_id: number | null
   click_level_id: number | null
   energy_level_id: number | null
+  /** Number of accepted clicks in this batch that landed a 10× crit. */
+  crit_count: number
 }
 
 @Injectable()
@@ -241,6 +243,7 @@ export class ClickerUserService {
       level_id: result.level_id || null,
       click_level_id: result.click_level_id || null,
       energy_level_id: result.energy_level_id || null,
+      crit_count: result.crit_count,
     }
   }
 
@@ -266,6 +269,11 @@ export class ClickerUserService {
 
     const nextLevelCost = await this.findNextLevelCost(user.level?.id ?? 0)
 
+    // Crit chance defaults to 0 when the skill isn't unlocked — the Lua
+    // hot path checks `cc > 0` before entering the roll loop, so an
+    // unupgraded user pays no extra cost per click.
+    const critChancePct = user.crit_click_level?.crit_chance_pct ?? 0
+
     await this.redisService.bootstrap(
       userId,
       {
@@ -280,6 +288,7 @@ export class ClickerUserService {
         click_level_id: user.click_level.id,
         energy_level_id: user.energy_level.id,
         next_level_cost: nextLevelCost,
+        crit_chance_pct: critChancePct,
       },
     )
   }

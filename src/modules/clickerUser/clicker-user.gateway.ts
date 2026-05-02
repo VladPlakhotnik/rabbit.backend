@@ -126,6 +126,7 @@ export class ClickerUserGateway
         level: result.level_id,
         clickLevel: result.click_level_id,
         energyLevel: result.energy_level_id,
+        critCount: result.crit_count,
       }
       // Ack only — no broadcast. Other tabs of the same user see updates via
       // their own batched click cycle / explicit getState calls.

@@ -26,6 +26,11 @@ export interface ClickerMetaInput {
   energy_level_id: number
   /** Points threshold for the next bunny level. 0 = max level. */
   next_level_cost: number
+  /**
+   * Crit chance percent (0-100). 0 means crit-click skill not unlocked
+   * yet — Lua skips the roll loop entirely in that case (perf shortcut).
+   */
+  crit_chance_pct: number
 }
 
 export interface ClickerStateSnapshot {
@@ -47,6 +52,8 @@ export interface LuaClickResult {
   level_up_due: boolean
   /** Energy units per 1000 ms — surfaced for client-side extrapolation. */
   regen_milli: number
+  /** How many of the accepted clicks landed a crit (10× payout). */
+  crit_count: number
 }
 
 @Injectable()
@@ -171,7 +178,7 @@ export class ClickerRedisService {
   }
 
   private parseLuaResult(raw: unknown): LuaClickResult {
-    if (!Array.isArray(raw) || raw.length < 11) {
+    if (!Array.isArray(raw) || raw.length < 12) {
       throw new Error('clicker lua: malformed return value')
     }
     const arr = raw as Array<string | number>
@@ -192,6 +199,7 @@ export class ClickerRedisService {
       energy_level_id: num(8),
       level_up_due: num(9) === 1,
       regen_milli: num(10),
+      crit_count: num(11),
     }
   }
 
@@ -224,6 +232,7 @@ export class ClickerRedisService {
       cl: String(meta.click_level_id),
       el: String(meta.energy_level_id),
       nl: String(meta.next_level_cost),
+      cc: String(meta.crit_chance_pct),
     })
     pipe.expire(ukey, TTL_SECONDS)
     await pipe.exec()
@@ -249,10 +258,10 @@ export class ClickerRedisService {
   }
 
   /**
-   * Drop only the meta fields (c/m/r/l/cl/el/nl), preserving live state
-   * (p/e/t). Used after a cron-driven level-up so the next click reloads
-   * fresh `level_id` / `next_level_cost` without disturbing accumulated
-   * points/energy.
+   * Drop only the meta fields (c/m/r/l/cl/el/nl/cc), preserving live
+   * state (p/e/t). Used after a cron-driven level-up so the next click
+   * reloads fresh `level_id` / `next_level_cost` / crit chance without
+   * disturbing accumulated points/energy.
    */
   async clearMeta(userId: number): Promise<void> {
     await this.redis.hdel(
@@ -264,6 +273,7 @@ export class ClickerRedisService {
       'cl',
       'el',
       'nl',
+      'cc',
     )
   }
 
