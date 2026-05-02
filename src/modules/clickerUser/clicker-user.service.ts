@@ -6,14 +6,20 @@ import {
   Logger,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { DataSource, Repository } from 'typeorm'
 import { ClickerUser } from './entities/clicker_user.entity'
 import { ClickerLevelsService } from '../clickerLevels/clicker-levels.service'
 import { CreateClickerUserDto } from './dto/create-clicker-user.dto'
 import { ClickerClickLevelsService } from '../clickerClickLevels/clicker-click-levels.service'
 import { ClickerEnergyLevelsService } from '../clickerEnergyLevels/clicker-energy-levels.service'
+import { ClickerAutoClickerLevel } from '../clickerAutoClickerLevels/entities/clicker_auto_clicker_level.entity'
+import { ClickerCritClickLevel } from '../clickerCritClickLevels/entities/clicker_crit_click_level.entity'
+import { ClickerHistoryService } from '../clickerHistory/clicker-history.service'
 import { ClickerRedisService } from './redis/clicker-redis.service'
 import { ClickerFlushService } from './redis/clicker-flush.service'
+
+/** Skill identifiers shared with the frontend / audit log. */
+export type SkillKind = 'auto_clicker' | 'crit_click'
 
 // Hard cap on a single batched click message. The frontend coalesces ~150 ms
 // of clicks into one event, so even an autoclicker hitting 30 cps lands well
@@ -45,6 +51,8 @@ export class ClickerUserService {
     private readonly clickerEnergyLevelsService: ClickerEnergyLevelsService,
     private readonly redisService: ClickerRedisService,
     private readonly flushService: ClickerFlushService,
+    private readonly historyService: ClickerHistoryService,
+    private readonly dataSource: DataSource,
   ) {}
 
   findAll() {
@@ -403,5 +411,144 @@ export class ClickerUserService {
       energy_amount: user.energy_amount,
       points: user.points,
     }
+  }
+
+  /**
+   * Upgrade a "skill" track (auto-clicker or crit-click) one tier up.
+   *
+   * Differences from the click / energy upgrade methods above:
+   *
+   *   1. **Pessimistic write lock** on `clicker_users` for the duration
+   *      of the upgrade. Two concurrent calls (double-tap, two tabs)
+   *      otherwise both pass the affordability check, both write the
+   *      same `level_id`, and the player gets one tier for the price
+   *      of two. SELECT FOR UPDATE serialises them — the second waits,
+   *      then sees the post-upgrade state and either bumps further
+   *      (legitimate) or fails affordability (correct rejection).
+   *
+   *   2. **Skill-not-unlocked path**. Both relations are nullable —
+   *      `NULL = never bought`. The first upgrade promotes from NULL
+   *      directly to level 1 (purchasing the skill); subsequent
+   *      upgrades step through 1 → 2 → 3 → … . There is no separate
+   *      "buy" step on the API — purchase = first upgrade.
+   *
+   *   3. **Audit log** entry on success. Captures the carrot debit
+   *      and the level transition so the admin / forensics tools can
+   *      reconstruct the player's progression.
+   *
+   * Bypasses Redis on purpose — skill upgrades are rare (a few per
+   * session, max), so the simpler PG-as-truth path beats juggling
+   * Redis state for marginal latency.
+   */
+  private async upgradeSkill<
+    TLevel extends { id: number; level: number; upgrade_cost: number },
+  >(
+    userId: number,
+    skillKind: SkillKind,
+    levelEntity: { new (): TLevel } & Function,
+    relationKey: 'auto_clicker_level' | 'crit_click_level',
+    extraStateForLog?: (level: TLevel) => Record<string, unknown>,
+    ip?: string | null,
+  ): Promise<{ level: TLevel; points: number }> {
+    // Drain Redis → PG so the points figure we lock against below is
+    // the freshest available. Without this we'd lock on a value that's
+    // already drifted from authoritative state.
+    await this.flushService.flushUser(userId)
+
+    const result = await this.dataSource.transaction(async (manager) => {
+      const user = await manager.findOne(ClickerUser, {
+        where: { user_id: userId },
+        relations: [relationKey],
+        lock: { mode: 'pessimistic_write' },
+      })
+      if (!user) {
+        throw new NotFoundException('Clicker profile not found')
+      }
+
+      const currentLevel = user[relationKey] as TLevel | null
+      const nextLevelId = (currentLevel?.id ?? 0) + 1
+      const nextLevel = await manager.findOne(levelEntity, {
+        where: { id: nextLevelId } as never,
+      })
+      if (!nextLevel) {
+        // Already at max tier — surfaced as 400 since the action is
+        // semantically refused, not "level missing".
+        throw new BadRequestException('Already at the maximum tier')
+      }
+
+      if (user.points < nextLevel.upgrade_cost) {
+        throw new BadRequestException('Not enough points for upgrade')
+      }
+
+      const stateBefore = {
+        points: user.points,
+        level_id: currentLevel?.id ?? null,
+      }
+
+      // Mutate inside the transaction so the lock holds until COMMIT.
+      ;(user as unknown as Record<string, TLevel>)[relationKey] = nextLevel
+      user.points -= nextLevel.upgrade_cost
+      await manager.save(user)
+
+      return {
+        level: nextLevel,
+        points: user.points,
+        stateBefore,
+        stateAfter: {
+          points: user.points,
+          level_id: nextLevel.id,
+          ...(extraStateForLog ? extraStateForLog(nextLevel) : {}),
+        },
+      }
+    })
+
+    // Drop Redis state so the next click lazy-loads with the new
+    // skill level baked into bootstrap. Outside the transaction —
+    // transaction holds DB row, Redis is independent.
+    await this.redisService.clearUser(userId)
+
+    // Audit log — best-effort. Insert errors logged + swallowed inside
+    // the service (see ClickerHistoryService).
+    await this.historyService.record({
+      user_id: userId,
+      action: 'upgrade_skill',
+      payload: { skill: skillKind, cost: result.level.upgrade_cost },
+      state_before: result.stateBefore,
+      state_after: result.stateAfter,
+      source: 'ws',
+      ip: ip ?? null,
+    })
+
+    return { level: result.level, points: result.points }
+  }
+
+  async upgradeAutoClickerLevel(
+    userId: number,
+    ip?: string | null,
+  ): Promise<{ auto_clicker_level: ClickerAutoClickerLevel; points: number }> {
+    const { level, points } = await this.upgradeSkill<ClickerAutoClickerLevel>(
+      userId,
+      'auto_clicker',
+      ClickerAutoClickerLevel,
+      'auto_clicker_level',
+      (lvl) => ({ duration_sec: lvl.duration_sec }),
+      ip,
+    )
+    return { auto_clicker_level: level, points }
+  }
+
+  async upgradeCritClickLevel(
+    userId: number,
+    ip?: string | null,
+  ): Promise<{ crit_click_level: ClickerCritClickLevel; points: number }> {
+    const { level, points } = await this.upgradeSkill<ClickerCritClickLevel>(
+      userId,
+      'crit_click',
+      ClickerCritClickLevel,
+      'crit_click_level',
+      (lvl) => ({ crit_chance_pct: lvl.crit_chance_pct }),
+      ip,
+    )
+    return { crit_click_level: level, points }
   }
 }

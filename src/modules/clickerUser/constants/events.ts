@@ -7,6 +7,13 @@ export const EVENTS = {
   UPGRADE_CLICK_RESULT: 'upgradeClickResult',
   UPGRADE_ENERGY: 'upgradeEnergy',
   UPGRADE_ENERGY_RESULT: 'upgradeEnergyResult',
+  // Skill upgrades (auto-clicker / crit-click). On first call the
+  // skill is unlocked at level 1 from a NULL state; subsequent calls
+  // bump the tier through clicker_auto_clicker_levels / crit_click_levels.
+  UPGRADE_AUTO_CLICKER: 'upgradeAutoClicker',
+  UPGRADE_AUTO_CLICKER_RESULT: 'upgradeAutoClickerResult',
+  UPGRADE_CRIT_CLICK: 'upgradeCritClick',
+  UPGRADE_CRIT_CLICK_RESULT: 'upgradeCritClickResult',
   // Sent on the client's own socket only — used for state sync after upgrades
   // and after the periodic Postgres flush bumps a level. Never broadcast.
   USER_UPDATE: 'userUpdate',

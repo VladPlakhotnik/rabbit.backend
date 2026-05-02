@@ -17,6 +17,7 @@ import { EVENTS, GATEWAY_CONFIG } from './constants/events'
 import {
   ClickAckPayload,
   ErrorResponse,
+  SkillUpgradeAckPayload,
   UpgradeAckPayload,
 } from './types/user-update.types'
 import type { JwtPayload } from '../auth/auth.service'
@@ -25,6 +26,12 @@ import type { JwtPayload } from '../auth/auth.service'
 // as a forgery / clock-skew artifact. Energy regen is server-anchored so this
 // just prevents someone from sending `ts: yearAgo` to fake regenerated energy.
 const MAX_TS_DRIFT_MS = 5 * 60 * 1000
+
+// Min spacing between two upgrade calls from the same socket. The
+// upgradeSkill flow already serialises with a row lock, so this is
+// not the security gate — it's a cheap performance guard that
+// short-circuits a rapid double-tap before we touch the DB.
+const UPGRADE_THROTTLE_MS = 500
 
 @WebSocketGateway(GATEWAY_CONFIG)
 export class ClickerUserGateway
@@ -35,6 +42,10 @@ export class ClickerUserGateway
 
   private readonly logger = new Logger(ClickerUserGateway.name)
   private readonly socketUserId = new WeakMap<Socket, number>()
+  // ms-since-epoch of the last upgrade-event each socket fired. Used for
+  // a per-socket cooldown only — the upgrade method itself is row-locked,
+  // so this map is purely a perf shortcut.
+  private readonly lastUpgradeAt = new WeakMap<Socket, number>()
 
   constructor(
     private readonly clickerUserService: ClickerUserService,
@@ -186,6 +197,72 @@ export class ClickerUserGateway
     }
   }
 
+  @SubscribeMessage(EVENTS.UPGRADE_AUTO_CLICKER)
+  async handleUpgradeAutoClicker(
+    @ConnectedSocket() client: Socket,
+  ): Promise<SkillUpgradeAckPayload | { error: string }> {
+    const userId = this.socketUserId.get(client)
+    if (userId == null) {
+      return this.errorAck(client, 'Not authenticated')
+    }
+    if (!this.checkUpgradeCooldown(client)) {
+      return this.errorAck(client, 'Too many upgrade requests')
+    }
+
+    try {
+      const ip = this.extractIp(client)
+      const result = await this.clickerUserService.upgradeAutoClickerLevel(
+        userId,
+        ip,
+      )
+      const payload: SkillUpgradeAckPayload = {
+        userId,
+        skill: 'auto_clicker',
+        level: result.auto_clicker_level.level,
+        levelId: result.auto_clicker_level.id,
+        points: result.points,
+        durationSec: result.auto_clicker_level.duration_sec,
+      }
+      this.emitToUserSocket(client, EVENTS.UPGRADE_AUTO_CLICKER_RESULT, payload)
+      return payload
+    } catch (err) {
+      return this.errorAck(client, err)
+    }
+  }
+
+  @SubscribeMessage(EVENTS.UPGRADE_CRIT_CLICK)
+  async handleUpgradeCritClick(
+    @ConnectedSocket() client: Socket,
+  ): Promise<SkillUpgradeAckPayload | { error: string }> {
+    const userId = this.socketUserId.get(client)
+    if (userId == null) {
+      return this.errorAck(client, 'Not authenticated')
+    }
+    if (!this.checkUpgradeCooldown(client)) {
+      return this.errorAck(client, 'Too many upgrade requests')
+    }
+
+    try {
+      const ip = this.extractIp(client)
+      const result = await this.clickerUserService.upgradeCritClickLevel(
+        userId,
+        ip,
+      )
+      const payload: SkillUpgradeAckPayload = {
+        userId,
+        skill: 'crit_click',
+        level: result.crit_click_level.level,
+        levelId: result.crit_click_level.id,
+        points: result.points,
+        critChancePct: result.crit_click_level.crit_chance_pct,
+      }
+      this.emitToUserSocket(client, EVENTS.UPGRADE_CRIT_CLICK_RESULT, payload)
+      return payload
+    } catch (err) {
+      return this.errorAck(client, err)
+    }
+  }
+
   @SubscribeMessage(EVENTS.GET_STATE)
   async handleGetState(
     @ConnectedSocket() client: Socket,
@@ -233,6 +310,38 @@ export class ClickerUserGateway
     // anchored to this timestamp inside Lua.
     if (Math.abs(now - n) > MAX_TS_DRIFT_MS) return now
     return n
+  }
+
+  /**
+   * Returns true when the socket may proceed with an upgrade, false
+   * when it's still inside the cooldown window. Per-socket because:
+   *   - per-user would let one tab block another tab of the same user,
+   *   - per-IP would let two players on the same NAT block each other.
+   * The cooldown is purely a performance / DOS guard; the upgrade
+   * method itself runs under SELECT FOR UPDATE so safety doesn't
+   * depend on this check.
+   */
+  private checkUpgradeCooldown(client: Socket): boolean {
+    const now = Date.now()
+    const last = this.lastUpgradeAt.get(client) ?? 0
+    if (now - last < UPGRADE_THROTTLE_MS) return false
+    this.lastUpgradeAt.set(client, now)
+    return true
+  }
+
+  /**
+   * Best-effort client IP for the audit log. socket.io doesn't promise
+   * real-IP through proxies — production behind a load balancer needs
+   * trust-proxy + X-Forwarded-For. Falls back to null if unavailable.
+   */
+  private extractIp(client: Socket): string | null {
+    const forwarded = client.handshake.headers['x-forwarded-for']
+    if (typeof forwarded === 'string' && forwarded.length > 0) {
+      // X-Forwarded-For is a comma-separated chain — the LEFT-most is
+      // the originating client; everything after is intermediate proxies.
+      return forwarded.split(',')[0]?.trim() || null
+    }
+    return client.handshake.address || null
   }
 
   private emitToUserSocket(
