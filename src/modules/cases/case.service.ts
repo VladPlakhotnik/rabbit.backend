@@ -2,6 +2,7 @@ import * as crypto from 'crypto'
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
@@ -68,6 +69,8 @@ const sortSkinCasesForLottery = (skinCases: SkinCase[]): void => {
 
 @Injectable()
 export class CaseService {
+  private readonly logger = new Logger(CaseService.name)
+
   constructor(
     @InjectRepository(Case)
     private caseRepository: Repository<Case>,
@@ -134,6 +137,39 @@ export class CaseService {
         }
       }
     }
+  }
+
+  /**
+   * Drop skin_case rows whose ManyToOne to a real skin came back null
+   * (and which `hydrateDotaSkins` couldn't fix either). Without this,
+   * the API hands the frontend a `skinCases[i].skin === null` and any
+   * downstream `.skin.image` / `.skin.name` access throws — the page
+   * goes into the ErrorBoundary fallback even though all the OTHER
+   * skins in the case are perfectly fine.
+   *
+   * Causes a row to be orphaned:
+   *   - skin_hash_name typo / case (no row in csgo_skins or dota_skins)
+   *   - skin was deleted from the source table after the seed
+   *   - market sync hasn't yet ingested a brand-new skin from the feed
+   *
+   * Mutates `caseEntity.skinCases` in place. Logs a warning so the dev
+   * notices and either fixes the seed or waits for sync to catch up.
+   */
+  private dropOrphanSkinCases(caseEntity: Case): void {
+    if (!caseEntity.skinCases?.length) return
+    const before = caseEntity.skinCases.length
+    const orphans = caseEntity.skinCases.filter(sc => !sc.skin)
+    if (orphans.length === 0) return
+
+    caseEntity.skinCases = caseEntity.skinCases.filter(sc => sc.skin != null)
+    this.logger.warn(
+      `Case id=${caseEntity.id} (${caseEntity.slug ?? caseEntity.name ?? '?'}): ` +
+        `dropped ${orphans.length} orphan skin_case row(s) ` +
+        `[${orphans.map(o => o.skin_hash_name ?? '<no-hash>').join(', ')}] ` +
+        `from API response (was ${before}, now ${caseEntity.skinCases.length}). ` +
+        `These hash_names are not present in csgo_skins/dota_skins — ` +
+        `either fix the seed or wait for market sync.`,
+    )
   }
 
   /**
@@ -215,6 +251,7 @@ export class CaseService {
     // null (because skin_hash_name lives in dota_skins, not csgo_skins).
     await Promise.all(cases.map(c => this.hydrateDotaSkins(c)))
     for (const c of cases) {
+      this.dropOrphanSkinCases(c)
       if (c.skinCases) this.assignTicketRanges(c.skinCases)
     }
     return cases
@@ -236,6 +273,7 @@ export class CaseService {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
+    this.dropOrphanSkinCases(caseEntity)
     if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
     return caseEntity
   }
@@ -256,6 +294,7 @@ export class CaseService {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
+    this.dropOrphanSkinCases(caseEntity)
     if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
     return caseEntity
   }
