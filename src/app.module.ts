@@ -22,6 +22,7 @@ import { ClickerClickLevelsModule } from './modules/clickerClickLevels/clicker-c
 import { ClickerEnergyLevelsModule } from './modules/clickerEnergyLevels/clicker-energy-levels.module'
 import { ClickerAutoClickerLevelsModule } from './modules/clickerAutoClickerLevels/clicker-auto-clicker-levels.module'
 import { ClickerCritClickLevelsModule } from './modules/clickerCritClickLevels/clicker-crit-click-levels.module'
+import { ClickerBoostsModule } from './modules/clickerBoosts/clicker-boosts.module'
 import { ClickerHistoryModule } from './modules/clickerHistory/clicker-history.module'
 import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
 import { UserHistoryModule } from './modules/userHistory/userHistory.module'
@@ -60,6 +61,7 @@ import { WithdrawModule } from './modules/withdraw/withdraw.module'
     ClickerEnergyLevelsModule,
     ClickerAutoClickerLevelsModule,
     ClickerCritClickLevelsModule,
+    ClickerBoostsModule,
     ClickerHistoryModule,
     LiveDropsModule,
     UserHistoryModule,

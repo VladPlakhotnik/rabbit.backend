@@ -47,6 +47,10 @@ import { ClickerFlushService } from './redis/clicker-flush.service'
     ClickerUserGateway,
   ],
   controllers: [ClickerUserController],
-  exports: [ClickerUserService],
+  // ClickerFlushService + ClickerRedisService are re-exported so
+  // sibling modules (ClickerBoosts, ClickerCases) can lock against
+  // the user's points balance without rewiring TypeORM repositories
+  // or duplicating the singleton.
+  exports: [ClickerUserService, ClickerFlushService, ClickerRedisService],
 })
 export class ClickerUserModule {}
