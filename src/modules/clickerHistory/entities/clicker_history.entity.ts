@@ -19,8 +19,9 @@ export type ClickerHistoryAction =
   | 'buy_boost'
   | 'activate_boost'
   | 'boost_expire'
+  | 'admin_grant_points'
 
-export type ClickerHistorySource = 'ws' | 'rest' | 'cron'
+export type ClickerHistorySource = 'ws' | 'rest' | 'cron' | 'admin'
 
 @Entity('clicker_history')
 @Index('clicker_history_user_ts_idx', ['user_id', 'ts'])

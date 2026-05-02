@@ -582,6 +582,140 @@ export class ClickerUserService {
    *
    * Returns the activation deadline (ms) for the client countdown.
    */
+  /**
+   * Admin-only: bump or remove a user's carrots and re-anchor their
+   * bunny level to whatever points threshold the new balance hits.
+   *
+   * Why not just `UPDATE clicker_users SET points = ...`:
+   *   1. Redis is the source of truth during a session — without
+   *      clearing the user's Redis hash a manual UPDATE gets
+   *      overwritten by the next cron flush.
+   *   2. After a manual points bump the bunny level should re-anchor:
+   *      if the player crosses a points threshold, level should bump
+   *      up. (We never DOWNgrade — level is monotonic by design.)
+   *   3. Audit trail — every admin grant lands one row in
+   *      clicker_history with payload {amount, reason} and a clear
+   *      `source = 'admin'` so it stands out in queries.
+   *
+   * Steps:
+   *   1. Flush Redis → PG so we lock against the freshest balance.
+   *   2. Pessimistic-write transaction:
+   *      - SELECT FOR UPDATE on clicker_users
+   *      - new_points = max(0, current + delta)
+   *      - new_level = highest level whose points_required ≤ new_points,
+   *        but never below the current level (monotonic guard)
+   *      - UPDATE points + level + last_energy_update
+   *   3. clearUser in Redis — next click bootstraps with the new
+   *      values straight from PG.
+   *   4. History row.
+   *
+   * @param adminUserId who issued the grant — for audit forensics
+   * @param targetUserId whose carrots are being modified
+   * @param delta positive = grant, negative = remove. Floats are
+   *              rejected (DTO clamps to integer).
+   * @param reason optional free-text annotation in the audit row
+   */
+  async adminGrantPoints(
+    adminUserId: number,
+    targetUserId: number,
+    delta: number,
+    reason: string | null,
+    ip?: string | null,
+  ): Promise<{
+    user_id: number
+    points: number
+    level_id: number
+  }> {
+    if (!Number.isFinite(delta) || delta === 0) {
+      throw new BadRequestException('delta must be a non-zero finite number')
+    }
+    const intDelta = Math.trunc(delta)
+
+    // Step 1: drain Redis state into PG so the lock catches the
+    // freshest figure, not a 60-second-stale one.
+    await this.flushService.flushUser(targetUserId)
+
+    const result = await this.dataSource.transaction(async (manager) => {
+      const user = await manager.findOne(ClickerUser, {
+        where: { user_id: targetUserId },
+        relations: ['level'],
+        lock: { mode: 'pessimistic_write' },
+      })
+      if (!user) {
+        throw new NotFoundException('Clicker profile not found')
+      }
+
+      const stateBefore = {
+        points: user.points,
+        level_id: user.level?.id ?? null,
+      }
+
+      // Floor at 0 — admin can't drag a balance into negative
+      // territory; if delta would do so, we just zero it out.
+      const newPoints = Math.max(0, user.points + intDelta)
+
+      // Re-anchor the level. Pull the catalog (cheap — < 20 rows) and
+      // pick the highest tier whose points_required <= newPoints.
+      // Never drop below the current level — by design level is a
+      // permanent rank, not a "do they still qualify" flag.
+      const allLevels = await this.clickerLevelsService.findAll()
+      const sorted = [...allLevels].sort((a, b) => a.id - b.id)
+      const currentLevelId = user.level?.id ?? 0
+      let nextLevel = user.level
+      for (const lv of sorted) {
+        if (lv.id < currentLevelId) continue
+        if (newPoints >= lv.points_required) {
+          nextLevel = lv
+        } else {
+          break
+        }
+      }
+
+      user.points = newPoints
+      if (nextLevel) {
+        user.level = nextLevel
+      }
+      user.last_energy_update = new Date()
+      await manager.save(user)
+
+      return {
+        stateBefore,
+        stateAfter: {
+          points: user.points,
+          level_id: user.level?.id ?? null,
+        },
+        points: user.points,
+        level_id: user.level?.id ?? 0,
+      }
+    })
+
+    // Step 3: drop Redis cache. Next click sees meta_missing and
+    // re-bootstraps with the new points / level / next_level_cost.
+    await this.redisService.clearUser(targetUserId)
+
+    // Step 4: audit log. Source 'admin' so we can grep these
+    // separately from organic 'ws' / 'cron' history.
+    await this.historyService.record({
+      user_id: targetUserId,
+      action: 'admin_grant_points',
+      payload: {
+        admin_user_id: adminUserId,
+        delta: intDelta,
+        reason: reason ?? null,
+      },
+      state_before: result.stateBefore,
+      state_after: result.stateAfter,
+      source: 'admin',
+      ip: ip ?? null,
+    })
+
+    return {
+      user_id: targetUserId,
+      points: result.points,
+      level_id: result.level_id,
+    }
+  }
+
   async activateAutoClicker(
     userId: number,
     ip?: string | null,
