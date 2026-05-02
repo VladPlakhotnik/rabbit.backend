@@ -18,6 +18,7 @@ import {
   TmMarketClient,
   TmOrder,
 } from '../skins/shared/market-tm.client'
+import { NotificationService } from '../notifications/notification.service'
 
 // Injection tokens for the per-game TM clients. Same literals as in
 // `skin.module.ts` — keep them here as constants to avoid a circular
@@ -57,6 +58,7 @@ export class WithdrawService {
     private readonly tmCsgo: TmMarketClient,
     @Inject(TM_DOTA2_CLIENT_TOKEN)
     private readonly tmDota: TmMarketClient,
+    private readonly notificationService: NotificationService,
   ) {}
 
   /**
@@ -521,6 +523,19 @@ export class WithdrawService {
       this.logger.log(
         `Withdrawal ${withdrawal.id} completed (paid=${paidDollars}, target=${withdrawal.target_price})`,
       )
+      // Fire-and-forget: a notify failure must not roll back a successful
+      // withdrawal. NotificationService.fanout already swallows
+      // subscriber errors, but the create() itself can still fail (DB
+      // hiccup) — we log and move on.
+      this.notificationService
+        .notifyWithdrawCompleted(withdrawal.user_id, paidDollars)
+        .catch(err =>
+          this.logger.warn(
+            `Failed to send withdraw-completed notification for ${withdrawal.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        )
       return
     }
 
@@ -557,6 +572,15 @@ export class WithdrawService {
       this.logger.warn(
         `Withdrawal ${withdrawal.id} failed (TM stage=${order.stage}, causer=${order.causer})`,
       )
+      this.notificationService
+        .notifyWithdrawFailed(withdrawal.user_id, reason)
+        .catch(err =>
+          this.logger.warn(
+            `Failed to send withdraw-failed notification for ${withdrawal.id}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        )
       return
     }
 

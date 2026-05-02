@@ -5,6 +5,7 @@ import { UserInventory } from '../userInventory/userInventory.entity'
 import { WithdrawService } from './withdraw.service'
 import { WithdrawController } from './withdraw.controller'
 import { SkinModule } from '../skins/skin.module'
+import { NotificationModule } from '../notifications/notification.module'
 
 // SkinModule is imported (not just type-imported) because we inject
 // the per-game TM clients (`TM_CSGO_CLIENT`, `TM_DOTA2_CLIENT`) which
@@ -15,6 +16,7 @@ import { SkinModule } from '../skins/skin.module'
   imports: [
     TypeOrmModule.forFeature([Withdrawal, UserInventory]),
     SkinModule,
+    NotificationModule,
   ],
   controllers: [WithdrawController],
   providers: [WithdrawService],

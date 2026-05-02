@@ -49,14 +49,13 @@ export class ClickerUserController {
   @ApiOperation({ summary: 'Get current user clicker profile' })
   @ApiResponse({
     status: 200,
-    description: 'Returns the current user clicker profile',
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Clicker profile not found',
+    description: 'Returns the current user clicker profile (lazy-created on first hit)',
   })
   async getCurrentUserProfile(@Request() req: RequestWithUser) {
-    return this.clickerUserService.findByUserId(req.user.id)
+    // Lazy creation: the clicker profile no longer exists at registration
+    // time. The first time a player opens the clicker tab, this endpoint
+    // (or the click bootstrap) materialises the row.
+    return this.clickerUserService.findOrCreateByUserId(req.user.id)
   }
 
   @Get(':id')

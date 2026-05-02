@@ -10,7 +10,6 @@ import { SteamStrategy } from './steam.strategy'
 import { TelegramStrategy } from './telegram.strategy'
 import { GoogleStrategy } from './google.strategy'
 import { UserModule } from '../users/users.module'
-import { ClickerUserModule } from '../clickerUser/clicker-user.module'
 import { SocialModule } from '../social/social.module'
 
 @Module({
@@ -32,7 +31,6 @@ import { SocialModule } from '../social/social.module'
       inject: [ConfigService],
     }),
     UserModule,
-    ClickerUserModule,
     SocialModule,
     CacheModule.register({
       ttl: 300, // 5 minutes

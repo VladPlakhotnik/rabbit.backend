@@ -34,4 +34,11 @@ export class ClickerSkinCase {
 
   @Column({ name: 'is_drop_out', default: false })
   is_drop_out!: boolean
+
+  /**
+   * Virtual (not persisted). Populated by the API just like SkinCase —
+   * lets the frontend display ticket ranges in the chances modal that
+   * match the actual roll the server will perform.
+   */
+  ticket_range?: { start: number; end: number } | null
 }

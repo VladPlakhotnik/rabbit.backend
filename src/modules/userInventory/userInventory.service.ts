@@ -9,6 +9,7 @@ import { Repository, In } from 'typeorm'
 import { UserInventory, GameType } from './userInventory.entity'
 import { User } from '../users/user.entity'
 import { Case } from '../cases/case.entity'
+import { ClickerCase } from '../clickerCase/entities/clicker_case.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
 
@@ -283,6 +284,7 @@ export class UserInventoryService {
         csgo_skin_id: gameType === 'csgo' ? skin.id : null,
         dota_skin_id: gameType === 'dota' ? skin.id : null,
         case: caseEntity,
+        clickerCase: null,
         obtained_at: new Date(),
         is_sold: false,
         is_withdrawn: false,
@@ -299,6 +301,37 @@ export class UserInventoryService {
       } else {
         saved.dotaSkin = skin as DotaSkin
       }
+      return saved
+    })
+  }
+
+  /**
+   * Inventory row for a skin won from a clicker (carrot-priced) case.
+   * Same shape as {@link createInventory} but writes `clicker_case_id`
+   * instead of `case_id`. Currently only supports CSGO skins — clicker
+   * cases don't pull from the Dota pool yet.
+   */
+  async createInventoryFromClickerCase(
+    userId: number,
+    skin: CsgoSkin,
+    clickerCase: ClickerCase,
+  ): Promise<UserInventory> {
+    return this.userInventoryRepository.manager.transaction(async manager => {
+      const inventory = manager.create(UserInventory, {
+        user: { id: userId },
+        game_type: 'csgo' as GameType,
+        csgo_skin_id: skin.id,
+        dota_skin_id: null,
+        case: null,
+        clickerCase,
+        obtained_at: new Date(),
+        is_sold: false,
+        is_withdrawn: false,
+        withdrawn_at: null,
+      })
+      const saved = await manager.save(inventory)
+      saved.skin = skin
+      saved.csgoSkin = skin
       return saved
     })
   }

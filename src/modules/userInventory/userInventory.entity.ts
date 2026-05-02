@@ -13,6 +13,7 @@ import { User } from '../users/user.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
 import { Case } from '../cases/case.entity'
+import { ClickerCase } from '../clickerCase/entities/clicker_case.entity'
 
 export type GameType = 'csgo' | 'dota'
 
@@ -94,11 +95,24 @@ export class UserInventory {
     }
   }
 
-  // ---- Case (unchanged) --------------------------------------------
+  // ---- Source case (regular OR clicker; nullable on each side) -----
+  //
+  // A row originates from exactly one source — either a regular `cases`
+  // open or a `clicker_cases` open. Both columns are nullable; an
+  // application-level check ensures at most one is set. Polymorphic FK
+  // with discriminator wasn't worth the complexity here — the read path
+  // is `inv.case ?? inv.clickerCase` and consumers don't need to know
+  // which.
 
-  @ManyToOne(() => Case, caseEntity => caseEntity.inventories)
+  @ManyToOne(() => Case, caseEntity => caseEntity.inventories, {
+    nullable: true,
+  })
   @JoinColumn({ name: 'case_id' })
-  case!: Case
+  case!: Case | null
+
+  @ManyToOne(() => ClickerCase, { nullable: true })
+  @JoinColumn({ name: 'clicker_case_id' })
+  clickerCase!: ClickerCase | null
 
   @Column({ type: 'timestamp' })
   obtained_at!: Date

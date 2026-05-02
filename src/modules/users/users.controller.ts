@@ -355,111 +355,14 @@ export class UserController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Telegram OAuth URL for linking account' })
-  @ApiResponse({
-    status: 200,
-    description: 'Returns Telegram OAuth URL with link_to_user_id parameter',
-  })
-  @UseGuards(AuthGuard('jwt'))
-  @Get('me/link/telegram')
-  async getTelegramLinkUrl(@Req() req: Request) {
-    try {
-      const user = req.user as User
+  // GET /users/me/link/telegram and POST /users/me/link/telegram were
+  // removed as part of the Telegram-auth security overhaul. Both relied
+  // on `?link_to_user_id=` (unauthenticated query input) or accepted a
+  // raw `telegram_user_id` from request body without HMAC verification —
+  // either path let any caller attach an arbitrary Telegram id to their
+  // own account, or attach their Telegram to anyone's account. The
+  // canonical replacement is POST /auth/telegram/link, which requires
+  // JWT and the full HMAC-signed Telegram payload. See
+  // src/modules/auth/auth.controller.ts → linkTelegram.
 
-      // Check if user already has Telegram account linked
-      if (user.telegram_user_id) {
-        throw new BadRequestException(
-          'Telegram account is already linked to this user',
-        )
-      }
-
-      const baseUrl = process.env.BASE_URL || 'http://localhost:5000'
-      const telegramAuthUrl = `${baseUrl}/auth/telegram/callback?link_to_user_id=${user.id}`
-
-      return {
-        message: 'Telegram OAuth URL generated',
-        auth_url: telegramAuthUrl,
-        instructions:
-          'Visit this URL to link your Telegram account. After successful authentication, your Telegram account will be linked to your existing account without changing your name or other data.',
-      }
-    } catch (error: unknown) {
-      this.logger.error(
-        `Error generating Telegram link URL for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
-      )
-
-      if (
-        error instanceof BadRequestException ||
-        error instanceof NotFoundException
-      ) {
-        throw error
-      }
-
-      throw new BadRequestException(
-        'Failed to generate Telegram link URL. Please try again later.',
-      )
-    }
-  }
-
-  @ApiOperation({ summary: 'Link Telegram account to current user (direct)' })
-  @ApiResponse({
-    status: 200,
-    description: 'Telegram account linked successfully',
-  })
-  @ApiResponse({
-    status: 400,
-    description: 'Telegram account already linked to another user',
-  })
-  @UseGuards(AuthGuard('jwt'))
-  @Post('me/link/telegram')
-  async linkTelegramAccount(
-    @Req() req: Request,
-    @Body() body: { telegram_user_id: number },
-  ) {
-    try {
-      const user = req.user as User
-
-      if (!body.telegram_user_id) {
-        throw new BadRequestException('Telegram user ID is required')
-      }
-
-      // Check if user already has Telegram account linked
-      if (user.telegram_user_id) {
-        throw new BadRequestException(
-          'Telegram account is already linked to this user',
-        )
-      }
-
-      const updatedUser = await this.userService.linkTelegramAccount(
-        user.id,
-        body.telegram_user_id,
-      )
-
-      return {
-        message: 'Telegram account linked successfully',
-        user: {
-          id: updatedUser.id,
-          telegram_user_id: updatedUser.telegram_user_id,
-        },
-      }
-    } catch (error: unknown) {
-      this.logger.error(
-        `Error linking Telegram account for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
-      )
-
-      if (
-        error instanceof BadRequestException ||
-        error instanceof NotFoundException
-      ) {
-        throw error
-      }
-
-      throw new BadRequestException(
-        'Failed to link Telegram account. Please try again later.',
-      )
-    }
-  }
 }

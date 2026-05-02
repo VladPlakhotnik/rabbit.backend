@@ -209,19 +209,49 @@ export class UserService {
   }
 
   /**
-   * Updates only Telegram ID without changing other user data
+   * Attaches a verified Telegram id to an existing user account.
+   *
+   * Pre-validation: explicit lookup of the telegram_id in `users` first,
+   * so we can fail with a friendly "already linked to another account"
+   * rather than relying on the DB UNIQUE-violation surface (which would
+   * otherwise become a generic 500). The UNIQUE index on
+   * users.telegram_user_id is the last line of defence — if a request
+   * still races past this check, the DB rejects it; we catch the driver
+   * error code 23505 and surface the same 400.
    */
   async updateTelegramIdOnly(
     userId: number,
     telegramUserId: number,
   ): Promise<User> {
     this.logger.log(
-      `Updating Telegram ID ${telegramUserId} for user ${userId} (without changing other data)`,
+      `Linking Telegram ID ${telegramUserId} to user ${userId}`,
     )
 
-    await this.userRepository.update(userId, {
-      telegram_user_id: telegramUserId,
-    })
+    const existing = await this.findByTelegramId(telegramUserId)
+    if (existing && existing.id !== userId) {
+      throw new BadRequestException(
+        'This Telegram account is already linked to another user',
+      )
+    }
+
+    try {
+      await this.userRepository.update(userId, {
+        telegram_user_id: telegramUserId,
+      })
+    } catch (err: unknown) {
+      // Postgres unique_violation. Catch here so a parallel link from a
+      // different user that won the race doesn't leak a 500.
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { code?: string }).code === '23505'
+      ) {
+        throw new BadRequestException(
+          'This Telegram account is already linked to another user',
+        )
+      }
+      throw err
+    }
 
     const updatedUser = await this.findById(userId)
     if (!updatedUser) {

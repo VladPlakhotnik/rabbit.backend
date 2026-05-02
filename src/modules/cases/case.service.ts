@@ -41,6 +41,31 @@ interface TicketRange {
   end: number
 }
 
+// `chance` is `numeric(5, 2)` — up to two decimals (e.g. 50.25). Multiplying
+// by 1 000 turns it into integer tickets without losing that resolution, so
+// a case whose chances sum to 100 % yields exactly 100 000 tickets. Both the
+// roll path (prepareTicketRanges) and the UI annotation (assignTicketRanges)
+// must stay on this same factor — drift between them would split the user's
+// view from the actual lottery.
+const TICKETS_PER_PERCENT = 1_000
+
+const ticketsFor = (chance: number): number =>
+  Math.floor(chance * TICKETS_PER_PERCENT)
+
+// Stable order: market_price DESC, then SkinCase.id ASC as the tiebreaker.
+// Used by both the read API (so the chances modal lists skins in a fixed
+// order) and openCase (so the same order drives the roll). Sorting in JS
+// instead of via TypeORM's nested `order` keeps the contract independent
+// of ORM quirks for relation-of-relation ordering.
+const sortSkinCasesForLottery = (skinCases: SkinCase[]): void => {
+  skinCases.sort((a, b) => {
+    const priceA = a.skin?.market_price ?? 0
+    const priceB = b.skin?.market_price ?? 0
+    if (priceA !== priceB) return priceB - priceA
+    return a.id - b.id
+  })
+}
+
 @Injectable()
 export class CaseService {
   constructor(
@@ -174,6 +199,10 @@ export class CaseService {
     const cases = await this.caseRepository.find({
       where: gameType ? { game_type: gameType } : {},
       relations: ['skinCases', 'skinCases.skin'],
+      // Final ordering (market_price DESC, id ASC tiebreaker) is applied
+      // in JS by sortSkinCasesForLottery — keeps the contract in one place
+      // and avoids relying on TypeORM's nested `order` semantics for
+      // relation-of-relation tiebreakers.
       order: {
         skinCases: {
           skin: {
@@ -185,6 +214,9 @@ export class CaseService {
     // Patch Dota skin_case rows whose ManyToOne to CsgoSkin came back
     // null (because skin_hash_name lives in dota_skins, not csgo_skins).
     await Promise.all(cases.map(c => this.hydrateDotaSkins(c)))
+    for (const c of cases) {
+      if (c.skinCases) this.assignTicketRanges(c.skinCases)
+    }
     return cases
   }
 
@@ -204,6 +236,7 @@ export class CaseService {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
+    if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
     return caseEntity
   }
 
@@ -223,6 +256,7 @@ export class CaseService {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
+    if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
     return caseEntity
   }
 
@@ -256,7 +290,7 @@ export class CaseService {
         throw new BadRequestException('Invalid skin chance')
       }
 
-      const tickets = Math.floor(skinCase.chance * 100)
+      const tickets = ticketsFor(skinCase.chance)
       const range: TicketRange = {
         skinCase,
         start: ticketStart,
@@ -265,6 +299,32 @@ export class CaseService {
       ticketStart += tickets
       return range
     })
+  }
+
+  // Annotate each SkinCase with its `ticket_range` (virtual field) so the
+  // chances modal on the frontend can show the same numbers the openCase
+  // roll actually uses. is_drop_out=false rows get null — they don't
+  // participate in the lottery, so they don't own a slice of the pool.
+  //
+  // Mutates `skinCases` in place to match the roll order
+  // (sortSkinCasesForLottery), so the modal renders skins in the same
+  // sequence the lottery does. Without that, ticket ranges in the UI
+  // would point at the wrong skins for ties on market_price.
+  private assignTicketRanges(skinCases: SkinCase[]): void {
+    sortSkinCasesForLottery(skinCases)
+    let ticketStart = 1
+    for (const sc of skinCases) {
+      if (!sc.is_drop_out || !sc.chance || sc.chance <= 0) {
+        sc.ticket_range = null
+        continue
+      }
+      const tickets = ticketsFor(sc.chance)
+      sc.ticket_range = {
+        start: ticketStart,
+        end: ticketStart + tickets - 1,
+      }
+      ticketStart += tickets
+    }
   }
 
   // Вынесенная логика выбора победителя
@@ -332,6 +392,9 @@ export class CaseService {
     if (!valid.length) {
       throw new NotFoundException('No valid skins available in this case')
     }
+    // Match the order assignTicketRanges uses for the chances modal so the
+    // ticket ranges shown in the UI map onto the same skins the roll picks.
+    sortSkinCasesForLottery(valid)
     return valid
   }
 

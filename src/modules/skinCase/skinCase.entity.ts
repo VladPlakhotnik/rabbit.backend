@@ -66,4 +66,11 @@ export class SkinCase {
 
   @Column({ type: 'boolean' })
   is_drop_out!: boolean
+
+  // Virtual (not persisted) — populated by CaseService.assignTicketRanges
+  // before the entity is serialized to the API response. Mirrors the same
+  // 100 000-ticket pool that openCase rolls against, so the UI's chances
+  // modal shows the actual range each skin owns. `null` for is_drop_out=false
+  // rows since they don't participate in the lottery.
+  ticket_range?: { start: number; end: number } | null
 }

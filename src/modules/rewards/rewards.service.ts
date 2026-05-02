@@ -7,7 +7,13 @@ import { UserBonusService } from '../userBonuses/userBonus.service'
 
 // TEMP: shortened for QA. Restore to 48h before launch.
 const SPIN_COOLDOWN_MS = 10 * 1000
-const BONUS_CARD_TTL_MS = 14 * 24 * 60 * 60 * 1000 // 14 days to claim a wheel reward
+// Bonus card lifetime — same window the user has to claim before it
+// silently disappears (`getUserBonuses` filters by `expired_at > now`).
+// Aligned with the spin cadence: a user can win at most ~one card per
+// cooldown period, so two days keeps the inventory bonus tray small
+// (1–2 cards typical). Older 14-day cards stay valid until their own
+// expiry — no migration needed.
+const BONUS_CARD_TTL_MS = 2 * 24 * 60 * 60 * 1000
 
 export interface SpinStatus {
   canSpin: boolean
@@ -17,6 +23,11 @@ export interface SpinStatus {
 
 export interface SpinResult {
   reward: Reward
+  // Newly created `user_bonuses` row id — frontend's WheelResultModal
+  // can claim this exact card via POST /user-bonuses/:id/claim without
+  // a roundtrip through GET /user-bonuses/me to find which row was
+  // just created.
+  bonusId: number
   awardIndex: number
   nextAvailableAt: Date
 }
@@ -93,9 +104,13 @@ export class RewardsService {
       )
     }
 
-    await this.userBonusService.createWheelBonus(userId, reward.id, expiredAt)
+    const bonus = await this.userBonusService.createWheelBonus(
+      userId,
+      reward.id,
+      expiredAt,
+    )
 
-    return { reward, awardIndex, nextAvailableAt }
+    return { reward, bonusId: bonus.id, awardIndex, nextAvailableAt }
   }
 
   private selectRandomReward(rewards: Reward[]): Reward {

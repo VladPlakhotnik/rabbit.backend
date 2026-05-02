@@ -1,7 +1,32 @@
-import { Injectable, BadRequestException, Logger } from '@nestjs/common'
+import {
+  Inject,
+  Injectable,
+  BadRequestException,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common'
 import { HttpService } from '@nestjs/axios'
 import { firstValueFrom } from 'rxjs'
 import * as crypto from 'crypto'
+import Redis from 'ioredis'
+import { REDIS_CLIENT } from '../../../core/redis/redis.constants'
+
+/**
+ * Result of a successful initData verification. Mirrors the subset of the
+ * `WebAppUser` payload the rest of the system actually uses — `is_premium`,
+ * `language_code`, `allows_write_to_pm`, etc. are intentionally dropped on
+ * the floor here so callers can't accidentally lean on Telegram-side data
+ * that isn't auth-relevant.
+ */
+export interface VerifiedInitData {
+  telegramId: number
+  firstName?: string
+  lastName?: string
+  username?: string
+  photoUrl?: string
+  /** Set when the Mini App was launched via deep-link `?startapp=PARAM`. */
+  startParam?: string
+}
 
 interface TelegramChatMember {
   status:
@@ -26,6 +51,13 @@ interface TelegramApiResponse<T> {
   error_code?: number
 }
 
+// Tightened from the original 24h. The auth payload only needs to live
+// long enough for the user to receive it from the Login Widget / bot and
+// hand it off to our backend; anything longer just gives an attacker who
+// captures the hash a longer replay window. Industry guidance for
+// payment / gambling-adjacent sites is 5–10 min — 5 fits comfortably.
+const TELEGRAM_AUTH_MAX_AGE_SEC = 5 * 60
+
 /**
  * Service for working with Telegram Bot API
  * @class TelegramService
@@ -37,7 +69,10 @@ export class TelegramService {
   private readonly channelChatId: string
   private readonly baseUrl: string
 
-  constructor(private readonly httpService: HttpService) {
+  constructor(
+    private readonly httpService: HttpService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+  ) {
     this.botToken = process.env.TELEGRAM_BOT_TOKEN || ''
     this.channelChatId = process.env.TELEGRAM_CHANNEL_CHAT_ID || ''
 
@@ -132,11 +167,23 @@ export class TelegramService {
   }
 
   /**
-   * Verify Telegram authentication data from Login Widget
-   * @param authData - Authentication data from Telegram widget
-   * @returns Telegram user ID if verification successful
+   * Verify Telegram authentication data from Login Widget.
+   *
+   * Layered defence:
+   *   1. `auth_date` window — payload must be no older than
+   *      TELEGRAM_AUTH_MAX_AGE_SEC. Caps how long a leaked hash is useful.
+   *   2. HMAC-SHA256 over a sorted `key=value\n` string, secret =
+   *      SHA256(bot_token). Standard Telegram widget contract.
+   *   3. One-time use — the verified `(telegram_id, hash)` is recorded in
+   *      Redis with TTL = auth-window. Re-presenting the same hash inside
+   *      the window is rejected, so a captured payload can't be replayed
+   *      twice (e.g. once by the legitimate user, then again by an
+   *      attacker who sniffed it from the network).
+   *
+   * Returns the Telegram user id on success, throws BadRequestException
+   * otherwise.
    */
-  verifyAuthData(authData: {
+  async verifyAuthData(authData: {
     id: number
     first_name?: string
     last_name?: string
@@ -144,24 +191,18 @@ export class TelegramService {
     photo_url?: string
     auth_date: number
     hash: string
-  }): number {
+  }): Promise<number> {
     if (!this.botToken) {
       throw new BadRequestException('Telegram bot token is not configured')
     }
 
-    // Check if auth_date is not too old (24 hours)
-    const authDate = authData.auth_date
     const currentTime = Math.floor(Date.now() / 1000)
-    const maxAge = 24 * 60 * 60 // 24 hours
-
-    if (currentTime - authDate > maxAge) {
+    if (currentTime - authData.auth_date > TELEGRAM_AUTH_MAX_AGE_SEC) {
       throw new BadRequestException('Telegram authentication data has expired')
     }
 
-    // Extract hash from auth data
+    // HMAC verification.
     const { hash, ...dataWithoutHash } = authData
-
-    // Create data check string
     const dataCheckString = Object.keys(dataWithoutHash)
       .sort()
       .map(
@@ -169,22 +210,196 @@ export class TelegramService {
       )
       .join('\n')
 
-    // Create secret key from bot token
     const secretKey = crypto.createHash('sha256').update(this.botToken).digest()
-
-    // Calculate HMAC
     const calculatedHash = crypto
       .createHmac('sha256', secretKey)
       .update(dataCheckString)
       .digest('hex')
 
-    // Verify hash
     if (calculatedHash !== hash) {
       throw new BadRequestException(
         'Invalid Telegram authentication data. Hash verification failed.',
       )
     }
 
+    // Replay protection — claim the (telegram_id, hash) pair in Redis with
+    // TTL == auth-age window. NX semantics: SET fails if the key already
+    // exists, which means this exact hash was already accepted.
+    //
+    // Redis is best-effort here: if it's down the SET returns null and we
+    // accept the auth (hash + auth_date alone are still verified), rather
+    // than locking users out. Hosting a single Redis instance, this is the
+    // right trade-off; if you ever shard or run replicated, revisit.
+    try {
+      const replayKey = `tg:authhash:${authData.id}:${hash}`
+      const ok = await this.redis.set(
+        replayKey,
+        '1',
+        'EX',
+        TELEGRAM_AUTH_MAX_AGE_SEC,
+        'NX',
+      )
+      if (ok === null) {
+        throw new BadRequestException(
+          'Telegram authentication payload already used',
+        )
+      }
+    } catch (err) {
+      if (err instanceof BadRequestException) throw err
+      this.logger.warn(
+        `Telegram replay-check unavailable: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
+
     return authData.id
+  }
+
+  /**
+   * Verify a Telegram Mini App `initData` payload.
+   *
+   * Same threat model as `verifyAuthData` (window + HMAC + replay-gate) but
+   * the secret-key derivation is *different*: Telegram explicitly uses
+   *   secret = HMAC_SHA256(key="WebAppData", message=bot_token)
+   * for Mini Apps, vs.
+   *   secret = SHA256(bot_token)
+   * for the Login Widget. Mixing the two is silent breakage — the HMAC
+   * just won't match — so we keep them as separate methods.
+   *
+   * Input is the raw query-string Telegram puts in
+   * `window.Telegram.WebApp.initData` (e.g. "auth_date=…&hash=…&user=%7B…").
+   *
+   * @see https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
+   */
+  async verifyInitData(initData: string): Promise<VerifiedInitData> {
+    if (!this.botToken) {
+      throw new BadRequestException('Telegram bot token is not configured')
+    }
+    if (!initData || typeof initData !== 'string') {
+      throw new BadRequestException('initData is required')
+    }
+
+    const params = new URLSearchParams(initData)
+    const hash = params.get('hash')
+    if (!hash) {
+      throw new BadRequestException('initData missing hash')
+    }
+    const authDateRaw = params.get('auth_date')
+    if (!authDateRaw) {
+      throw new BadRequestException('initData missing auth_date')
+    }
+    const authDate = Number(authDateRaw)
+    if (!Number.isFinite(authDate) || authDate <= 0) {
+      throw new BadRequestException('initData auth_date is malformed')
+    }
+
+    // 1. auth-window — same 5 min as the Login Widget.
+    const currentTime = Math.floor(Date.now() / 1000)
+    if (currentTime - authDate > TELEGRAM_AUTH_MAX_AGE_SEC) {
+      throw new UnauthorizedException('initData has expired')
+    }
+
+    // 2. data_check_string: every k=v except `hash`, sorted by key, joined
+    //    by '\n'. URLSearchParams already gives us decoded values, which is
+    //    what Telegram signs against.
+    const pairs: string[] = []
+    for (const [key, value] of params.entries()) {
+      if (key === 'hash') continue
+      pairs.push(`${key}=${value}`)
+    }
+    pairs.sort()
+    const dataCheckString = pairs.join('\n')
+
+    // 3. Mini-App-specific secret derivation (NOT sha256(bot_token)).
+    const secretKey = crypto
+      .createHmac('sha256', 'WebAppData')
+      .update(this.botToken)
+      .digest()
+    const calculatedHash = crypto
+      .createHmac('sha256', secretKey)
+      .update(dataCheckString)
+      .digest('hex')
+
+    // Constant-time compare to make hash-equality not depend on input.
+    const a = Buffer.from(calculatedHash, 'hex')
+    const b = Buffer.from(hash, 'hex')
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('initData hash verification failed')
+    }
+
+    // 4. Replay-gate — Mini App reuses the same hash when the user reopens
+    //    the app inside the same session, so the gate has to be keyed by
+    //    (telegram_id, hash). Best-effort, like verifyAuthData.
+    const userJsonForReplay = params.get('user') ?? ''
+    let replayUserId = 0
+    try {
+      const tmp = JSON.parse(userJsonForReplay) as { id?: unknown }
+      if (typeof tmp.id === 'number') replayUserId = tmp.id
+    } catch {
+      // fall through — replayUserId stays 0, the hash itself still
+      // disambiguates payloads
+    }
+    try {
+      const replayKey = `tg:miniapp:${replayUserId}:${hash}`
+      const ok = await this.redis.set(
+        replayKey,
+        '1',
+        'EX',
+        TELEGRAM_AUTH_MAX_AGE_SEC,
+        'NX',
+      )
+      if (ok === null) {
+        throw new UnauthorizedException('initData payload already used')
+      }
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err
+      this.logger.warn(
+        `Telegram Mini App replay-check unavailable: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
+
+    // 5. Extract the user payload — required, since we use telegram_id as
+    //    the account-anchor.
+    const userJson = params.get('user')
+    if (!userJson) {
+      throw new BadRequestException('initData missing user')
+    }
+    let parsedUser: {
+      id?: unknown
+      first_name?: unknown
+      last_name?: unknown
+      username?: unknown
+      photo_url?: unknown
+    }
+    try {
+      parsedUser = JSON.parse(userJson) as typeof parsedUser
+    } catch {
+      throw new BadRequestException('initData user is not valid JSON')
+    }
+    if (typeof parsedUser.id !== 'number' || !Number.isFinite(parsedUser.id)) {
+      throw new BadRequestException('initData user.id missing or not numeric')
+    }
+
+    return {
+      telegramId: parsedUser.id,
+      firstName:
+        typeof parsedUser.first_name === 'string'
+          ? parsedUser.first_name
+          : undefined,
+      lastName:
+        typeof parsedUser.last_name === 'string'
+          ? parsedUser.last_name
+          : undefined,
+      username:
+        typeof parsedUser.username === 'string' ? parsedUser.username : undefined,
+      photoUrl:
+        typeof parsedUser.photo_url === 'string'
+          ? parsedUser.photo_url
+          : undefined,
+      startParam: params.get('start_param') ?? undefined,
+    }
   }
 }

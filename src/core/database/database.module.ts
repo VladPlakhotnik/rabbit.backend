@@ -85,7 +85,7 @@ export class DatabaseModule implements OnModuleInit {
     connectionManager.setDataSource(this.dataSource)
 
     const connectionCount = await connectionManager.getConnectionCount()
-    // eslint-disable-next-line no-console
+     
     console.log(
       `Database module initialized. Active connections: ${connectionCount}`,
     )

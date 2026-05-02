@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
@@ -9,8 +10,20 @@ import { IsNull, Repository } from 'typeorm'
 import { User } from '../users/user.entity'
 import { NotificationView } from './entities/notificationView.entity'
 
+// Gateway subscribes via `onNotification` to push freshly-created
+// notifications to the right user's socket. Kept inside the service so
+// callers (withdraw, upgrade, …) don't need to know about transport at
+// all — they call `notify*` helpers and the WS push happens for free.
+type NotificationSubscriber = (event: {
+  userId: number | null
+  notification: Notification
+}) => void | Promise<void>
+
 @Injectable()
 export class NotificationService {
+  private readonly logger = new Logger(NotificationService.name)
+  private readonly subscribers = new Set<NotificationSubscriber>()
+
   constructor(
     @InjectRepository(Notification)
     private notificationRepository: Repository<Notification>,
@@ -105,7 +118,121 @@ export class NotificationService {
       created_at: new Date(),
     })
 
-    return this.notificationRepository.save(newNotification)
+    const saved = await this.notificationRepository.save(newNotification)
+    await this.fanout(saved)
+    return saved
+  }
+
+  // ---- Pub/Sub bridge to the gateway -------------------------------
+
+  // Returns an unsubscribe handle so callers can clean up on shutdown
+  // (gateway lifecycle).
+  onNotification(cb: NotificationSubscriber): () => void {
+    this.subscribers.add(cb)
+    return () => {
+      this.subscribers.delete(cb)
+    }
+  }
+
+  private async fanout(notification: Notification): Promise<void> {
+    if (this.subscribers.size === 0) return
+    await Promise.all(
+      Array.from(this.subscribers).map(async sub => {
+        try {
+          await sub({ userId: notification.user_id ?? null, notification })
+        } catch (err) {
+          // Subscriber failures must not break the create() caller —
+          // the notification is already persisted. Just log.
+          this.logger.warn(
+            `Notification subscriber failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+        }
+      }),
+    )
+  }
+
+  // ---- Typed helpers used by other modules -------------------------
+  //
+  // Each helper writes a typed event row: `i18n_key` plus a JSON
+  // `i18n_params` payload. Frontend renders text via
+  // `t('notifications.events.<key>.{title,message}', params)`, so the
+  // user sees their current locale even for old notifications. None of
+  // these helpers fill `title` / `message` — those are reserved for
+  // free-form admin broadcasts.
+
+  // Withdrawal succeeded: TM trade went through, user now has the skin.
+  // `actualPrice` is what TM actually paid (may be lower than target);
+  // `null` means the parser didn't see a price — UI shows a no-amount
+  // variant of the message in that case.
+  async notifyWithdrawCompleted(
+    userId: number,
+    actualPrice: number | null,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'withdraw.completed',
+        i18n_params: actualPrice != null ? { price: actualPrice } : {},
+        is_important: false,
+      },
+      userId,
+    )
+  }
+
+  // Withdrawal failed: TM rejected / trade timed out. `reason` is a
+  // stable key (`trade_timed_out_buyer`, `trade_timed_out_seller`,
+  // `trade_failed`) — frontend translates it via
+  // `notifications.events.withdraw.failureReason.<reason>`.
+  async notifyWithdrawFailed(
+    userId: number,
+    reason: string,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'withdraw.failed',
+        i18n_params: { reason },
+        is_important: true,
+      },
+      userId,
+    )
+  }
+
+  // Stub for the future deposit flow. The payments module currently
+  // only creates Stripe payment intents and has no completion path —
+  // when that lands, call this from the success webhook / handler.
+  async notifyDepositCompleted(
+    userId: number,
+    amount: number,
+    method?: string,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'deposit.completed',
+        i18n_params: method ? { amount, method } : { amount },
+        is_important: false,
+      },
+      userId,
+    )
+  }
+
+  // Deposit failed — `reason` is one of the keys translated under
+  // `notifications.events.deposit.failureReason.*`
+  // (`card_declined`, `insufficient_funds`, `processor_error`,
+  //  `expired`, `generic`).
+  async notifyDepositFailed(
+    userId: number,
+    reason: string,
+    amount?: number,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'deposit.failed',
+        i18n_params: amount != null ? { reason, amount } : { reason },
+        is_important: true,
+      },
+      userId,
+    )
   }
 
   async delete(id: number): Promise<void> {

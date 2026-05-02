@@ -13,16 +13,22 @@ import { AuthGuard } from '@nestjs/passport'
 import { Request, Response } from 'express'
 import { AuthService } from './auth.service'
 import { UserService } from '../users/users.service'
-import { ClickerUserService } from '../clickerUser/clicker-user.service'
+import { TelegramService } from '../social/services/telegram.service'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
 import { User } from '../users/user.entity'
+import { LinkTelegramDto } from './dto/link-telegram.dto'
+import { TelegramMiniAppDto } from './dto/telegram-miniapp.dto'
 import type {
   SteamAuthResult,
   GoogleAuthResult,
   TelegramAuthResult,
   AuthCallbackUserData,
 } from './types/auth.types'
+
+interface RequestWithUser extends Omit<Request, 'user'> {
+  user: { id: number }
+}
 
 @ApiTags('auth')
 @Controller('auth')
@@ -32,7 +38,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly userService: UserService,
-    private readonly clickerUserService: ClickerUserService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   @ApiOperation({ summary: 'Steam login' })
@@ -69,30 +75,13 @@ export class AuthController {
 
       this.logger.log(`Steam login attempt for Steam ID: ${steamIdString}`)
 
-      // Check if this is a linking request (user wants to link Steam to existing account)
-      const linkToUserIdParam = req.query.link_to_user_id
-      const linkToUserId =
-        linkToUserIdParam && typeof linkToUserIdParam === 'string'
-          ? parseInt(linkToUserIdParam, 10)
-          : null
-
-      if (linkToUserId !== null && !isNaN(linkToUserId) && linkToUserId > 0) {
-        // Link Steam account to existing user without changing other data
-        this.logger.log(
-          `Linking Steam account to existing user ${linkToUserId}`,
-        )
-        const updatedUser = await this.userService.updateSteamIdOnly(
-          linkToUserId,
-          steamIdString,
-        )
-
-        const token = await this.authService.login(updatedUser)
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-        return res.redirect(
-          `${frontendUrl}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
-        )
-      }
-
+      // Steam linking via `?link_to_user_id=` query was an account-takeover
+      // hole identical to the one we just fixed for Telegram — the caller
+      // fully controlled the destination user id, so anyone could attach
+      // their Steam to anybody's account. Removed here; Steam linking
+      // needs a proper state-cookie flow (Steam OpenID has no JWT context
+      // in its callback, so we have to round-trip a server-issued state
+      // through the Steam redirect) and is tracked as a follow-up.
       const userData: AuthCallbackUserData = {
         steam_id: steamIdString,
         display_name: steamUser.display_name ?? '',
@@ -169,30 +158,11 @@ export class AuthController {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
       }
 
-      // Check if this is a linking request (user wants to link Telegram to existing account)
-      const linkToUserIdParam = req.query.link_to_user_id
-      const linkToUserId =
-        linkToUserIdParam && typeof linkToUserIdParam === 'string'
-          ? parseInt(linkToUserIdParam, 10)
-          : null
-
-      if (linkToUserId !== null && !isNaN(linkToUserId) && linkToUserId > 0) {
-        // Link Telegram account to existing user without changing other data
-        this.logger.log(
-          `Linking Telegram account to existing user ${linkToUserId}`,
-        )
-        const updatedUser = await this.userService.updateTelegramIdOnly(
-          linkToUserId,
-          telegramUser.telegram_id,
-        )
-
-        const token = await this.authService.login(updatedUser)
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-        return res.redirect(
-          `${frontendUrl}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
-        )
-      }
-
+      // Sign-in / sign-up only. Linking now lives on the JWT-protected
+      // POST /auth/telegram/link endpoint below — the previous behaviour
+      // of taking `link_to_user_id` from the URL was an account-takeover
+      // hole (any caller could attach their Telegram to anyone's user
+      // by crafting the query string).
       const userData: AuthCallbackUserData = {
         telegram_user_id: telegramUser.telegram_id,
         steam_id: null,
@@ -214,6 +184,88 @@ export class AuthController {
     } catch (error: unknown) {
       this.handleAuthError(error, res, 'Telegram')
     }
+  }
+
+  @ApiOperation({
+    summary:
+      'Link Telegram to the currently authenticated account. Body must be the verbatim payload from Telegram Login Widget (or any future bot/Mini-App auth surface). The owning user is derived from the JWT — never from request input.',
+  })
+  @ApiResponse({ status: 200, description: 'Telegram successfully linked' })
+  @ApiResponse({ status: 400, description: 'Invalid Telegram payload / already linked elsewhere' })
+  @ApiResponse({ status: 401, description: 'Caller is not authenticated' })
+  @Post('telegram/link')
+  @UseGuards(AuthGuard('jwt'))
+  async linkTelegram(
+    @Req() req: RequestWithUser,
+    @Body() body: LinkTelegramDto,
+  ): Promise<{ success: true; user: { id: number; telegram_user_id: number } }> {
+    // Verify the payload exactly the way the sign-in passport strategy
+    // does — same HMAC, same auth_date window, same Redis-backed replay
+    // gate. We use the same TelegramService method directly here instead
+    // of bouncing through the passport strategy because that strategy
+    // sources its data from the URL query, and we want body input.
+    const telegramId = await this.telegramService.verifyAuthData({
+      id: body.id,
+      first_name: body.first_name,
+      last_name: body.last_name,
+      username: body.username,
+      photo_url: body.photo_url,
+      auth_date: body.auth_date,
+      hash: body.hash,
+    })
+
+    const updated = await this.userService.updateTelegramIdOnly(
+      req.user.id,
+      telegramId,
+    )
+
+    return {
+      success: true,
+      user: {
+        id: updated.id,
+        telegram_user_id: updated.telegram_user_id ?? 0,
+      },
+    }
+  }
+
+  @ApiOperation({
+    summary:
+      'Sign in / sign up via Telegram Mini App. Body must carry the verbatim `window.Telegram.WebApp.initData` query string. Server verifies the Mini-App-style HMAC (different from the Login Widget) and either logs in the existing telegram_user_id or creates a new account.',
+  })
+  @ApiResponse({ status: 200, description: 'JWT pair issued' })
+  @ApiResponse({ status: 400, description: 'initData malformed' })
+  @ApiResponse({ status: 401, description: 'initData expired / hash mismatch / replay' })
+  @Post('telegram/miniapp')
+  async telegramMiniAppLogin(
+    @Body() body: TelegramMiniAppDto,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
+    const verified = await this.telegramService.verifyInitData(body.initData)
+
+    // Build a display_name with sensible fallbacks — Telegram users
+    // without a public username and a single-word first name are common
+    // (especially mobile-only). We never want a blank display_name.
+    const displayName =
+      [verified.firstName, verified.lastName]
+        .filter((s): s is string => Boolean(s))
+        .join(' ')
+        .trim() ||
+      verified.username ||
+      `tg_${verified.telegramId}`
+
+    const userData: AuthCallbackUserData = {
+      telegram_user_id: verified.telegramId,
+      steam_id: null,
+      google_id: null,
+      display_name: displayName,
+      avatar: verified.photoUrl ?? '',
+      profile_url: '',
+    }
+
+    return await this.handleAuthCallback(
+      userData,
+      () => this.userService.findByTelegramId(verified.telegramId),
+      'TelegramMiniApp',
+    )
   }
 
   @ApiOperation({ summary: 'Refresh access token' })
@@ -255,15 +307,17 @@ export class AuthController {
       return await this.authService.login(existingUser)
     }
 
-    // No existing user found, create new one
+    // No existing user found, create new one. The clicker profile is no
+    // longer materialised here — it's created lazily the first time the
+    // player actually visits the clicker tab (see ClickerUserService
+    // .findOrCreateByUserId), so users who never touch the clicker don't
+    // accumulate dead rows in `clicker_users`.
     this.logger.log(
       `${providerName} authentication: Creating new user with ${providerName} ID`,
     )
     const newUser = await this.userService.create(
       this.createDefaultUserData(userData),
     )
-
-    await this.createClickerProfile(newUser.id)
 
     this.logger.log(
       `${providerName} authentication: Created new user with ID ${newUser.id}`,
@@ -330,20 +384,6 @@ export class AuthController {
     }
 
     return null
-  }
-
-  /**
-   * Creates clicker profile for new user
-   */
-  private async createClickerProfile(userId: number): Promise<void> {
-    await this.clickerUserService.create({
-      user_id: userId,
-      level: 1,
-      click_level: 1,
-      energy_level: 1,
-      energy_amount: 100,
-      points: 0,
-    })
   }
 
   /**

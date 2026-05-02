@@ -6,6 +6,12 @@ import {
   UpdateDateColumn,
 } from 'typeorm'
 
+/**
+ * Bunny rank ladder. Pure progression — `points_required` is the cumulative
+ * points threshold a player must cross to reach this level. The per-click
+ * reward and energy cap come from `clicker_click_levels` and
+ * `clicker_energy_levels` respectively, so this table never duplicates them.
+ */
 @Entity('clicker_levels')
 export class ClickerLevel {
   @PrimaryGeneratedColumn()
@@ -17,11 +23,8 @@ export class ClickerLevel {
   @Column()
   image_url!: string
 
-  @Column()
-  reward_per_click!: number
-
-  @Column()
-  upgrade_cost!: number
+  @Column({ name: 'points_required' })
+  points_required!: number
 
   @CreateDateColumn({ name: 'created_at' })
   created_at!: Date

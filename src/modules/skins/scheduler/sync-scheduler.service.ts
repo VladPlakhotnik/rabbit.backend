@@ -21,11 +21,13 @@ import { DotaSyncService } from '../dota/dota-sync.service'
 //                    Bigger but still bounded; static metadata stays
 //                    static, market signals get a daily refresh.
 //
-//   catalog        — daily at 03:00 UTC (CS) / 03:30 UTC (Dota). Walks
-//                    DMarket for fresh metadata (image / collection /
-//                    inspect_in_game etc.). Heavier — ~25 min on full
-//                    catalog. Scheduled at low-traffic hours so it
-//                    doesn't compete for DB locks with normal traffic.
+//   catalog        — weekly on Saturday 08:00 (CS) / 08:30 (Dota)
+//                    Europe/Moscow. Walks DMarket for fresh metadata
+//                    (image / collection / inspect_in_game etc.).
+//                    Heavier — ~25 min on full catalog. Static metadata
+//                    barely shifts week-to-week, so a weekly cadence is
+//                    plenty; Saturday morning leaves the weekend free
+//                    to retry by hand if the run fails.
 //
 // Price-feed cadence is hourly (was 15 min) because the class_instance
 // daily run already provides a buy/sell-side market read; for raw
@@ -87,9 +89,12 @@ export class SyncSchedulerService {
     )
   }
 
-  // Daily at 03:00 UTC — low-traffic window for a CS-skins site
-  // (US west still asleep, EU in deep night).
-  @Cron('0 3 * * *')
+  // Saturday 08:00 Europe/Moscow (= 05:00 UTC). Catalog walk takes
+  // 10–20 min and competes for DB locks, so it runs once a week instead
+  // of nightly — image/collection/inspect metadata almost never changes,
+  // a weekly refresh is plenty. Saturday morning was picked so a failure
+  // has the weekend to be reran manually before Monday traffic.
+  @Cron('0 8 * * 6', { timeZone: 'Europe/Moscow' })
   async cronCsgoCatalog(): Promise<void> {
     if (this.isDisabled()) return
     await this.runWithLock(
@@ -130,9 +135,10 @@ export class SyncSchedulerService {
     )
   }
 
-  // Daily at 03:30 UTC — 30 min after CSGO catalog so the DMarket
-  // rate-limit budget gets a clear window between the two walks.
-  @Cron('30 3 * * *')
+  // Saturday 08:30 Europe/Moscow (= 05:30 UTC) — 30 min after the CS
+  // catalog so the DMarket rate-limit budget gets a clear window
+  // between the two walks. Same weekly cadence as CS.
+  @Cron('30 8 * * 6', { timeZone: 'Europe/Moscow' })
   async cronDotaCatalog(): Promise<void> {
     if (this.isDisabled()) return
     await this.runWithLock(

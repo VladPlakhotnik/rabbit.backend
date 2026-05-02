@@ -6,7 +6,7 @@ import { ERROR_MESSAGES } from '../../constants/errorMessages'
 import type { TelegramAuthResult } from './types/auth.types'
 
 // passport-custom doesn't have TypeScript definitions, so we use dynamic import
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+ 
 const Strategy = require('passport-custom')
 
 interface TelegramAuthData {
@@ -55,7 +55,7 @@ export class TelegramStrategy extends PassportStrategy(Strategy, 'telegram') {
       }
 
       // Verify Telegram authentication data
-      const telegramUserId = this.telegramService.verifyAuthData(authData)
+      const telegramUserId = await this.telegramService.verifyAuthData(authData)
 
       // Build display name
       const displayName = authData.first_name
