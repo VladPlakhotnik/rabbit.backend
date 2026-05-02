@@ -19,7 +19,7 @@ export type ClickerHistoryAction =
   | 'buy_boost'
   | 'activate_boost'
   | 'boost_expire'
-  | 'admin_grant_points'
+  | 'grant_points'
 
 export type ClickerHistorySource = 'ws' | 'rest' | 'cron' | 'admin'
 

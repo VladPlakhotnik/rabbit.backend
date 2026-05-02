@@ -583,19 +583,22 @@ export class ClickerUserService {
    * Returns the activation deadline (ms) for the client countdown.
    */
   /**
-   * Admin-only: bump or remove a user's carrots and re-anchor their
-   * bunny level to whatever points threshold the new balance hits.
+   * Mutate a target user's carrots and re-anchor their bunny level to
+   * whatever points threshold the new balance hits. Authorisation
+   * (admin role) is enforced at the controller layer with RolesGuard;
+   * this method just owns the data path and assumes the caller passed
+   * the gate.
    *
    * Why not just `UPDATE clicker_users SET points = ...`:
    *   1. Redis is the source of truth during a session — without
    *      clearing the user's Redis hash a manual UPDATE gets
    *      overwritten by the next cron flush.
-   *   2. After a manual points bump the bunny level should re-anchor:
-   *      if the player crosses a points threshold, level should bump
-   *      up. (We never DOWNgrade — level is monotonic by design.)
-   *   3. Audit trail — every admin grant lands one row in
-   *      clicker_history with payload {amount, reason} and a clear
-   *      `source = 'admin'` so it stands out in queries.
+   *   2. After a points bump the bunny level should re-anchor: if the
+   *      player crosses a points threshold, level should bump up.
+   *      (We never DOWNgrade — level is monotonic by design.)
+   *   3. Audit trail — every grant lands one row in clicker_history
+   *      with payload {delta, reason, issuer_user_id} and source =
+   *      'admin' so it's greppable separately from organic traffic.
    *
    * Steps:
    *   1. Flush Redis → PG so we lock against the freshest balance.
@@ -609,14 +612,14 @@ export class ClickerUserService {
    *      values straight from PG.
    *   4. History row.
    *
-   * @param adminUserId who issued the grant — for audit forensics
+   * @param issuerUserId who issued the grant — for audit forensics
    * @param targetUserId whose carrots are being modified
    * @param delta positive = grant, negative = remove. Floats are
-   *              rejected (DTO clamps to integer).
+   *              truncated (DTO clamps to integer).
    * @param reason optional free-text annotation in the audit row
    */
-  async adminGrantPoints(
-    adminUserId: number,
+  async grantPoints(
+    issuerUserId: number,
     targetUserId: number,
     delta: number,
     reason: string | null,
@@ -693,13 +696,13 @@ export class ClickerUserService {
     // re-bootstraps with the new points / level / next_level_cost.
     await this.redisService.clearUser(targetUserId)
 
-    // Step 4: audit log. Source 'admin' so we can grep these
+    // Audit log. Source 'admin' so manual grants are greppable
     // separately from organic 'ws' / 'cron' history.
     await this.historyService.record({
       user_id: targetUserId,
-      action: 'admin_grant_points',
+      action: 'grant_points',
       payload: {
-        admin_user_id: adminUserId,
+        issuer_user_id: issuerUserId,
         delta: intDelta,
         reason: reason ?? null,
       },
