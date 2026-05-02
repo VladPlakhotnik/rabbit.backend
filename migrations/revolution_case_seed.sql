@@ -4,19 +4,28 @@
 --
 -- Lineup is 22 skins on the marketing image, but TEC-9 | Rebel
 -- (Field-Tested) is missing from csgo_skins (market.csgo.com sync
--- hasn't picked it up yet). We CAN'T include it in skin_case until
--- it's there: case.service.ts assumes the LEFT JOIN to csgo_skins
--- always resolves, and the CasePage frontend reads `.skin.name` /
--- `.skin.image` directly — a null skin crashes the page.
+-- hasn't picked it up yet) — the LEFT JOIN to csgo_skins returns null,
+-- the API hands the frontend `skinCases[i].skin === null`, and
+-- CasePage crashes. We omit it; once sync ingests the row, rebalance
+-- back to 22 in a follow-up.
 --
--- So this seed is 21 skins. Once the missing TEC-9 row appears in
--- csgo_skins, run a follow-up that rebalances back to 22. Suggested
--- distribution then: 21 × 4.55 + 1 × 4.45 = 100.00.
+-- Chance distribution: tiered by rarity (CS:GO convention) — within a
+-- tier each skin shares the same odds, between tiers the totals scale
+-- so the expected drop value is below the case price (the house edge
+-- that keeps the operator alive).
 --
--- Chance distribution: ~equal across the 21 skins. 21 × 4.76 = 99.96
--- (four cents short), so the four most expensive items take 4.77 to
--- bring the total to exactly 100.00 — the numeric(5,2) constraint and
--- ticket-pool arithmetic in case.service.ts both want a clean total.
+--   tier         skins  Σ chance   per skin   Σ EV
+--   --------------------------------------------------
+--   Glove          5     1.00%      0.20%     $1.50
+--   Covert         2     1.00%      0.50%     $0.51
+--   Classified     3     4.00%      1.33-1.34% $0.21
+--   Restricted     5    14.00%      2.80%     $0.11
+--   Mil-Spec       6    80.00%     13.33-13.35% $0.08
+--   --------------------------------------------------
+--   total         21   100.00%               EV $2.42
+--
+-- Case price = $3.06 → RTP = 2.42/3.06 = 79.1% → operator margin ~21%.
+-- Rebalance the tier totals (lines 41-65 below) to retune the margin.
 
 BEGIN;
 
@@ -33,31 +42,32 @@ SELECT setval(
 );
 
 INSERT INTO skin_case (case_id, skin_hash_name, game_type, chance, is_drop_out) VALUES
-  -- Top tier: gloves & knife-equivalents (the 4 most expensive on the
-  -- lineup image take the +0.01 leftover from rounding).
-  (4, '★ Specialist Gloves | Crimson Web (Field-Tested)', 'csgo', 4.77, true),
-  (4, '★ Moto Gloves | Polygon (Field-Tested)',           'csgo', 4.77, true),
-  (4, '★ Specialist Gloves | Mogul (Field-Tested)',       'csgo', 4.77, true),
-  (4, '★ Hand Wraps | Duct Tape (Field-Tested)',          'csgo', 4.77, true),
-  (4, '★ Moto Gloves | Transport (Field-Tested)',         'csgo', 4.76, true),
-  -- Covert / Classified rifles
-  (4, 'M4A4 | Temukau (Field-Tested)',                    'csgo', 4.76, true),
-  (4, 'AK-47 | Head Shot (Field-Tested)',                 'csgo', 4.76, true),
-  -- Restricted / Mil-Spec
-  (4, 'P2000 | Wicked Sick (Field-Tested)',               'csgo', 4.76, true),
-  (4, 'UMP-45 | Wild Child (Field-Tested)',               'csgo', 4.76, true),
-  (4, 'AWP | Duality (Field-Tested)',                     'csgo', 4.76, true),
-  (4, 'R8 Revolver | Banana Cannon (Field-Tested)',       'csgo', 4.76, true),
-  (4, 'Glock-18 | Umbral Rabbit (Field-Tested)',          'csgo', 4.76, true),
-  (4, 'M4A1-S | Emphorosaur-S (Field-Tested)',            'csgo', 4.76, true),
-  (4, 'P90 | Neoqueen (Field-Tested)',                    'csgo', 4.76, true),
-  (4, 'MAC-10 | Sakkaku (Field-Tested)',                  'csgo', 4.76, true),
-  (4, 'MP5-SD | Liquidation (Field-Tested)',              'csgo', 4.76, true),
-  (4, 'MP9 | Featherweight (Field-Tested)',               'csgo', 4.76, true),
-  (4, 'MAG-7 | Insomnia (Field-Tested)',                  'csgo', 4.76, true),
-  (4, 'SG 553 | Cyberforce (Field-Tested)',               'csgo', 4.76, true),
-  (4, 'P250 | Re.built (Field-Tested)',                   'csgo', 4.76, true),
-  (4, 'SCAR-20 | Fragments (Field-Tested)',               'csgo', 4.76, true);
+  -- Glove tier — 5 skins × 0.20% = 1.00%
+  (4, '★ Specialist Gloves | Crimson Web (Field-Tested)', 'csgo',  0.20, true),
+  (4, '★ Moto Gloves | Polygon (Field-Tested)',           'csgo',  0.20, true),
+  (4, '★ Specialist Gloves | Mogul (Field-Tested)',       'csgo',  0.20, true),
+  (4, '★ Hand Wraps | Duct Tape (Field-Tested)',          'csgo',  0.20, true),
+  (4, '★ Moto Gloves | Transport (Field-Tested)',         'csgo',  0.20, true),
+  -- Covert tier — 2 skins × 0.50% = 1.00%
+  (4, 'M4A4 | Temukau (Field-Tested)',                    'csgo',  0.50, true),
+  (4, 'AK-47 | Head Shot (Field-Tested)',                 'csgo',  0.50, true),
+  -- Classified tier — 4.00% / 3 skins, +0.01 absorber on AWP Duality
+  (4, 'UMP-45 | Wild Child (Field-Tested)',               'csgo',  1.33, true),
+  (4, 'P2000 | Wicked Sick (Field-Tested)',               'csgo',  1.33, true),
+  (4, 'AWP | Duality (Field-Tested)',                     'csgo',  1.34, true),
+  -- Restricted tier — 5 skins × 2.80% = 14.00%
+  (4, 'MAC-10 | Sakkaku (Field-Tested)',                  'csgo',  2.80, true),
+  (4, 'M4A1-S | Emphorosaur-S (Field-Tested)',            'csgo',  2.80, true),
+  (4, 'Glock-18 | Umbral Rabbit (Field-Tested)',          'csgo',  2.80, true),
+  (4, 'R8 Revolver | Banana Cannon (Field-Tested)',       'csgo',  2.80, true),
+  (4, 'P90 | Neoqueen (Field-Tested)',                    'csgo',  2.80, true),
+  -- Mil-Spec tier — 80.00% / 6 skins, +0.02 absorber on P250 Re.built
+  (4, 'SG 553 | Cyberforce (Field-Tested)',               'csgo', 13.33, true),
+  (4, 'MP5-SD | Liquidation (Field-Tested)',              'csgo', 13.33, true),
+  (4, 'SCAR-20 | Fragments (Field-Tested)',               'csgo', 13.33, true),
+  (4, 'MAG-7 | Insomnia (Field-Tested)',                  'csgo', 13.33, true),
+  (4, 'MP9 | Featherweight (Field-Tested)',               'csgo', 13.33, true),
+  (4, 'P250 | Re.built (Field-Tested)',                   'csgo', 13.35, true);
 
 -- Sanity: bail loudly if the chances don't sum to 100.00. case.service.ts
 -- relies on the total to map to a 100k-ticket lottery pool — a 99 or 101
