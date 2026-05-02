@@ -39,6 +39,12 @@ export interface ClickResult {
   energy_level_id: number | null
   /** Number of accepted clicks in this batch that landed a 10× crit. */
   crit_count: number
+  /**
+   * Seconds the auto-clicker collected this tick (folded into points
+   * already; surfaced for the client so it can flash the balance / play
+   * a "ghost click" animation when non-zero).
+   */
+  auto_clicks: number
 }
 
 @Injectable()
@@ -244,6 +250,7 @@ export class ClickerUserService {
       click_level_id: result.click_level_id || null,
       energy_level_id: result.energy_level_id || null,
       crit_count: result.crit_count,
+      auto_clicks: result.auto_clicks,
     }
   }
 
@@ -559,5 +566,70 @@ export class ClickerUserService {
       ip,
     )
     return { crit_click_level: level, points }
+  }
+
+  /**
+   * Kick off the auto-clicker for `duration_sec` seconds (read off the
+   * player's currently-owned tier — never from client input).
+   *
+   * Path:
+   *   1. Validate the skill is unlocked (auto_clicker_level_id != null).
+   *   2. Ensure Redis state is loaded (runWithBootstrap with count=0 is
+   *      a cheap no-op when warm).
+   *   3. Atomic activate inside Lua — re-checks the deadline so two
+   *      concurrent `activate` calls can't both land.
+   *   4. Audit log the activation.
+   *
+   * Returns the activation deadline (ms) for the client countdown.
+   */
+  async activateAutoClicker(
+    userId: number,
+    ip?: string | null,
+  ): Promise<{ expires_at_ms: number; duration_sec: number; level: number }> {
+    const user = await this.findOrCreateByUserId(userId)
+    if (!user.auto_clicker_level) {
+      throw new BadRequestException('Auto-clicker not unlocked')
+    }
+    const duration = user.auto_clicker_level.duration_sec
+    if (!Number.isFinite(duration) || duration <= 0) {
+      throw new BadRequestException('Auto-clicker tier has invalid duration')
+    }
+
+    const nowMs = Date.now()
+    // No-op when state already loaded; bootstraps from Postgres on
+    // cold cache so the activate Lua's meta-check never trips.
+    await this.runWithBootstrap(userId, 0, nowMs)
+
+    const result = await this.redisService.activateAutoClicker(
+      userId,
+      nowMs,
+      duration,
+    )
+    if (result === -1) {
+      // Bootstrap should have written meta — if Lua still says missing,
+      // Redis dropped the row between the calls (TTL or eviction).
+      throw new NotFoundException('Clicker state not loaded')
+    }
+    if (result === -2) {
+      throw new BadRequestException('Auto-clicker already running')
+    }
+
+    await this.historyService.record({
+      user_id: userId,
+      action: 'auto_clicker_activate',
+      payload: {
+        level_id: user.auto_clicker_level.id,
+        duration_sec: duration,
+      },
+      state_after: { expires_at_ms: result },
+      source: 'ws',
+      ip: ip ?? null,
+    })
+
+    return {
+      expires_at_ms: result,
+      duration_sec: duration,
+      level: user.auto_clicker_level.level,
+    }
   }
 }

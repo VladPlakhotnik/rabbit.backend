@@ -19,6 +19,24 @@ export interface ClickAckPayload {
   energyLevel: number | null
   /** How many of the accepted clicks landed a 10× crit. 0 when skill not unlocked. */
   critCount: number
+  /**
+   * Seconds the auto-clicker collected since the last tick. Folded into
+   * `points` already; clients use it for ghost-click animation /
+   * highlighting the balance jump.
+   */
+  autoClicks: number
+}
+
+/**
+ * Ack for the activateAutoClicker WS event. The deadline is absolute
+ * (ms-since-epoch) so the client renders an unambiguous countdown
+ * regardless of clock drift between client and server.
+ */
+export interface AutoClickerActivateAck {
+  userId: number
+  level: number
+  durationSec: number
+  expiresAtMs: number
 }
 
 export interface UpgradeAckPayload {

@@ -15,6 +15,7 @@ import { ClickerUserService } from './clicker-user.service'
 import { ClickBatchDto } from './dto/click.dto'
 import { EVENTS, GATEWAY_CONFIG } from './constants/events'
 import {
+  AutoClickerActivateAck,
   ClickAckPayload,
   ErrorResponse,
   SkillUpgradeAckPayload,
@@ -127,6 +128,7 @@ export class ClickerUserGateway
         clickLevel: result.click_level_id,
         energyLevel: result.energy_level_id,
         critCount: result.crit_count,
+        autoClicks: result.auto_clicks,
       }
       // Ack only — no broadcast. Other tabs of the same user see updates via
       // their own batched click cycle / explicit getState calls.
@@ -258,6 +260,44 @@ export class ClickerUserGateway
         critChancePct: result.crit_click_level.crit_chance_pct,
       }
       this.emitToUserSocket(client, EVENTS.UPGRADE_CRIT_CLICK_RESULT, payload)
+      return payload
+    } catch (err) {
+      return this.errorAck(client, err)
+    }
+  }
+
+  @SubscribeMessage(EVENTS.ACTIVATE_AUTO_CLICKER)
+  async handleActivateAutoClicker(
+    @ConnectedSocket() client: Socket,
+  ): Promise<AutoClickerActivateAck | { error: string }> {
+    const userId = this.socketUserId.get(client)
+    if (userId == null) {
+      return this.errorAck(client, 'Not authenticated')
+    }
+    // Same per-socket cooldown as the upgrade events. Activation is
+    // gated by a Lua "already-running" check too — the cooldown is
+    // purely a perf shortcut before that DB / Lua round-trip.
+    if (!this.checkUpgradeCooldown(client)) {
+      return this.errorAck(client, 'Too many activate requests')
+    }
+
+    try {
+      const ip = this.extractIp(client)
+      const result = await this.clickerUserService.activateAutoClicker(
+        userId,
+        ip,
+      )
+      const payload: AutoClickerActivateAck = {
+        userId,
+        level: result.level,
+        durationSec: result.duration_sec,
+        expiresAtMs: result.expires_at_ms,
+      }
+      this.emitToUserSocket(
+        client,
+        EVENTS.ACTIVATE_AUTO_CLICKER_RESULT,
+        payload,
+      )
       return payload
     } catch (err) {
       return this.errorAck(client, err)

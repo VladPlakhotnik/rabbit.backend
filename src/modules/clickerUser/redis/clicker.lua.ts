@@ -35,16 +35,31 @@
 //   el  energy_level_id     (meta)
 //   nl  next_level_cost     (meta; 0 = at max level)
 //   cc  crit_chance_pct     (meta; 0 = skill not unlocked)
+//   as  auto-clicker start ts (ms; 0 = not active)
+//   ad  auto-clicker duration (sec; 0 = not active)
+//   ac  auto-clicker last collected ts (ms; advances every tick)
+//
+// Auto-clicker model: lazy collection. While \`as\`/\`ad\`/\`ac\` are non-zero
+// and \`now < as + ad*1000\`, every tick computes \`floor((min(now, expiry) -
+// ac) / 1000)\` accumulated seconds, awards 1 click per second at the
+// CURRENT cost (the player paid energy upgrades, the autoclicker pays at
+// today's rate), and advances \`ac\`. Past expiry the trio resets to 0 so
+// the next tick is a no-op. No server-side timer needed.
 //
 // Returns: { code, accepted, points, energy, max_energy, cost, level_id,
 //            click_level_id, energy_level_id, level_up_due, regen_milli,
-//            crit_count }
+//            crit_count, auto_clicks }
 //   code = 0 → applied
 //   code = 1 → meta missing; caller must lazy-load and retry
 //   level_up_due = 1 → caller should immediately flush + rebump.
 //   regen_milli is energy units per 1000 ms — surfaced so the client can
 //   locally extrapolate energy regeneration between server round-trips.
-//   crit_count = number of accepted clicks in this batch that landed a crit.
+//   crit_count = number of accepted manual clicks that landed a crit.
+//                Crit rolls on auto-clicks fold into points but are NOT
+//                counted here — the frontend uses crit_count to mark
+//                actual cursor-spawn effects, which only exist for
+//                manual taps.
+//   auto_clicks = number of seconds the autoclicker collected this tick.
 export const CLICK_LUA = `
 local ukey  = KEYS[1]
 local dkey  = KEYS[2]
@@ -53,12 +68,12 @@ local req   = tonumber(ARGV[2]) or 0
 local now   = tonumber(ARGV[3]) or 0
 
 local h = redis.call('HMGET', ukey,
-  'p','e','t','c','m','r','l','cl','el','nl','cc')
+  'p','e','t','c','m','r','l','cl','el','nl','cc','as','ad','ac')
 
 local cost_raw = h[4]
 if cost_raw == false or cost_raw == nil then
   -- meta absent → user not bootstrapped (or meta cleared post-upgrade).
-  return {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+  return {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 end
 
 local points  = tonumber(h[1]) or 0
@@ -72,6 +87,9 @@ local clvl    = tonumber(h[8]) or 0
 local elvl    = tonumber(h[9]) or 0
 local ncost   = tonumber(h[10]) or 0
 local crit_chance = tonumber(h[11]) or 0
+local ac_start    = tonumber(h[12]) or 0
+local ac_dur      = tonumber(h[13]) or 0
+local ac_last     = tonumber(h[14]) or 0
 if cost < 1 then cost = 1 end
 if crit_chance < 0 then crit_chance = 0 end
 if crit_chance > 100 then crit_chance = 100 end
@@ -86,36 +104,77 @@ if req < 0 then req = 0 end
 local accepted = math.min(req, math.floor(energy / cost))
 if accepted < 0 then accepted = 0 end
 
-local crit_count = 0
-if accepted > 0 then
-  energy = energy - accepted * cost
-  -- Crit rolls happen server-side. Seed is the microsecond half of
-  -- redis TIME — the client doesn't know it and therefore can't time
-  -- the click to land on a known-good seed. One math.randomseed +
-  -- accepted-many math.random calls; Lua's PRNG has internal state so
-  -- successive draws are independent.
-  if crit_chance > 0 then
-    local t = redis.call('TIME')
-    math.randomseed((tonumber(t[2]) or now) + accepted)
-    for i = 1, accepted do
-      if math.random(1, 100) <= crit_chance then
-        crit_count = crit_count + 1
-      end
+-- Auto-clicker collection — runs INDEPENDENTLY of manual clicks. The
+-- player can be sitting idle (req=0) and still rack up auto clicks.
+local auto_clicks = 0
+if ac_start > 0 and ac_dur > 0 then
+  local expires_at = ac_start + ac_dur * 1000
+  local effective = now
+  if effective > expires_at then effective = expires_at end
+  if effective > ac_last then
+    local elapsed_ms = effective - ac_last
+    if elapsed_ms >= 1000 then
+      auto_clicks = math.floor(elapsed_ms / 1000)
+      ac_last = ac_last + auto_clicks * 1000
     end
   end
-  -- Base reward + 9× bonus per crit (10× total = base + 9× extra).
-  points = points + accepted * cost + crit_count * 9 * cost
+  -- Past expiry → null out so future ticks short-circuit. Done in
+  -- the same script so a CRON outage can't leave the auto-clicker
+  -- "running forever" in Redis state.
+  if now >= expires_at then
+    redis.call('HMSET', ukey, 'as', '0', 'ad', '0', 'ac', '0')
+  elseif auto_clicks > 0 then
+    redis.call('HSET', ukey, 'ac', tostring(ac_last))
+  end
+end
+
+-- Crit rolls happen server-side. Seed is the microsecond half of redis
+-- TIME — the client doesn't know it and therefore can't time the click
+-- to land on a known-good seed. We do TWO independent rolls:
+--   1. on accepted manual clicks: counts toward crit_count (the
+--      number returned to the client so it can highlight the matching
+--      cursor-spawned effects);
+--   2. on auto_clicks collected this tick: folds into points but
+--      is NOT exposed in crit_count. Auto clicks have no on-screen
+--      cursor effect, so attributing them to UI animations would be
+--      misleading.
+local crit_count = 0
+local auto_crit = 0
+if (accepted + auto_clicks) > 0 and crit_chance > 0 then
+  local t = redis.call('TIME')
+  math.randomseed((tonumber(t[2]) or now) + accepted + auto_clicks)
+  for i = 1, accepted do
+    if math.random(1, 100) <= crit_chance then
+      crit_count = crit_count + 1
+    end
+  end
+  for i = 1, auto_clicks do
+    if math.random(1, 100) <= crit_chance then
+      auto_crit = auto_crit + 1
+    end
+  end
+end
+
+local total_clicks = accepted + auto_clicks
+if total_clicks > 0 then
+  -- Energy is deducted ONLY for manual clicks; the autoclicker pays no
+  -- energy by design (that's the whole point of the skill).
+  if accepted > 0 then
+    energy = energy - accepted * cost
+  end
+  points = points + total_clicks * cost + (crit_count + auto_crit) * 9 * cost
   redis.call('HMSET', ukey, 'p', points, 'e', energy, 't', now)
   redis.call('SADD', dkey, user)
 else
-  -- Still persist the regen result so the next call doesn't recompute from scratch.
+  -- No manual / no auto — still persist the regen result so the next
+  -- call doesn't recompute from scratch.
   redis.call('HMSET', ukey, 'e', energy, 't', now)
 end
 
 local lvl_up = 0
-if accepted > 0 and ncost > 0 and points >= ncost then
+if total_clicks > 0 and ncost > 0 and points >= ncost then
   lvl_up = 1
 end
 
-return {0, accepted, points, energy, max_e, cost, lvl, clvl, elvl, lvl_up, regen, crit_count}
+return {0, accepted, points, energy, max_e, cost, lvl, clvl, elvl, lvl_up, regen, crit_count, auto_clicks}
 `

@@ -3,6 +3,14 @@ import Redis from 'ioredis'
 import { REDIS_CLIENT } from '../../../core/redis/redis.constants'
 import { CLICK_LUA } from './clicker.lua'
 import { DEDUCT_LUA } from './clicker.deduct.lua'
+import { ACTIVATE_AUTO_LUA } from './clicker.activate-auto.lua'
+
+/**
+ * Lua return codes from the activate-auto-clicker script. Positive
+ * values are the activation deadline (ms-since-epoch).
+ */
+export const ACTIVATE_AUTO_META_MISSING = -1
+export const ACTIVATE_AUTO_ALREADY_RUNNING = -2
 
 // 7 days. Idle users with no flushes for a week get evicted from Redis;
 // the next click triggers a lazy reload from Postgres. Way longer than
@@ -52,8 +60,10 @@ export interface LuaClickResult {
   level_up_due: boolean
   /** Energy units per 1000 ms — surfaced for client-side extrapolation. */
   regen_milli: number
-  /** How many of the accepted clicks landed a crit (10× payout). */
+  /** How many of the accepted manual clicks landed a crit (10× payout). */
   crit_count: number
+  /** Seconds collected by the auto-clicker this tick (0 if not active). */
+  auto_clicks: number
 }
 
 @Injectable()
@@ -64,6 +74,7 @@ export class ClickerRedisService {
   // NOSCRIPT (Redis was restarted / FLUSH'd).
   private clickShaPromise: Promise<string> | null = null
   private deductShaPromise: Promise<string> | null = null
+  private activateAutoShaPromise: Promise<string> | null = null
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
@@ -104,6 +115,53 @@ export class ClickerRedisService {
       })
     }
     return this.deductShaPromise
+  }
+
+  private async loadActivateAutoScript(): Promise<string> {
+    if (!this.activateAutoShaPromise) {
+      this.activateAutoShaPromise = (
+        this.redis.script('LOAD', ACTIVATE_AUTO_LUA) as Promise<string>
+      ).catch(err => {
+        this.activateAutoShaPromise = null
+        throw err
+      })
+    }
+    return this.activateAutoShaPromise
+  }
+
+  /**
+   * Set the auto-clicker active for `durationSec` seconds starting at
+   * `nowMs`. Returns the activation deadline in ms on success, or one
+   * of `ACTIVATE_AUTO_*` constants on rejection.
+   *
+   * The actual server-side timer doesn't exist — the script simply
+   * stamps `as`/`ad`/`ac` and the click hot path collects accumulated
+   * seconds lazily on the next tick. See clicker.lua.
+   */
+  async activateAutoClicker(
+    userId: number,
+    nowMs: number,
+    durationSec: number,
+  ): Promise<number> {
+    const ukey = this.userKey(userId)
+    const args = [String(nowMs), String(Math.max(0, Math.floor(durationSec)))]
+
+    let raw: unknown
+    try {
+      const sha = await this.loadActivateAutoScript()
+      raw = await this.redis.evalsha(sha, 1, ukey, ...args)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('NOSCRIPT')) {
+        this.activateAutoShaPromise = null
+        raw = await this.redis.eval(ACTIVATE_AUTO_LUA, 1, ukey, ...args)
+      } else {
+        throw err
+      }
+    }
+
+    const n = typeof raw === 'string' ? Number(raw) : (raw as number)
+    return Number.isFinite(n) ? n : ACTIVATE_AUTO_META_MISSING
   }
 
   /**
@@ -178,7 +236,7 @@ export class ClickerRedisService {
   }
 
   private parseLuaResult(raw: unknown): LuaClickResult {
-    if (!Array.isArray(raw) || raw.length < 12) {
+    if (!Array.isArray(raw) || raw.length < 13) {
       throw new Error('clicker lua: malformed return value')
     }
     const arr = raw as Array<string | number>
@@ -200,6 +258,7 @@ export class ClickerRedisService {
       level_up_due: num(9) === 1,
       regen_milli: num(10),
       crit_count: num(11),
+      auto_clicks: num(12),
     }
   }
 
