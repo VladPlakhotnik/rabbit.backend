@@ -20,6 +20,9 @@ import { ClickerChallengesModule } from './modules/clickerChallenges/clicker-cha
 import { ClickerLevelsModule } from './modules/clickerLevels/clicker-levels.module'
 import { ClickerClickLevelsModule } from './modules/clickerClickLevels/clicker-click-levels.module'
 import { ClickerEnergyLevelsModule } from './modules/clickerEnergyLevels/clicker-energy-levels.module'
+import { ClickerAutoClickerLevelsModule } from './modules/clickerAutoClickerLevels/clicker-auto-clicker-levels.module'
+import { ClickerCritClickLevelsModule } from './modules/clickerCritClickLevels/clicker-crit-click-levels.module'
+import { ClickerHistoryModule } from './modules/clickerHistory/clicker-history.module'
 import { LiveDropsModule } from './modules/liveDrops/liveDrops.module'
 import { UserHistoryModule } from './modules/userHistory/userHistory.module'
 import { UpgradeModule } from './modules/upgrade/upgrade.module'
@@ -55,6 +58,9 @@ import { WithdrawModule } from './modules/withdraw/withdraw.module'
     ClickerLevelsModule,
     ClickerClickLevelsModule,
     ClickerEnergyLevelsModule,
+    ClickerAutoClickerLevelsModule,
+    ClickerCritClickLevelsModule,
+    ClickerHistoryModule,
     LiveDropsModule,
     UserHistoryModule,
     UpgradeModule,

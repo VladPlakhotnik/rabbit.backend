@@ -58,7 +58,7 @@ export class ClickerUserService {
   async findByUserId(userId: number) {
     const user = await this.clickerUserRepository.findOne({
       where: { user_id: userId },
-      relations: ['level', 'click_level', 'energy_level'],
+      relations: ['level', 'click_level', 'energy_level', 'auto_clicker_level', 'crit_click_level'],
     })
     if (!user) {
       throw new NotFoundException('Clicker profile not found')
@@ -85,7 +85,7 @@ export class ClickerUserService {
   async findOrCreateByUserId(userId: number) {
     const existing = await this.clickerUserRepository.findOne({
       where: { user_id: userId },
-      relations: ['level', 'click_level', 'energy_level'],
+      relations: ['level', 'click_level', 'energy_level', 'auto_clicker_level', 'crit_click_level'],
     })
     if (existing) return existing
 
@@ -103,7 +103,7 @@ export class ClickerUserService {
 
     const created = await this.clickerUserRepository.findOne({
       where: { user_id: userId },
-      relations: ['level', 'click_level', 'energy_level'],
+      relations: ['level', 'click_level', 'energy_level', 'auto_clicker_level', 'crit_click_level'],
     })
     if (!created) {
       // create() validated and saved; if findOne now misses, the DB

@@ -11,6 +11,8 @@ import {
 import { ClickerLevel } from '../../clickerLevels/entities/clicker_level.entity'
 import { ClickerClickLevel } from '../../clickerClickLevels/entities/clicker_click_level.entity'
 import { ClickerEnergyLevel } from '../../clickerEnergyLevels/entities/clicker_energy_level.entity'
+import { ClickerAutoClickerLevel } from '../../clickerAutoClickerLevels/entities/clicker_auto_clicker_level.entity'
+import { ClickerCritClickLevel } from '../../clickerCritClickLevels/entities/clicker_crit_click_level.entity'
 
 @Entity('clicker_users')
 export class ClickerUser {
@@ -31,6 +33,20 @@ export class ClickerUser {
   @ManyToOne(() => ClickerEnergyLevel)
   @JoinColumn({ name: 'energy_level_id' })
   energy_level!: ClickerEnergyLevel
+
+  /**
+   * Optional skill — `null` until the player buys auto-clicker from the
+   * Shop. Null on the FK = "skill not unlocked", which the click /
+   * activate paths special-case (no autoclick gets generated).
+   */
+  @ManyToOne(() => ClickerAutoClickerLevel, { nullable: true })
+  @JoinColumn({ name: 'auto_clicker_level_id' })
+  auto_clicker_level!: ClickerAutoClickerLevel | null
+
+  /** Same shape as `auto_clicker_level` — null = crit chance is 0. */
+  @ManyToOne(() => ClickerCritClickLevel, { nullable: true })
+  @JoinColumn({ name: 'crit_click_level_id' })
+  crit_click_level!: ClickerCritClickLevel | null
 
   @Column({ default: 0 })
   energy_amount!: number
