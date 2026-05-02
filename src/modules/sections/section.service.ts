@@ -27,6 +27,16 @@ export class SectionService {
     const queryBuilder = this.sectionRepository.createQueryBuilder('section')
     queryBuilder.leftJoinAndSelect('section.cases', 'cases')
 
+    // Hide admin-disabled cases from every section listing. Same
+    // contract as CaseService.findAll — `is_available = false` cases
+    // are simply invisible to the public API. Lives in the JOIN
+    // condition (not WHERE) so a section with ALL its cases disabled
+    // still returns with an empty `cases` array, same as a section
+    // whose cases just don't match the gameType filter.
+    queryBuilder.andWhere(
+      '(cases.id IS NULL OR cases.is_available = true)',
+    )
+
     // Filter applied to the JOINed cases only — sections themselves
     // aren't game-typed, the partition is per-case. A section that
     // only carries off-game cases falls out of the result set

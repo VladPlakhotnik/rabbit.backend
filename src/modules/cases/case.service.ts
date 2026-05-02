@@ -232,8 +232,13 @@ export class CaseService {
   }
 
   async findAll(gameType?: 'csgo' | 'dota'): Promise<Case[]> {
+    // `is_available: true` is applied unconditionally — disabled cases
+    // never appear on any public list (catalog, search). Admin views
+    // would need a separate method that omits this filter.
     const cases = await this.caseRepository.find({
-      where: gameType ? { game_type: gameType } : {},
+      where: gameType
+        ? { game_type: gameType, is_available: true }
+        : { is_available: true },
       relations: ['skinCases', 'skinCases.skin'],
       // Final ordering (market_price DESC, id ASC tiebreaker) is applied
       // in JS by sortSkinCasesForLottery — keeps the contract in one place
@@ -269,7 +274,10 @@ export class CaseService {
         },
       },
     })
-    if (!caseEntity) {
+    // Disabled cases share the 404 response with non-existent ones —
+    // a probe can't tell whether the slug never existed or is just
+    // currently hidden, which keeps admin state confidential.
+    if (!caseEntity || !caseEntity.is_available) {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
@@ -290,7 +298,7 @@ export class CaseService {
         },
       },
     })
-    if (!caseEntity) {
+    if (!caseEntity || !caseEntity.is_available) {
       throw new NotFoundException('Case not found')
     }
     await this.hydrateDotaSkins(caseEntity)
@@ -310,12 +318,19 @@ export class CaseService {
     return this.caseRepository.save(newCase)
   }
 
-  // Вынесенная логика проверки существования кейса
+  // Вынесенная логика проверки существования кейса.
+  //
+  // Mid-flight gate for openCase: if an admin disables a case between
+  // the catalog/detail load and the user clicking Open, this catches
+  // the now-disabled state and 404s rather than silently letting the
+  // open go through. 404 (not 400) so the response shape matches what
+  // the public detail endpoint returns — clients don't get to
+  // distinguish "disabled" from "never existed".
   private async validateCase(caseId: number): Promise<Case> {
     const caseEntity = await this.caseRepository.findOne({
       where: { id: caseId },
     })
-    if (!caseEntity) {
+    if (!caseEntity || !caseEntity.is_available) {
       throw new NotFoundException('Case not found')
     }
     return caseEntity

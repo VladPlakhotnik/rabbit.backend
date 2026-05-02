@@ -60,6 +60,14 @@ export class Case {
   @Column({ type: 'boolean', default: false })
   is_limited!: boolean
 
+  // Soft-lock toggle. When false the case is hidden from the public
+  // catalog and detail / open endpoints return 404 — same response a
+  // non-existent slug would get, so we don't leak admin state. Set
+  // through admin tooling; default true keeps existing cases visible.
+  // See migrations/cases_add_is_available.sql.
+  @Column({ name: 'is_available', type: 'boolean', default: true })
+  is_available!: boolean
+
   @OneToMany(() => UserInventory, inventory => inventory.case)
   inventories!: UserInventory[]
 
