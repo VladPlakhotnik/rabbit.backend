@@ -38,6 +38,10 @@
 //   as  auto-clicker start ts (ms; 0 = not active)
 //   ad  auto-clicker duration (sec; 0 = not active)
 //   ac  auto-clicker last collected ts (ms; advances every tick)
+//   ab  active boost key (string; '' = no active boost)
+//   at  active boost expires-at ms (0 = no active boost)
+//   ae  active boost effect type ('infinite_energy' | 'multiplier' | '')
+//   av  active boost effect value (multiplier scalar; 0 for inf-energy)
 //
 // Auto-clicker model: lazy collection. While \`as\`/\`ad\`/\`ac\` are non-zero
 // and \`now < as + ad*1000\`, every tick computes \`floor((min(now, expiry) -
@@ -68,7 +72,7 @@ local req   = tonumber(ARGV[2]) or 0
 local now   = tonumber(ARGV[3]) or 0
 
 local h = redis.call('HMGET', ukey,
-  'p','e','t','c','m','r','l','cl','el','nl','cc','as','ad','ac')
+  'p','e','t','c','m','r','l','cl','el','nl','cc','as','ad','ac','at','ae','av')
 
 local cost_raw = h[4]
 if cost_raw == false or cost_raw == nil then
@@ -90,9 +94,24 @@ local crit_chance = tonumber(h[11]) or 0
 local ac_start    = tonumber(h[12]) or 0
 local ac_dur      = tonumber(h[13]) or 0
 local ac_last     = tonumber(h[14]) or 0
+local boost_at    = tonumber(h[15]) or 0
+local boost_ae    = h[16] or ''
+local boost_av    = tonumber(h[17]) or 0
 if cost < 1 then cost = 1 end
 if crit_chance < 0 then crit_chance = 0 end
 if crit_chance > 100 then crit_chance = 100 end
+
+-- Active-boost detection. Lazy clear past the deadline so a CRON
+-- outage can't leave the buff "running forever".
+local boost_active = boost_at > 0 and now < boost_at
+if boost_at > 0 and now >= boost_at then
+  redis.call('HMSET', ukey, 'ab', '', 'at', '0', 'ae', '', 'av', '0')
+end
+local infinite_energy = boost_active and boost_ae == 'infinite_energy'
+local multiplier = 1
+if boost_active and boost_ae == 'multiplier' and boost_av > 1 then
+  multiplier = boost_av
+end
 
 if regen > 0 and now > last_ts and energy < max_e then
   energy = math.min(max_e, energy + math.floor((now - last_ts) * regen / 1000))
@@ -101,7 +120,14 @@ if energy < 0 then energy = 0 end
 if energy > max_e then energy = max_e end
 
 if req < 0 then req = 0 end
-local accepted = math.min(req, math.floor(energy / cost))
+-- Infinite-energy boost: every requested click goes through, no energy
+-- gate. Otherwise the energy budget caps acceptance as before.
+local accepted
+if infinite_energy then
+  accepted = req
+else
+  accepted = math.min(req, math.floor(energy / cost))
+end
 if accepted < 0 then accepted = 0 end
 
 -- Auto-clicker collection — runs INDEPENDENTLY of manual clicks. The
@@ -157,12 +183,19 @@ end
 
 local total_clicks = accepted + auto_clicks
 if total_clicks > 0 then
-  -- Energy is deducted ONLY for manual clicks; the autoclicker pays no
-  -- energy by design (that's the whole point of the skill).
-  if accepted > 0 then
+  -- Energy debit:
+  --   - autoclicker pays no energy (skill design),
+  --   - infinite-energy boost makes manual clicks free too,
+  --   - everything else: manual clicks cost cost-each.
+  if accepted > 0 and not infinite_energy then
     energy = energy - accepted * cost
   end
-  points = points + total_clicks * cost + (crit_count + auto_crit) * 9 * cost
+  -- Multiplier scales BOTH the base reward and the crit bonus. Crit
+  -- damage = base × multiplier × 10, so a crit during x10 boost pays
+  -- 100× the per-click cost, which is the documented intent.
+  points = points
+    + total_clicks * cost * multiplier
+    + (crit_count + auto_crit) * 9 * cost * multiplier
   redis.call('HMSET', ukey, 'p', points, 'e', energy, 't', now)
   redis.call('SADD', dkey, user)
 else

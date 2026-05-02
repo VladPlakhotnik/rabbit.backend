@@ -4,13 +4,14 @@ import { REDIS_CLIENT } from '../../../core/redis/redis.constants'
 import { CLICK_LUA } from './clicker.lua'
 import { DEDUCT_LUA } from './clicker.deduct.lua'
 import { ACTIVATE_AUTO_LUA } from './clicker.activate-auto.lua'
+import { ACTIVATE_BOOST_LUA } from './clicker.activate-boost.lua'
 
 /**
- * Lua return codes from the activate-auto-clicker script. Positive
- * values are the activation deadline (ms-since-epoch).
+ * Lua return codes from the activate-auto-clicker / activate-boost
+ * scripts. Positive values are the activation deadline (ms-since-epoch).
  */
-export const ACTIVATE_AUTO_META_MISSING = -1
-export const ACTIVATE_AUTO_ALREADY_RUNNING = -2
+export const ACTIVATE_META_MISSING = -1
+export const ACTIVATE_ALREADY_RUNNING = -2
 
 // 7 days. Idle users with no flushes for a week get evicted from Redis;
 // the next click triggers a lazy reload from Postgres. Way longer than
@@ -75,6 +76,7 @@ export class ClickerRedisService {
   private clickShaPromise: Promise<string> | null = null
   private deductShaPromise: Promise<string> | null = null
   private activateAutoShaPromise: Promise<string> | null = null
+  private activateBoostShaPromise: Promise<string> | null = null
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
@@ -161,7 +163,63 @@ export class ClickerRedisService {
     }
 
     const n = typeof raw === 'string' ? Number(raw) : (raw as number)
-    return Number.isFinite(n) ? n : ACTIVATE_AUTO_META_MISSING
+    return Number.isFinite(n) ? n : ACTIVATE_META_MISSING
+  }
+
+  private async loadActivateBoostScript(): Promise<string> {
+    if (!this.activateBoostShaPromise) {
+      this.activateBoostShaPromise = (
+        this.redis.script('LOAD', ACTIVATE_BOOST_LUA) as Promise<string>
+      ).catch(err => {
+        this.activateBoostShaPromise = null
+        throw err
+      })
+    }
+    return this.activateBoostShaPromise
+  }
+
+  /**
+   * Activate a consumable boost. Caller MUST have decremented the
+   * inventory in PG first — this script is idempotent on the Redis
+   * side but doesn't know about inventory state.
+   *
+   * Returns the activation deadline (ms-since-epoch) on success, or
+   * ACTIVATE_* constants on rejection (caller should refund the
+   * inventory in that case).
+   */
+  async activateBoost(
+    userId: number,
+    nowMs: number,
+    durationSec: number,
+    effectType: string,
+    effectValue: number,
+    boostKey: string,
+  ): Promise<number> {
+    const ukey = this.userKey(userId)
+    const args = [
+      String(nowMs),
+      String(Math.max(0, Math.floor(durationSec))),
+      effectType,
+      String(Math.max(0, Math.floor(effectValue))),
+      boostKey,
+    ]
+
+    let raw: unknown
+    try {
+      const sha = await this.loadActivateBoostScript()
+      raw = await this.redis.evalsha(sha, 1, ukey, ...args)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (msg.includes('NOSCRIPT')) {
+        this.activateBoostShaPromise = null
+        raw = await this.redis.eval(ACTIVATE_BOOST_LUA, 1, ukey, ...args)
+      } else {
+        throw err
+      }
+    }
+
+    const n = typeof raw === 'string' ? Number(raw) : (raw as number)
+    return Number.isFinite(n) ? n : ACTIVATE_META_MISSING
   }
 
   /**

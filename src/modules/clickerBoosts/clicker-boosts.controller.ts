@@ -67,4 +67,24 @@ export class ClickerBoostsController {
       null
     return this.service.buy(req.user.id, body.boost_key, ip)
   }
+
+  /**
+   * Activate a stockpiled boost. Server decrements the inventory in PG,
+   * stamps the active-boost fields in Redis under Lua atomicity, and
+   * returns the absolute deadline for the client countdown. Tighter
+   * rate-limit (1/sec) than buy — activation is the gate that stops
+   * stacking and rapid-fire abuse.
+   */
+  @Throttle({ default: { ttl: 1_000, limit: 1 } })
+  @UseGuards(AuthGuard('jwt'))
+  @Post('activate')
+  @ApiOperation({ summary: 'Activate one stockpiled copy of a boost' })
+  @ApiResponse({ status: 200, description: 'Active deadline + new count' })
+  activate(@Req() req: RequestWithUser, @Body() body: BuyBoostDto) {
+    const ip =
+      (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
+        req.socket?.remoteAddress) ??
+      null
+    return this.service.activate(req.user.id, body.boost_key, ip)
+  }
 }
