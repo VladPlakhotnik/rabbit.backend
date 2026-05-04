@@ -706,9 +706,17 @@ export class ClickerUserService implements OnModuleInit {
 
     // Drain Redis state into PG so the freshly-credited points and
     // zeroed pending columns are visible to the next REST `/me` call.
-    // Best-effort — cron flush picks up anything we miss.
+    // When the claim crossed a level threshold (`level_up_due`),
+    // routing through the engine's coalesced handler lets concurrent
+    // claim/click flows share the same flush+promote work instead of
+    // stacking duplicates. Best-effort — cron flush picks up anything
+    // we miss.
     try {
-      await this.flushService.flushUser(userId)
+      if (result.level_up_due) {
+        await this.engineService.runLevelUp(userId)
+      } else {
+        await this.flushService.flushUser(userId)
+      }
     } catch (err) {
       this.logger.warn(
         `flush-after-claim failed for user ${userId}: ${

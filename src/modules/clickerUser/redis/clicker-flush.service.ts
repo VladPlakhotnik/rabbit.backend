@@ -10,6 +10,7 @@ import {
   FLUSH_CRON_EXPR,
   MAX_FLUSH_BATCH,
 } from '../constants/clicker.constants'
+import { clickerLog, clickerLogBlock } from '../clicker-debug'
 
 /**
  * Periodically drains accumulated click state from Redis into Postgres.
@@ -55,14 +56,31 @@ export class ClickerFlushService implements OnModuleDestroy {
 
   @Cron(FLUSH_CRON_EXPR, { name: 'clicker-flush' })
   async scheduledFlush(): Promise<void> {
-    if (this.flushing || this.destroyed) return
+    if (this.flushing || this.destroyed) {
+      clickerLog('flush.cron', {
+        op: 'skip',
+        reason: this.destroyed ? 'destroyed' : 'in-progress',
+      })
+      return
+    }
     this.flushing = true
+    const startedAt = Date.now()
+    clickerLog('flush.cron', { op: 'tick-start', at_ms: startedAt })
     try {
       await this.runFlush()
+      clickerLog('flush.cron', {
+        op: 'tick-end',
+        duration_ms: Date.now() - startedAt,
+      })
     } catch (err) {
       this.logger.error(
         `scheduled flush failed: ${err instanceof Error ? err.message : err}`,
       )
+      clickerLog('flush.cron', {
+        op: 'tick-failed',
+        duration_ms: Date.now() - startedAt,
+        err: err instanceof Error ? err.message : String(err),
+      })
     } finally {
       this.flushing = false
     }
@@ -73,21 +91,36 @@ export class ClickerFlushService implements OnModuleDestroy {
    * latest points before we mutate them.
    */
   async flushUser(userId: number): Promise<void> {
+    clickerLog('flush.user', { user: userId, op: 'force-flush-start' })
     // Persist before removing from the dirty set so a failure here doesn't
     // leak (we'd lose the dirty marker but the next click re-adds the user).
     await this.persistUsers([userId])
     await this.redisService.removeFromDirty(userId)
+    clickerLog('flush.user', { user: userId, op: 'force-flush-end' })
   }
 
   private async runFlush(): Promise<void> {
     const ids = await this.redisService.drainDirty(MAX_FLUSH_BATCH)
-    if (ids.length === 0) return
+    if (ids.length === 0) {
+      clickerLog('flush.cron', { op: 'no-dirty' })
+      return
+    }
+    clickerLog('flush.cron', {
+      op: 'drained',
+      count: ids.length,
+      ids: ids.join(','),
+    })
 
     try {
       await this.persistUsers(ids)
     } catch (err) {
       // Put them back so the next tick retries. Worst case the same set is
       // flushed twice — UPDATE is idempotent on the values we write.
+      clickerLog('flush.cron', {
+        op: 'persist-failed-rollback',
+        ids: ids.join(','),
+        err: err instanceof Error ? err.message : String(err),
+      })
       await this.redisService.markDirtyMany(ids).catch(() => undefined)
       throw err
     }
@@ -109,7 +142,39 @@ export class ClickerFlushService implements OnModuleDestroy {
         s.snapshot.energy != null &&
         s.snapshot.ts != null,
     )
+    const skipped = states.filter(
+      s =>
+        s.snapshot.points == null ||
+        s.snapshot.energy == null ||
+        s.snapshot.ts == null,
+    )
+    if (skipped.length > 0) {
+      clickerLog('flush.persist', {
+        op: 'skipped-empty-snapshot',
+        users: skipped.map(s => s.userId).join(','),
+      })
+    }
     if (writable.length === 0) return
+
+    for (const { userId, snapshot } of writable) {
+      clickerLogBlock(
+        'flush.persist',
+        { user: userId, op: 'redis-snapshot' },
+        [
+          [
+            'pg-write',
+            {
+              points: snapshot.points,
+              total_points: snapshot.total_points ?? snapshot.points,
+              energy: snapshot.energy,
+              last_energy_update_ms: snapshot.ts,
+              apc: snapshot.auto_clicker_pending_count ?? 0,
+              apv: snapshot.auto_clicker_pending_value ?? 0,
+            },
+          ],
+        ],
+      )
+    }
 
     await Promise.all(
       writable.map(({ userId, snapshot }) =>
@@ -166,20 +231,56 @@ export class ClickerFlushService implements OnModuleDestroy {
       // balance — without that switch a player who climbed past the
       // threshold then spent some carrots in the same flush window
       // would silently miss the level bump.
-      const target = this.findHighestQualifyingLevel(
-        levels,
-        currentId,
-        user.total_points ?? user.points,
-      )
+      const tally = user.total_points ?? user.points
+      const target = this.findHighestQualifyingLevel(levels, currentId, tally)
       if (target && target.id !== currentId) {
+        // Compute the post-promotion next-level threshold here while
+        // we already have `levels` in memory — avoids another levelsCache
+        // round-trip inside updateLevelMeta. 0 means "at max tier".
+        const nextLevelCost = this.findNextThreshold(levels, target.id)
+        clickerLog('flush.levelup', {
+          user: user.user_id,
+          op: 'promote',
+          from_level_id: currentId,
+          to_level_id: target.id,
+          next_level_cost: nextLevelCost,
+          tally,
+          threshold: target.points_required,
+        })
         user.level = target
         await this.userRepo.save(user)
-        // Bunny advanced — drop the cached meta hash so the next click
-        // reloads the fresh level_id / next_level_cost from Postgres.
-        // State (points/energy/ts) is left intact.
-        await this.redisService.clearMeta(user.user_id)
+        // Atomic level-meta update — replaces the older
+        // clearMeta-then-bootstrap dance which had a torn-read window
+        // (Lua could read meta_missing while clearMeta was visible but
+        // bootstrap hadn't yet run, triggering a redundant PG round-trip
+        // and racing concurrent click batches into stale-snapshot
+        // overwrites). HMSET is atomic at the field level.
+        await this.redisService.updateLevelMeta(
+          user.user_id,
+          target.id,
+          nextLevelCost,
+        )
+        clickerLog('flush.levelup', {
+          user: user.user_id,
+          op: 'meta-updated',
+        })
       }
     }
+  }
+
+  private findNextThreshold(
+    levels: ClickerLevel[],
+    currentId: number,
+  ): number {
+    // levels are sorted by `findHighestQualifyingLevel`'s caller in
+    // ascending id order. Linear scan is fine — clicker level catalogs
+    // are small (sub-50 entries).
+    let crossedCurrent = false
+    for (const lv of levels) {
+      if (crossedCurrent) return lv.points_required
+      if (lv.id === currentId) crossedCurrent = true
+    }
+    return 0
   }
 
   private findHighestQualifyingLevel(

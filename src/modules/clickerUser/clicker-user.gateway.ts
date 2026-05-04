@@ -26,6 +26,7 @@ import {
   MAX_TS_DRIFT_MS,
   UPGRADE_THROTTLE_MS,
 } from './constants/clicker.constants'
+import { clickerLog } from './clicker-debug'
 
 @WebSocketGateway(GATEWAY_CONFIG)
 export class ClickerUserGateway
@@ -54,6 +55,7 @@ export class ClickerUserGateway
     const token = this.extractToken(client)
     if (!token) {
       this.logger.debug(`reject ${client.id}: no token`)
+      clickerLog('ws.connect', { socket: client.id, op: 'reject-no-token' })
       client.disconnect(true)
       return
     }
@@ -67,6 +69,11 @@ export class ClickerUserGateway
           err instanceof Error ? err.message : String(err)
         })`,
       )
+      clickerLog('ws.connect', {
+        socket: client.id,
+        op: 'reject-bad-token',
+        err: err instanceof Error ? err.message : String(err),
+      })
       client.disconnect(true)
       return
     }
@@ -75,11 +82,21 @@ export class ClickerUserGateway
       typeof payload.sub === 'string' ? Number(payload.sub) : payload.sub
     if (typeof userId !== 'number' || !Number.isFinite(userId) || userId <= 0) {
       this.logger.debug(`reject ${client.id}: bad sub`)
+      clickerLog('ws.connect', {
+        socket: client.id,
+        op: 'reject-bad-sub',
+        sub: payload.sub,
+      })
       client.disconnect(true)
       return
     }
 
     this.socketUserId.set(client, userId)
+    clickerLog('ws.connect', {
+      socket: client.id,
+      user: userId,
+      op: 'accepted',
+    })
 
     // Push fresh state on every connection (including reconnects after a
     // backend restart). The click Lua's bank simulation only advances
@@ -111,6 +128,20 @@ export class ClickerUserGateway
         autoClickerPendingCount: state.auto_clicker_pending_count,
         autoClickerPendingValue: state.auto_clicker_pending_value,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.STATE,
+        op: 'initial-state',
+        points: payload.points,
+        energy: payload.energy,
+        max_energy: payload.maxEnergy,
+        regen_per_sec: payload.regenPerSec,
+        apc: payload.autoClickerPendingCount,
+        apv: payload.autoClickerPendingValue,
+        ac_started_at_ms: payload.autoClickerStartedAtMs,
+        ac_max_idle_sec: payload.autoClickerMaxIdleSec,
+      })
       client.emit(EVENTS.STATE, payload)
     } catch (err) {
       this.logger.warn(
@@ -118,10 +149,18 @@ export class ClickerUserGateway
           err instanceof Error ? err.message : err
         }`,
       )
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        op: 'initial-state-failed',
+        err: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
   handleDisconnect(client: Socket): void {
+    const userId = this.socketUserId.get(client)
+    clickerLog('ws.disconnect', { socket: client.id, user: userId ?? null })
     this.socketUserId.delete(client)
   }
 
@@ -132,15 +171,34 @@ export class ClickerUserGateway
   ): Promise<ClickAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.CLICK,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
 
     try {
       const count = this.coerceCount(body)
       if (count <= 0) {
+        clickerLog('ws.in', {
+          socket: client.id,
+          user: userId,
+          event: EVENTS.CLICK,
+          op: 'invalid-count',
+          raw: JSON.stringify(body),
+        })
         return this.errorAck(client, 'count must be a positive number')
       }
       const nowMs = this.coerceTs(body)
+      clickerLog('ws.in', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.CLICK,
+        count,
+        ts: nowMs,
+      })
 
       const result = await this.clickerUserService.handleClickBatch(
         userId,
@@ -167,6 +225,19 @@ export class ClickerUserGateway
         autoClickerPendingCount: result.auto_clicker_pending_count,
         autoClickerPendingValue: result.auto_clicker_pending_value,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: 'click-ack',
+        accepted: payload.accepted,
+        points: payload.points,
+        energy: payload.energy,
+        regen_per_sec: payload.regenPerSec,
+        crit_count: payload.critCount,
+        auto_credited: payload.autoCredited,
+        apc: payload.autoClickerPendingCount,
+        apv: payload.autoClickerPendingValue,
+      })
       // Ack only — no broadcast. Other tabs of the same user see updates via
       // their own batched click cycle / explicit getState calls.
       return payload
@@ -181,8 +252,18 @@ export class ClickerUserGateway
   ): Promise<UpgradeAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.UPGRADE_CLICK,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.UPGRADE_CLICK,
+    })
 
     try {
       await this.clickerUserService.upgradeClickLevel(userId)
@@ -206,6 +287,15 @@ export class ClickerUserGateway
         autoClickerPendingCount: fresh.auto_clicker_pending_count,
         autoClickerPendingValue: fresh.auto_clicker_pending_value,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.USER_UPDATE,
+        op: 'after-upgrade-click',
+        click_level_id: payload.clickLevel,
+        cost: payload.cost,
+        points: payload.points,
+      })
       this.emitToUserSocket(client, EVENTS.USER_UPDATE, payload)
       return payload
     } catch (err) {
@@ -219,8 +309,18 @@ export class ClickerUserGateway
   ): Promise<UpgradeAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.UPGRADE_ENERGY,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.UPGRADE_ENERGY,
+    })
 
     try {
       await this.clickerUserService.upgradeEnergyLevel(userId)
@@ -242,6 +342,16 @@ export class ClickerUserGateway
         autoClickerPendingCount: fresh.auto_clicker_pending_count,
         autoClickerPendingValue: fresh.auto_clicker_pending_value,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.USER_UPDATE,
+        op: 'after-upgrade-energy',
+        energy_level_id: payload.energyLevel,
+        max_energy: payload.maxEnergy,
+        regen_per_sec: payload.regenPerSec,
+        points: payload.points,
+      })
       this.emitToUserSocket(client, EVENTS.USER_UPDATE, payload)
       return payload
     } catch (err) {
@@ -255,9 +365,25 @@ export class ClickerUserGateway
   ): Promise<SkillUpgradeAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.UPGRADE_AUTO_CLICKER,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.UPGRADE_AUTO_CLICKER,
+    })
     if (!this.checkUpgradeCooldown(client)) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.UPGRADE_AUTO_CLICKER,
+        op: 'cooldown-rejected',
+      })
       return this.errorAck(client, 'Too many upgrade requests')
     }
 
@@ -275,6 +401,15 @@ export class ClickerUserGateway
         points: result.points,
         durationSec: result.auto_clicker_level.duration_sec,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.UPGRADE_AUTO_CLICKER_RESULT,
+        new_level: payload.level,
+        new_level_id: payload.levelId,
+        duration_sec: payload.durationSec,
+        points: payload.points,
+      })
       this.emitToUserSocket(client, EVENTS.UPGRADE_AUTO_CLICKER_RESULT, payload)
       return payload
     } catch (err) {
@@ -288,9 +423,25 @@ export class ClickerUserGateway
   ): Promise<SkillUpgradeAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.UPGRADE_CRIT_CLICK,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.UPGRADE_CRIT_CLICK,
+    })
     if (!this.checkUpgradeCooldown(client)) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.UPGRADE_CRIT_CLICK,
+        op: 'cooldown-rejected',
+      })
       return this.errorAck(client, 'Too many upgrade requests')
     }
 
@@ -308,6 +459,15 @@ export class ClickerUserGateway
         points: result.points,
         critChancePct: result.crit_click_level.crit_chance_pct,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.UPGRADE_CRIT_CLICK_RESULT,
+        new_level: payload.level,
+        new_level_id: payload.levelId,
+        crit_chance_pct: payload.critChancePct,
+        points: payload.points,
+      })
       this.emitToUserSocket(client, EVENTS.UPGRADE_CRIT_CLICK_RESULT, payload)
       return payload
     } catch (err) {
@@ -321,13 +481,29 @@ export class ClickerUserGateway
   ): Promise<AutoClickerClaimAck | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.CLAIM_AUTO_CLICKER,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.CLAIM_AUTO_CLICKER,
+    })
     // Same cooldown as upgrades. Atomicity is owned by the claim Lua
     // (concurrent calls serialise inside Redis); this is a perf
     // shortcut that lets us bounce a rapid double-tap before we touch
     // Redis.
     if (!this.checkUpgradeCooldown(client)) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.CLAIM_AUTO_CLICKER,
+        op: 'cooldown-rejected',
+      })
       return this.errorAck(client, 'Too many claim requests')
     }
 
@@ -341,6 +517,15 @@ export class ClickerUserGateway
         points: result.points,
         totalPoints: result.total_points,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.CLAIM_AUTO_CLICKER_RESULT,
+        claimed_count: payload.claimedCount,
+        claimed_value: payload.claimedValue,
+        points: payload.points,
+        total_points: payload.totalPoints,
+      })
       this.emitToUserSocket(client, EVENTS.CLAIM_AUTO_CLICKER_RESULT, payload)
       return payload
     } catch (err) {
@@ -354,8 +539,18 @@ export class ClickerUserGateway
   ): Promise<UpgradeAckPayload | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        event: EVENTS.GET_STATE,
+        op: 'no-auth',
+      })
       return this.errorAck(client, 'Not authenticated')
     }
+    clickerLog('ws.in', {
+      socket: client.id,
+      user: userId,
+      event: EVENTS.GET_STATE,
+    })
 
     try {
       const state = await this.clickerUserService.getCurrentState(userId)
@@ -376,6 +571,20 @@ export class ClickerUserGateway
         autoClickerPendingCount: state.auto_clicker_pending_count,
         autoClickerPendingValue: state.auto_clicker_pending_value,
       }
+      clickerLog('ws.out', {
+        socket: client.id,
+        user: userId,
+        event: EVENTS.STATE,
+        op: 'get-state',
+        points: payload.points,
+        energy: payload.energy,
+        max_energy: payload.maxEnergy,
+        regen_per_sec: payload.regenPerSec,
+        apc: payload.autoClickerPendingCount,
+        apv: payload.autoClickerPendingValue,
+        ac_started_at_ms: payload.autoClickerStartedAtMs,
+        ac_max_idle_sec: payload.autoClickerMaxIdleSec,
+      })
       client.emit(EVENTS.STATE, payload)
       return payload
     } catch (err) {
@@ -454,6 +663,11 @@ export class ClickerUserGateway
           ? err
           : 'unknown'
     const errorResponse: ErrorResponse = { message }
+    clickerLog('ws.error', {
+      socket: client.id,
+      user: this.socketUserId.get(client) ?? null,
+      message,
+    })
     client.emit(EVENTS.ERROR, errorResponse)
     return { error: message }
   }

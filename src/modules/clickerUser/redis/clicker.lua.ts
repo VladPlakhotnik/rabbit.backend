@@ -73,8 +73,14 @@
 // Accumulation pauses the moment a manual click lands (lc updates, accepted
 // > 0). Cap is \`as + ad*1000\` — once the player passes that wall-clock
 // instant, no more ticks are credited. Pending stays in apc/apv until the
-// player calls the claim script (clicker.lua.claim), which atomically
-// adds apv to points and resets apc/apv/as/ac and stamps lc=now.
+// player calls the claim script (clicker.lua.claim).
+//
+// Crediting model: ticks bank into apc/apv but DON'T touch points/tp. The
+// claim script flips apv into points and tp atomically — that's what
+// makes the modal's "+N reward" line up with a real balance change. An
+// older revision credited during sim and treated claim as a dismiss; it
+// was confusing UX (modal claimed +200 but balance unchanged) and made
+// the level-up gate fire mid-idle when the player wasn't watching.
 //
 // Returns: { code, accepted, points, energy, max_energy, cost, level_id,
 //            click_level_id, energy_level_id, level_up_due, regen_milli,
@@ -139,6 +145,19 @@ local lc          = tonumber(h[18]) or 0
 local apc         = tonumber(h[19]) or 0
 local apv         = tonumber(h[20]) or 0
 local tp          = tonumber(h[21]) or 0
+
+-- Snapshot BEFORE-state for the diagnostic return tuple. Cheap (just
+-- locals) and lets the caller log a clean before→after diff without
+-- having to fetch the hash twice.
+local dbg_p_before    = points
+local dbg_e_before    = energy
+local dbg_lts_before  = last_ts
+local dbg_lc_before   = lc
+local dbg_as_before   = ac_start
+local dbg_ac_before   = ac_last
+local dbg_apc_before  = apc
+local dbg_apv_before  = apv
+local dbg_tp_before   = tp
 if cost < 1 then cost = 1 end
 if crit_chance < 0 then crit_chance = 0 end
 if crit_chance > 100 then crit_chance = 100 end
@@ -165,8 +184,12 @@ end
 --   regen entirely at slow rates.
 local regen_units = 0
 local regen_ms_used = 0
+local dbg_outer_regen_dt_ms = 0
+local dbg_outer_regen_computed_raw = 0
 if regen > 0 and now > last_ts and energy < max_e then
+  dbg_outer_regen_dt_ms = now - last_ts
   local computed = math.floor((now - last_ts) * regen / 1000000)
+  dbg_outer_regen_computed_raw = computed
   if computed > 0 then
     local headroom = max_e - energy
     if computed > headroom then computed = headroom end
@@ -218,20 +241,47 @@ end
 -- check's sim window starts at the new lc + threshold rather than
 -- counting the active period as autoclick time.
 local auto_credited = 0
+
+-- Diagnostic snapshot of the autoclicker math the Lua chose. All
+-- four fields are 0 when the autoclicker block didn't engage at all
+-- (e.g. ad=0 or accepted>0). When it did engage, they pin down
+-- exactly which window was simulated — 'ticks_attempted' is the loop
+-- iteration count, 'ticks_succeeded' is how many actually credited
+-- (skipped iterations are when energy<cost). dbg_inner_regen_total
+-- sums energy regen credited inside the per-tick loop.
+local dbg_cap_at = 0
+local dbg_effective_now = 0
+local dbg_sim_from = 0
+local dbg_ticks_attempted = 0
+local dbg_ticks_succeeded = 0
+local dbg_inner_regen_total = 0
+local dbg_ac_started_this_call = 0
+local dbg_idle_dt_at_check = 0
 if ac_max_idle > 0 and accepted == 0 then
-  if ac_start == 0 and apc == 0 and lc > 0 and (now - lc) >= idle_threshold_ms then
+  -- Clamp negative idle deltas to 0 — a client clock briefly behind the
+  -- server (or two parallel calls with mismatched ts) can produce
+  -- now < lc. The math below uses (now - lc) >= idle_threshold_ms,
+  -- which already guards against negatives, but the diagnostic surface
+  -- shouldn't show negatives either (they read as bugs but aren't).
+  dbg_idle_dt_at_check = now - lc
+  if dbg_idle_dt_at_check < 0 then dbg_idle_dt_at_check = 0 end
+  if ac_start == 0 and apc == 0 and lc > 0 and dbg_idle_dt_at_check >= idle_threshold_ms then
     ac_start = lc + idle_threshold_ms
     ac_last = ac_start
+    dbg_ac_started_this_call = 1
   end
 
   if ac_start > 0 then
     local cap_at = ac_start + ac_max_idle * 1000
     local effective_now = now
     if effective_now > cap_at then effective_now = cap_at end
+    dbg_cap_at = cap_at
+    dbg_effective_now = effective_now
 
     local idle_floor = lc + idle_threshold_ms
     local sim_from = ac_last
     if sim_from < idle_floor then sim_from = idle_floor end
+    dbg_sim_from = sim_from
 
     -- Per-tick simulation. Each iteration: apply 3-sec regen window,
     -- then attempt one click. Loop bounded by max_idle_sec / 3 — at
@@ -240,26 +290,28 @@ if ac_max_idle > 0 and accepted == 0 then
     if sim_from < effective_now then
       local tick_at = sim_from + AUTO_TICK_MS
       while tick_at <= effective_now do
+        dbg_ticks_attempted = dbg_ticks_attempted + 1
         if regen > 0 and energy < max_e then
           local tick_regen = math.floor(AUTO_TICK_MS * regen / 1000000)
           local headroom = max_e - energy
           if tick_regen > headroom then tick_regen = headroom end
           if tick_regen > 0 then
             energy = energy + tick_regen
+            dbg_inner_regen_total = dbg_inner_regen_total + tick_regen
           end
         end
         if energy >= cost then
           energy = energy - cost
-          -- Credit points immediately so the player's balance grows in
-          -- real time. apc / apv stay as a per-cycle tally for the
-          -- claim-modal summary; the claim Lua just zeroes them since
-          -- the points are already in points. tp also bumps so
-          -- autoclicker progress contributes to the level bar.
-          points = points + cost
-          tp = tp + cost
+          -- Bank only — points/tp stay put. The claim Lua flips apv
+          -- into the spendable + lifetime balance atomically when
+          -- the player hits Continue. Banking-only here is what lets
+          -- the modal's "+N reward" actually change the balance:
+          -- crediting during sim made claim a no-op (UX trap) and
+          -- could trip the level-up gate while the player was idle.
           apc = apc + 1
           apv = apv + cost
           auto_credited = auto_credited + 1
+          dbg_ticks_succeeded = dbg_ticks_succeeded + 1
         end
         ac_last = tick_at
         tick_at = tick_at + AUTO_TICK_MS
@@ -306,11 +358,21 @@ end
 -- is full (no carry needed); otherwise advance only by ms that
 -- contributed integer regen units, so the sub-unit residual rolls into
 -- the next call.
+--
+-- Autoclicker simulation already accounted for energy during the
+-- (sim_from, ac_last) window via inner regen + per-tick debits. Without
+-- the second branch below, the next call's outer regen reads
+-- (now - last_ts) and re-credits regen for that span — silently
+-- inflating energy by ~inner_regen_total per cycle. Anchoring to ac_last
+-- when it's ahead of the carried-residual closes the double-count.
 local persisted_ts
 if regen <= 0 or energy >= max_e then
   persisted_ts = now
 else
   persisted_ts = last_ts + regen_ms_used
+  if ac_last > persisted_ts then
+    persisted_ts = ac_last
+  end
 end
 
 -- Single HMSET batches every state field that may have changed. Keeping
@@ -363,6 +425,31 @@ return {
   ac_max_idle,
   apc,
   apv,
-  tp
+  tp,
+  -- Diagnostic block — appended for the Ghost-mode debug logger.
+  -- Always returned (cheap inside Redis Lua), but consumed only when
+  -- CLICKER_DEBUG=true on the Node side. Order MUST match the
+  -- destructuring inside parseClickResult() in clicker-redis.service.ts.
+  dbg_p_before,
+  dbg_e_before,
+  dbg_lts_before,
+  dbg_lc_before,
+  dbg_as_before,
+  dbg_ac_before,
+  dbg_apc_before,
+  dbg_apv_before,
+  dbg_tp_before,
+  dbg_outer_regen_dt_ms,
+  dbg_outer_regen_computed_raw,
+  regen_units,
+  regen_ms_used,
+  dbg_idle_dt_at_check,
+  dbg_ac_started_this_call,
+  dbg_cap_at,
+  dbg_effective_now,
+  dbg_sim_from,
+  dbg_ticks_attempted,
+  dbg_ticks_succeeded,
+  dbg_inner_regen_total
 }
 `
