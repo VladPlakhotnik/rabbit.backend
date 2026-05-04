@@ -14,9 +14,11 @@ import { NotificationService } from './notification.service'
 import { AuthGuard } from '@nestjs/passport'
 import { Request } from 'express'
 import { User } from '../users/user.entity'
-import { RolesGuard } from '../../core/guards/roles.guard'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
 import type { NotificationParams } from './entities/notification.entity'
 
 // Admin-create payload. Two valid shapes:
@@ -70,8 +72,9 @@ export class NotificationController {
 
   @ApiOperation({ summary: 'Create a new notification' })
   @ApiResponse({ status: 200, description: 'Return created notification' })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post()
   async create(@Body() body: CreateNotificationBody) {
     const notificationData = this.assemblePayload(body)
@@ -83,8 +86,9 @@ export class NotificationController {
     status: 200,
     description: 'Notification successfully deleted',
   })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Delete(':id')
   async delete(@Param('id') id: number) {
     await this.notificationService.delete(id)
@@ -93,8 +97,9 @@ export class NotificationController {
 
   @ApiOperation({ summary: 'Update a notification' })
   @ApiResponse({ status: 200, description: 'Return updated notification' })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Patch(':id')
   async update(
     @Param('id') id: number,

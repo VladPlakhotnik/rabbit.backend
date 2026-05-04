@@ -10,7 +10,13 @@
 import { Logger } from '@nestjs/common'
 
 // Without these, the app simply cannot do its job correctly. Missing → fail.
-const REQUIRED_VARS = ['DATABASE_URL', 'JWT_SECRET'] as const
+// JWT secrets were split into ACCESS + REFRESH (see auth-secrets.ts) to
+// stop a leak of one from compromising the other.
+const REQUIRED_VARS = [
+  'DATABASE_URL',
+  'JWT_ACCESS_SECRET',
+  'JWT_REFRESH_SECRET',
+] as const
 
 // App will start without these but key features will silently break.
 // Listed for an explicit warning so the dev knows what they're missing.

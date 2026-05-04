@@ -11,13 +11,17 @@ import {
 } from '@nestjs/common'
 import { Request } from 'express'
 import { CaseService } from './case.service'
-import { Roles } from '../../core/decorators/roles.decorator'
 import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../../core/guards/roles.guard'
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger'
 import { Throttle } from '@nestjs/throttler'
 import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 import { User } from '../users/user.entity'
+// Admin-panel auth — separate flow from the game-user JWT above.
+// Used on staff-only endpoints (create / update / delete content).
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
 
 /**
  * Controller for working with cases
@@ -85,10 +89,18 @@ export class CaseController {
     return this.caseService.openCase(caseEntity.id, req.user.id, count)
   }
 
-  @ApiOperation({ summary: 'Create a new case' })
-  @ApiResponse({ status: 200, description: 'Return created case' })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiOperation({ summary: 'Create a new case (admin panel)' })
+  @ApiResponse({ status: 201, description: 'Return created case' })
+  // Staff-only endpoint — uses the admin-panel JWT (issued by
+  // /admin/auth/login), NOT the game-user Steam JWT. SUPER_ADMIN +
+  // ADMIN can create content; MANAGER and VIEWER cannot.
+  //
+  // The presence of `Authorization: Bearer <admin-jwt>` is required;
+  // a Steam-game user token here returns 401 because the secrets +
+  // strategy name differ. That's the whole point of having two
+  // separate flows.
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post()
   async create(
     @Body('name') name: string,

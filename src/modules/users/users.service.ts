@@ -1,14 +1,18 @@
 import {
+  Inject,
   Injectable,
   NotFoundException,
   BadRequestException,
   Logger,
 } from '@nestjs/common'
+import { CACHE_MANAGER } from '@nestjs/cache-manager'
+import type { Cache } from 'cache-manager'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { User } from './user.entity'
 import { HttpService } from '@nestjs/axios'
 import { firstValueFrom } from 'rxjs'
+import { jwtUserCacheKey } from '../auth/jwt-user-cache-key'
 
 /**
  * Service for working with users
@@ -23,7 +27,34 @@ export class UserService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly httpService: HttpService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
+
+  /**
+   * Manual fallback for invalidating the JwtStrategy's cached User
+   * row. ONLY needed in code paths that mutate `users` rows via raw
+   * SQL (`manager.query('UPDATE users …')`) — those bypass TypeORM
+   * subscribers, so JwtUserCacheSubscriber never fires for them.
+   *
+   * Every other mutation in this service goes through
+   * repository.update / save / increment / manager.save in a
+   * transaction → all of those trigger the subscriber automatically;
+   * do NOT call this method from those paths.
+   *
+   * Failures are intentionally swallowed: a cache miss here is a
+   * worst-case 30-second staleness, never a 500.
+   */
+  private async invalidateJwtUserCache(userId: number): Promise<void> {
+    try {
+      await this.cache.del(jwtUserCacheKey(userId))
+    } catch (err) {
+      this.logger.warn(
+        `Failed to invalidate jwt user cache for ${userId}: ${
+          err instanceof Error ? err.message : 'Unknown error'
+        }`,
+      )
+    }
+  }
 
   findAll() {
     return this.userRepository.find()
@@ -142,7 +173,10 @@ export class UserService {
   }
 
   async updateTradeLink(userId: number, tradeLink: string): Promise<void> {
-    await this.userRepository.update(userId, { trade_link: tradeLink })
+    // .save() (instead of .update()) so JwtUserCacheSubscriber gets
+    // event.entity.id and can invalidate the JWT user-row cache. See
+    // class-level comment on the subscriber for the full reasoning.
+    await this.userRepository.save({ id: userId, trade_link: tradeLink })
   }
 
   async linkTelegramAccount(
@@ -160,8 +194,10 @@ export class UserService {
       )
     }
 
-    // Update user's telegram_user_id
-    await this.userRepository.update(userId, {
+    // .save() so JwtUserCacheSubscriber sees the user id (see
+    // subscriber file for the .update() vs .save() rationale).
+    await this.userRepository.save({
+      id: userId,
       telegram_user_id: telegramUserId,
     })
 
@@ -189,15 +225,21 @@ export class UserService {
     const bigIntValue = BigInt(steamIdString)
 
     if (bigIntValue <= BigInt(Number.MAX_SAFE_INTEGER)) {
-      await this.userRepository.update(userId, {
+      // .save() so JwtUserCacheSubscriber sees the user id.
+      await this.userRepository.save({
+        id: userId,
         steam_id: Number(bigIntValue),
       })
     } else {
-      // For very large Steam IDs, use raw SQL to preserve precision
+      // For very large Steam IDs, use raw SQL to preserve precision —
+      // TypeORM's bigint marshalling rounds at MAX_SAFE_INTEGER.
       await this.userRepository.manager.query(
         `UPDATE users SET steam_id = CAST($1 AS BIGINT) WHERE id = $2`,
         [steamIdString, userId],
       )
+      // Raw SQL bypasses TypeORM subscribers — manual invalidate so
+      // JwtStrategy doesn't keep serving the pre-link Steam ID.
+      await this.invalidateJwtUserCache(userId)
     }
 
     const updatedUser = await this.findById(userId)
@@ -235,7 +277,9 @@ export class UserService {
     }
 
     try {
-      await this.userRepository.update(userId, {
+      // .save() so JwtUserCacheSubscriber sees the user id.
+      await this.userRepository.save({
+        id: userId,
         telegram_user_id: telegramUserId,
       })
     } catch (err: unknown) {
@@ -248,6 +292,53 @@ export class UserService {
       ) {
         throw new BadRequestException(
           'This Telegram account is already linked to another user',
+        )
+      }
+      throw err
+    }
+
+    const updatedUser = await this.findById(userId)
+    if (!updatedUser) {
+      throw new NotFoundException('User not found')
+    }
+
+    return updatedUser
+  }
+
+  /**
+   * Attaches a verified Google id to an existing user account.
+   *
+   * Same shape as `updateTelegramIdOnly` — pre-check for collision so
+   * we surface a friendly 400, with the DB UNIQUE index on
+   * users.google_id as the last-line defence (PG error code 23505 is
+   * caught and re-thrown as the same 400 message).
+   */
+  async updateGoogleIdOnly(
+    userId: number,
+    googleId: string,
+  ): Promise<User> {
+    this.logger.log(`Linking Google ID ${googleId} to user ${userId}`)
+
+    const existing = await this.findByGoogleId(googleId)
+    if (existing && existing.id !== userId) {
+      throw new BadRequestException(
+        'This Google account is already linked to another user',
+      )
+    }
+
+    try {
+      // .save() so JwtUserCacheSubscriber sees the user id.
+      await this.userRepository.save({ id: userId, google_id: googleId })
+    } catch (err: unknown) {
+      // Postgres unique_violation. Catch here so a parallel link from a
+      // different user that won the race doesn't leak a 500.
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        (err as { code?: string }).code === '23505'
+      ) {
+        throw new BadRequestException(
+          'This Google account is already linked to another user',
         )
       }
       throw err
@@ -305,10 +396,12 @@ export class UserService {
       }
 
       if (Object.keys(updateData).length > 0) {
-        await this.userRepository.update(userId, updateData)
+        // .save() so JwtUserCacheSubscriber sees the user id.
+        await this.userRepository.save({ id: userId, ...updateData })
       }
 
-      // Update steam_id using raw SQL to preserve precision
+      // Update steam_id using raw SQL to preserve precision —
+      // TypeORM's bigint marshalling rounds at MAX_SAFE_INTEGER.
       await this.userRepository.manager.query(
         `UPDATE users SET steam_id = CAST($1 AS BIGINT) WHERE id = $2`,
         [steamIdString, userId],
@@ -319,6 +412,11 @@ export class UserService {
         throw new NotFoundException('User not found')
       }
 
+      // Raw SQL bypasses TypeORM subscribers — manual invalidate so
+      // the JwtStrategy user-cache reflects the new Steam ID
+      // immediately. The .save() call above is already covered by
+      // the subscriber.
+      await this.invalidateJwtUserCache(userId)
       return updatedUser
     }
 
@@ -337,7 +435,8 @@ export class UserService {
       updateData.profile_url = profileUrl
     }
 
-    await this.userRepository.update(userId, updateData)
+    // .save() so JwtUserCacheSubscriber sees the user id.
+    await this.userRepository.save({ id: userId, ...updateData })
 
     const updatedUser = await this.findById(userId)
     if (!updatedUser) {
@@ -348,11 +447,19 @@ export class UserService {
   }
 
   async updateBalance(userId: number, amount: number): Promise<void> {
-    await this.userRepository.update(userId, { balance: amount })
+    // .save() so JwtUserCacheSubscriber sees the user id.
+    await this.userRepository.save({ id: userId, balance: amount })
   }
 
   async incrementOpenedCases(userId: number): Promise<void> {
+    // .increment() runs an atomic UPDATE … SET col = col + 1 — much
+    // cheaper than a load-then-save round-trip on a hot path called
+    // every time a player opens a case. Trade-off: same broken event
+    // shape as repository.update() (no entity.id on the subscriber),
+    // so we manually invalidate. This is the only non-raw-SQL caller
+    // that needs the manual fallback.
     await this.userRepository.increment({ id: userId }, 'opened_cases', 1)
+    await this.invalidateJwtUserCache(userId)
   }
 
   async updateSteamDisplayName(userId: number): Promise<User> {
@@ -433,7 +540,7 @@ export class UserService {
     userId: number,
     amount: number,
   ): Promise<void> {
-    return this.userRepository.manager.transaction(async manager => {
+    await this.userRepository.manager.transaction(async manager => {
       const user = await manager.findOne(User, { where: { id: userId } })
       if (!user) {
         throw new NotFoundException('User not found')

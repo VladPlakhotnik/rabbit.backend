@@ -14,41 +14,39 @@ import { ClickerClickLevelsService } from '../clickerClickLevels/clicker-click-l
 import { ClickerEnergyLevelsService } from '../clickerEnergyLevels/clicker-energy-levels.service'
 import { ClickerAutoClickerLevel } from '../clickerAutoClickerLevels/entities/clicker_auto_clicker_level.entity'
 import { ClickerCritClickLevel } from '../clickerCritClickLevels/entities/clicker_crit_click_level.entity'
+import { OnModuleInit } from '@nestjs/common'
 import { ClickerHistoryService } from '../clickerHistory/clicker-history.service'
 import { ClickerRedisService } from './redis/clicker-redis.service'
 import { ClickerFlushService } from './redis/clicker-flush.service'
+import { ClickerLevelsCacheService } from './services/clicker-levels-cache.service'
+import {
+  ClickerEngineService,
+  type ClickResult,
+} from './services/clicker-engine.service'
+import { ClickerMetricsService } from './services/clicker-metrics.service'
 
 /** Skill identifiers shared with the frontend / audit log. */
 export type SkillKind = 'auto_clicker' | 'crit_click'
 
-// Hard cap on a single batched click message. The frontend coalesces ~150 ms
-// of clicks into one event, so even an autoclicker hitting 30 cps lands well
-// under this. Anything larger is malformed/abusive and we drop the excess.
-const MAX_BATCH_PER_REQUEST = 200
+// ClickResult re-exported from the engine service so existing
+// importers (gateway, sibling services) keep their import paths.
+export type { ClickResult }
 
-export interface ClickResult {
-  accepted: number
+/**
+ * Result of an atomic autoclicker claim. `claimed_*` are the totals
+ * just credited to the player; `points` is the post-claim balance.
+ * On a no-op claim (apc was already 0) all three counts are 0 and the
+ * call is a successful no-op rather than an error.
+ */
+export interface ClaimAutoClickerResult {
+  claimed_count: number
+  claimed_value: number
   points: number
-  energy: number
-  max_energy: number
-  cost: number
-  /** Energy units per second. 0 means regeneration disabled. */
-  regen_per_sec: number
-  level_id: number | null
-  click_level_id: number | null
-  energy_level_id: number | null
-  /** Number of accepted clicks in this batch that landed a 10× crit. */
-  crit_count: number
-  /**
-   * Seconds the auto-clicker collected this tick (folded into points
-   * already; surfaced for the client so it can flash the balance / play
-   * a "ghost click" animation when non-zero).
-   */
-  auto_clicks: number
+  total_points: number
 }
 
 @Injectable()
-export class ClickerUserService {
+export class ClickerUserService implements OnModuleInit {
   private readonly logger = new Logger(ClickerUserService.name)
 
   constructor(
@@ -59,16 +57,64 @@ export class ClickerUserService {
     private readonly clickerEnergyLevelsService: ClickerEnergyLevelsService,
     private readonly redisService: ClickerRedisService,
     private readonly flushService: ClickerFlushService,
+    private readonly levelsCache: ClickerLevelsCacheService,
+    private readonly engineService: ClickerEngineService,
+    private readonly metrics: ClickerMetricsService,
     private readonly historyService: ClickerHistoryService,
     private readonly dataSource: DataSource,
   ) {}
 
-  findAll() {
-    return this.clickerUserRepository.find()
+  /**
+   * Hand the engine a callback for resolving PG rows on bootstrap.
+   * Avoids a circular Nest constructor injection (engine ↔ user
+   * service); the engine just needs a way to lazy-create the
+   * underlying row when its Lua hot path hits a cold cache.
+   */
+  onModuleInit(): void {
+    this.engineService.setBootstrapLoader({
+      findOrCreateByUserId: (userId: number) =>
+        this.findOrCreateByUserId(userId),
+    })
+  }
+
+  /**
+   * Paginated admin listing. Caller passes `page` (1-based) and `limit`;
+   * we cap `limit` at 100 in the DTO so a single request can't blow up
+   * the response. Relations are loaded so the admin UI can render
+   * `level.name`, `click_level.id`, etc. without a second round-trip.
+   *
+   * Returns `{ data, total, page, limit }` so the table can render
+   * pagination controls without a separate `/count` endpoint.
+   */
+  async findAll(page = 1, limit = 20) {
+    const safePage = Math.max(1, Math.floor(page))
+    const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)))
+    const [data, total] = await this.clickerUserRepository.findAndCount({
+      relations: [
+        'level',
+        'click_level',
+        'energy_level',
+        'auto_clicker_level',
+        'crit_click_level',
+      ],
+      order: { id: 'ASC' },
+      skip: (safePage - 1) * safeLimit,
+      take: safeLimit,
+    })
+    return { data, total, page: safePage, limit: safeLimit }
   }
 
   findById(id: number) {
-    return this.clickerUserRepository.findOne({ where: { id } })
+    return this.clickerUserRepository.findOne({
+      where: { id },
+      relations: [
+        'level',
+        'click_level',
+        'energy_level',
+        'auto_clicker_level',
+        'crit_click_level',
+      ],
+    })
   }
 
   async findByUserId(userId: number) {
@@ -167,201 +213,43 @@ export class ClickerUserService {
     return this.clickerUserRepository.save(clickerUser)
   }
 
-  update(id: number, data: Partial<ClickerUser>) {
-    return this.clickerUserRepository.update(id, data)
-  }
+  // NOTE: `update(id, data)` and `remove(id)` were removed alongside
+  // the `PUT` / `DELETE` admin endpoints. Mass-assignment via
+  // `Body() data: any` was a write-anything-anywhere hole, and a
+  // generic `DELETE` orphans FKs in `clicker_history`, boost rows,
+  // case-open audit, etc. Targeted admin actions (set-balance,
+  // set-level, soft-disable) belong in a future PR — see the
+  // hand-off note at the bottom of clicker-user.controller.ts.
 
-  remove(id: number) {
-    return this.clickerUserRepository.delete(id)
-  }
+  // ─── Engine delegates ──────────────────────────────────────────────
+  // The click hot path, state queries, and side-spend debit all live
+  // in ClickerEngineService now. These thin wrappers preserve the
+  // existing call-sites (gateway, ClickerBoostsService, ClickerCases,
+  // etc.) so the split is a refactor, not a breaking change.
 
-  /**
-   * Apply a batch of clicks atomically. The actual energy/points math runs
-   * inside a Redis Lua script — this method just orchestrates the lazy-load
-   * (first click after a cold cache loads the user from Postgres) and clamps
-   * the requested count.
-   */
-  async handleClickBatch(
+  handleClickBatch(
     userId: number,
     requestedCount: number,
     nowMs: number = Date.now(),
   ): Promise<ClickResult> {
-    if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
-      throw new BadRequestException('count must be a positive number')
-    }
-    const count = Math.min(
-      MAX_BATCH_PER_REQUEST,
-      Math.floor(requestedCount),
-    )
-    return this.runWithBootstrap(userId, count, nowMs)
+    return this.engineService.handleClickBatch(userId, requestedCount, nowMs)
   }
 
-  /**
-   * Read the current state without mutating it. Same Lua path with count=0
-   * computes regenerated energy and lazy-loads if needed.
-   */
-  async getCurrentState(
+  getCurrentState(
     userId: number,
     nowMs: number = Date.now(),
   ): Promise<ClickResult> {
-    return this.runWithBootstrap(userId, 0, nowMs)
+    return this.engineService.getCurrentState(userId, nowMs)
   }
 
-  private async runWithBootstrap(
-    userId: number,
-    count: number,
-    nowMs: number,
-  ): Promise<ClickResult> {
-    let result = await this.redisService.runClick(userId, count, nowMs)
-    if (result.meta_missing) {
-      await this.bootstrapFromDb(userId)
-      result = await this.redisService.runClick(userId, count, nowMs)
-      if (result.meta_missing) {
-        // bootstrap should have written meta; getting here means the row
-        // was deleted between the two calls or Redis dropped it.
-        throw new NotFoundException('Clicker profile not found')
-      }
-    }
-
-    // Bunny crossed the next level threshold — apply the level-up now (rather
-    // than waiting for the cron flush) so the player sees it immediately.
-    if (result.level_up_due) {
-      const acceptedFromBatch = result.accepted
-      // Persists current state and bumps level inside maybeBumpLevels.
-      await this.flushService.flushUser(userId)
-      // Refresh meta so Lua sees the new level_id / next_level_cost. Do NOT
-      // clear state — we just persisted it and want to keep accumulating.
-      await this.redisService.clearMeta(userId)
-      await this.bootstrapFromDb(userId)
-      // Re-read state with count=0 to grab the post-bump level_id without
-      // double-counting clicks.
-      const fresh = await this.redisService.runClick(userId, 0, nowMs)
-      result = { ...fresh, accepted: acceptedFromBatch }
-    }
-
-    return {
-      accepted: result.accepted,
-      points: result.points,
-      energy: result.energy,
-      max_energy: result.max_energy,
-      cost: result.cost,
-      regen_per_sec: result.regen_milli > 0 ? result.regen_milli / 1000 : 0,
-      level_id: result.level_id || null,
-      click_level_id: result.click_level_id || null,
-      energy_level_id: result.energy_level_id || null,
-      crit_count: result.crit_count,
-      auto_clicks: result.auto_clicks,
-    }
+  deductPoints(userId: number, amount: number): Promise<number> {
+    return this.engineService.deductPoints(userId, amount)
   }
 
-  /**
-   * Hydrate Redis from Postgres for one user. Idempotent — runs SETNX for
-   * state so a parallel handler that already loaded won't be clobbered.
-   *
-   * Materialises the Postgres row on first touch via findOrCreateByUserId,
-   * so a click coming in before the player ever hit GET /clicker-users/me
-   * still bootstraps cleanly instead of 404-ing.
-   */
-  private async bootstrapFromDb(userId: number): Promise<void> {
-    const user = await this.findOrCreateByUserId(userId)
-    if (!user.click_level || !user.energy_level) {
-      // Defensive: the schema lets these be null in TypeORM relations; in
-      // practice every active row should have both, but bail loudly if not.
-      throw new NotFoundException('Clicker profile is missing level config')
-    }
-
-    const lastTs = user.last_energy_update
-      ? user.last_energy_update.getTime()
-      : Date.now()
-
-    const nextLevelCost = await this.findNextLevelCost(user.level?.id ?? 0)
-
-    // Crit chance defaults to 0 when the skill isn't unlocked — the Lua
-    // hot path checks `cc > 0` before entering the roll loop, so an
-    // unupgraded user pays no extra cost per click.
-    const critChancePct = user.crit_click_level?.crit_chance_pct ?? 0
-
-    await this.redisService.bootstrap(
-      userId,
-      {
-        points: user.points,
-        energy: user.energy_amount,
-        ts: lastTs,
-      },
-      {
-        cost: user.click_level.reward_per_click,
-        max_energy: user.energy_level.energy_amount,
-        level_id: user.level?.id ?? 0,
-        click_level_id: user.click_level.id,
-        energy_level_id: user.energy_level.id,
-        next_level_cost: nextLevelCost,
-        crit_chance_pct: critChancePct,
-      },
-    )
-  }
-
-  /** Returns 0 when the user is at max level (no more upgrades). */
-  private async findNextLevelCost(currentLevelId: number): Promise<number> {
-    if (currentLevelId <= 0) return 0
-    const next = await this.clickerLevelsService.findById(currentLevelId + 1)
-    return next?.points_required ?? 0
-  }
-
-  /**
-   * Atomic points debit for clicker side-spends (case opens, future shop
-   * items). Bootstraps Redis state if cold, then runs the deduct Lua script.
-   * Returns the user's new balance.
-   *
-   * Throws BadRequestException if balance is insufficient. The next cron
-   * flush picks up the new value and writes it to Postgres — the caller
-   * does NOT need to flush manually.
-   */
-  async deductPoints(userId: number, amount: number): Promise<number> {
-    if (!Number.isFinite(amount) || amount <= 0) {
-      throw new BadRequestException('amount must be a positive number')
-    }
-    const cost = Math.floor(amount)
-
-    // Ensure state is loaded — runWithBootstrap with count=0 is a no-op
-    // in the happy path, and lazy-loads from Postgres on cold cache.
-    await this.runWithBootstrap(userId, 0, Date.now())
-
-    const newBalance = await this.redisService.deductPoints(userId, cost)
-    if (newBalance === -2) {
-      // Bootstrap raced with a TTL eviction — reload and retry once.
-      await this.bootstrapFromDb(userId)
-      const retry = await this.redisService.deductPoints(userId, cost)
-      if (retry < 0) {
-        throw new BadRequestException('Not enough carrots')
-      }
-      await this.persistAfterDebit(userId)
-      return retry
-    }
-    if (newBalance < 0) {
-      throw new BadRequestException('Not enough carrots')
-    }
-    await this.persistAfterDebit(userId)
-    return newBalance
-  }
-
-  /**
-   * Best-effort sync of the deducted balance into Postgres so the very next
-   * REST query (e.g. `/clicker-users/me` after returning to the clicker
-   * page) reflects the spend without waiting up to a minute for the cron
-   * flush. A failure here is not fatal — the cron will catch up — so we
-   * swallow the error to keep the open-case flow on the happy path.
-   */
-  private async persistAfterDebit(userId: number): Promise<void> {
-    try {
-      await this.flushService.flushUser(userId)
-    } catch (err) {
-      this.logger.warn(
-        `flush-after-debit failed for user ${userId}: ${
-          err instanceof Error ? err.message : err
-        }`,
-      )
-    }
-  }
+  // ─── Skill / progression / admin grant ─────────────────────────────
+  // Still lives in this service for the moment — split into
+  // ClickerSkillsService / ClickerProgressionService is the next
+  // refactor pass.
 
   async upgradeClickLevel(userId: number) {
     // Pull anything Redis-side into Postgres first so we read the actual
@@ -472,16 +360,31 @@ export class ClickerUserService {
     await this.flushService.flushUser(userId)
 
     const result = await this.dataSource.transaction(async (manager) => {
-      const user = await manager.findOne(ClickerUser, {
-        where: { user_id: userId },
-        relations: [relationKey],
-        lock: { mode: 'pessimistic_write' },
-      })
+      // SELECT FOR UPDATE on clicker_users alone — no JOIN. TypeORM's
+      // findOne(... lock + relations ...) emits a LEFT JOIN on the
+      // relation table and Postgres refuses to lock the result of an
+      // outer join ("FOR UPDATE cannot be applied to the nullable side
+      // of an outer join"). Lock the row first, then load the relation
+      // separately without a lock.
+      const user = await manager
+        .createQueryBuilder(ClickerUser, 'cu')
+        .where('cu.user_id = :userId', { userId })
+        .setLock('pessimistic_write')
+        .getOne()
       if (!user) {
         throw new NotFoundException('Clicker profile not found')
       }
 
-      const currentLevel = user[relationKey] as TLevel | null
+      // Cheap second query — the row is already locked, so this read
+      // races nothing. Without `lock` TypeORM is happy to LEFT JOIN.
+      const userWithRelation = await manager.findOne(ClickerUser, {
+        where: { user_id: userId },
+        relations: [relationKey],
+      })
+      const currentLevel =
+        ((userWithRelation as unknown as Record<string, unknown>)[relationKey] ??
+          null) as TLevel | null
+
       const nextLevelId = (currentLevel?.id ?? 0) + 1
       const nextLevel = await manager.findOne(levelEntity, {
         where: { id: nextLevelId } as never,
@@ -612,14 +515,18 @@ export class ClickerUserService {
    *      values straight from PG.
    *   4. History row.
    *
-   * @param issuerUserId who issued the grant — for audit forensics
+   * @param issuerAdminId UUID of the admin from `admins` table — for
+   *                      audit forensics. Used to be a player `users.id`
+   *                      back when the legacy `Roles('admin')` guard ran
+   *                      the show; now it's an admin-panel staff id
+   *                      because authorisation moved to AdminJwtGuard.
    * @param targetUserId whose carrots are being modified
    * @param delta positive = grant, negative = remove. Floats are
    *              truncated (DTO clamps to integer).
    * @param reason optional free-text annotation in the audit row
    */
   async grantPoints(
-    issuerUserId: number,
+    issuerAdminId: string,
     targetUserId: number,
     delta: number,
     reason: string | null,
@@ -639,35 +546,56 @@ export class ClickerUserService {
     await this.flushService.flushUser(targetUserId)
 
     const result = await this.dataSource.transaction(async (manager) => {
-      const user = await manager.findOne(ClickerUser, {
-        where: { user_id: targetUserId },
-        relations: ['level'],
-        lock: { mode: 'pessimistic_write' },
-      })
+      // Lock the clicker_users row first WITHOUT joining the level
+      // relation — Postgres refuses FOR UPDATE on the nullable side
+      // of a LEFT JOIN. Then load the level separately (no lock
+      // needed; the row is already pinned).
+      const user = await manager
+        .createQueryBuilder(ClickerUser, 'cu')
+        .where('cu.user_id = :targetUserId', { targetUserId })
+        .setLock('pessimistic_write')
+        .getOne()
       if (!user) {
         throw new NotFoundException('Clicker profile not found')
       }
+      const userWithLevel = await manager.findOne(ClickerUser, {
+        where: { user_id: targetUserId },
+        relations: ['level'],
+      })
+      const currentLevel = userWithLevel?.level ?? null
 
       const stateBefore = {
         points: user.points,
-        level_id: user.level?.id ?? null,
+        total_points: user.total_points,
+        level_id: currentLevel?.id ?? null,
       }
 
       // Floor at 0 — admin can't drag a balance into negative
       // territory; if delta would do so, we just zero it out.
       const newPoints = Math.max(0, user.points + intDelta)
 
+      // Lifetime tally only goes up — a negative grant (admin clawback)
+      // hits `points` but doesn't roll back what the player has
+      // already earned. Otherwise a clawback could trigger a level
+      // demotion via the threshold check below, which we don't allow.
+      const newTotalPoints =
+        (user.total_points ?? 0) + Math.max(0, intDelta)
+
       // Re-anchor the level. Pull the catalog (cheap — < 20 rows) and
-      // pick the highest tier whose points_required <= newPoints.
-      // Never drop below the current level — by design level is a
-      // permanent rank, not a "do they still qualify" flag.
-      const allLevels = await this.clickerLevelsService.findAll()
-      const sorted = [...allLevels].sort((a, b) => a.id - b.id)
-      const currentLevelId = user.level?.id ?? 0
-      let nextLevel = user.level
+      // pick the highest tier whose points_required <= newTotalPoints.
+      // Reading from the lifetime tally rather than the spendable
+      // balance is the whole point of the column — without it a
+      // post-spend grantPoints could "demote" by checking against a
+      // depleted balance. The current-level floor still guards
+      // monotonicity even in edge cases (e.g., admin-edited PG row).
+      // Cache hit on a hot admin path — bunny levels rarely change so
+      // a process-wide warm cache beats a fresh SELECT every grant.
+      const sorted = await this.levelsCache.getBunnyLevels()
+      const currentLevelId = currentLevel?.id ?? 0
+      let nextLevel = currentLevel
       for (const lv of sorted) {
         if (lv.id < currentLevelId) continue
-        if (newPoints >= lv.points_required) {
+        if (newTotalPoints >= lv.points_required) {
           nextLevel = lv
         } else {
           break
@@ -675,6 +603,7 @@ export class ClickerUserService {
       }
 
       user.points = newPoints
+      user.total_points = newTotalPoints
       if (nextLevel) {
         user.level = nextLevel
       }
@@ -685,6 +614,7 @@ export class ClickerUserService {
         stateBefore,
         stateAfter: {
           points: user.points,
+          total_points: user.total_points,
           level_id: user.level?.id ?? null,
         },
         points: user.points,
@@ -702,7 +632,7 @@ export class ClickerUserService {
       user_id: targetUserId,
       action: 'grant_points',
       payload: {
-        issuer_user_id: issuerUserId,
+        issuer_admin_id: issuerAdminId,
         delta: intDelta,
         reason: reason ?? null,
       },
@@ -719,54 +649,91 @@ export class ClickerUserService {
     }
   }
 
-  async activateAutoClicker(
+  /**
+   * Claim the autoclicker pending bank. Atomic Redis Lua —
+   * concurrent calls (double-tap, two tabs) get serialised and only
+   * the first sees a non-zero apc; the second is a no-op.
+   *
+   * Bootstrap-then-retry on meta-missing matches the click hot path
+   * (Redis evicted the user mid-call). After the claim Lua succeeds we
+   * also persist the just-credited points to Postgres synchronously so
+   * the open-this-page-on-another-device flow doesn't briefly show the
+   * pre-claim balance.
+   */
+  async claimAutoClicker(
     userId: number,
     ip?: string | null,
-  ): Promise<{ expires_at_ms: number; duration_sec: number; level: number }> {
-    const user = await this.findOrCreateByUserId(userId)
-    if (!user.auto_clicker_level) {
-      throw new BadRequestException('Auto-clicker not unlocked')
-    }
-    const duration = user.auto_clicker_level.duration_sec
-    if (!Number.isFinite(duration) || duration <= 0) {
-      throw new BadRequestException('Auto-clicker tier has invalid duration')
-    }
-
+  ): Promise<ClaimAutoClickerResult> {
     const nowMs = Date.now()
-    // No-op when state already loaded; bootstraps from Postgres on
-    // cold cache so the activate Lua's meta-check never trips.
-    await this.runWithBootstrap(userId, 0, nowMs)
 
-    const result = await this.redisService.activateAutoClicker(
-      userId,
-      nowMs,
-      duration,
-    )
-    if (result === -1) {
-      // Bootstrap should have written meta — if Lua still says missing,
-      // Redis dropped the row between the calls (TTL or eviction).
-      throw new NotFoundException('Clicker state not loaded')
+    // Ensure state is loaded — bootstraps from Postgres on cold cache,
+    // bringing along apc/apv if they were flushed before eviction. The
+    // engine owns runWithBootstrap; we go through its public wrapper.
+    await this.engineService.getCurrentState(userId, nowMs)
+
+    let result = await this.redisService.claimAutoClicker(userId, nowMs)
+    if (result.meta_missing) {
+      await this.engineService.bootstrapFromDb(userId)
+      result = await this.redisService.claimAutoClicker(userId, nowMs)
+      if (result.meta_missing) {
+        throw new NotFoundException('Clicker state not loaded')
+      }
     }
-    if (result === -2) {
-      throw new BadRequestException('Auto-clicker already running')
+
+    // No-op claim (apc was already 0) — return the post-call state
+    // without writing to history. Avoids spamming the audit log on
+    // accidental re-taps. Still bump the no-op metric so we can see
+    // double-tap rates.
+    if (result.claimed_count === 0 && result.claimed_value === 0) {
+      this.metrics.record({
+        kind: 'claim',
+        claimed_count: 0,
+        claimed_value: 0,
+      })
+      return {
+        claimed_count: 0,
+        claimed_value: 0,
+        points: result.points,
+        total_points: result.total_points,
+      }
+    }
+
+    this.metrics.record({
+      kind: 'claim',
+      claimed_count: result.claimed_count,
+      claimed_value: result.claimed_value,
+    })
+
+    // Drain Redis state into PG so the freshly-credited points and
+    // zeroed pending columns are visible to the next REST `/me` call.
+    // Best-effort — cron flush picks up anything we miss.
+    try {
+      await this.flushService.flushUser(userId)
+    } catch (err) {
+      this.logger.warn(
+        `flush-after-claim failed for user ${userId}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
     }
 
     await this.historyService.record({
       user_id: userId,
-      action: 'auto_clicker_activate',
+      action: 'auto_clicker_claim',
       payload: {
-        level_id: user.auto_clicker_level.id,
-        duration_sec: duration,
+        claimed_count: result.claimed_count,
+        claimed_value: result.claimed_value,
       },
-      state_after: { expires_at_ms: result },
+      state_after: { points: result.points },
       source: 'ws',
       ip: ip ?? null,
     })
 
     return {
-      expires_at_ms: result,
-      duration_sec: duration,
-      level: user.auto_clicker_level.level,
+      claimed_count: result.claimed_count,
+      claimed_value: result.claimed_value,
+      points: result.points,
+      total_points: result.total_points,
     }
   }
 }

@@ -7,6 +7,7 @@ import { AppModule } from './app.module'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import Stripe from 'stripe'
 import helmet from 'helmet'
+import cookieParser from 'cookie-parser'
 import { Logger, ValidationPipe } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
 import { getCorsOrigins } from './core/config/cors'
@@ -61,6 +62,11 @@ async function bootstrap() {
       }),
     )
 
+    // Required by the admin auth flow — refresh tokens travel as
+    // HttpOnly cookies on /admin/auth/{refresh,logout}. Plain bodies
+    // and headers don't need this.
+    app.use(cookieParser())
+
     // Reject unknown fields, instantiate DTO classes from JSON bodies, surface
     // class-validator errors as 400. Modules that haven't migrated to
     // decorator-based DTOs keep working — they just don't get the extra checks.
@@ -80,17 +86,27 @@ async function bootstrap() {
     )
 
     // Origin is locked to the env-driven allowlist (see core/config/cors.ts).
-    // Methods/headers stay permissive — the security boundary is the origin
-    // check, not header surface. `credentials: true` works correctly now
-    // that origin is no longer "*" (the spec forbids that combination).
+    // Methods / headers / exposed-headers MUST be explicit lists — when
+    // `credentials: true` the browser treats `*` as a LITERAL header name
+    // ("there's a header literally called *"), which means Content-Type,
+    // Authorization, etc. all get rejected by the preflight. The earlier
+    // `allowedHeaders: '*'` fix only worked for non-credentialed requests.
     const corsOrigins = getCorsOrigins()
     logger.log(`CORS allowlist: ${corsOrigins.join(', ')}`)
     app.enableCors({
       origin: corsOrigins,
-      methods: '*',
       credentials: true,
-      allowedHeaders: '*',
-      exposedHeaders: '*',
+      methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'Accept',
+        'Origin',
+        'X-Requested-With',
+        'X-Forwarded-For',
+        'X-Real-IP',
+      ],
+      exposedHeaders: ['Content-Disposition', 'X-Total-Count'],
       preflightContinue: false,
       optionsSuccessStatus: 204,
     })

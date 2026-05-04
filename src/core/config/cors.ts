@@ -6,9 +6,11 @@
 // On staging/prod, set CORS_ORIGINS explicitly to your real domain(s).
 const DEFAULT_DEV_ORIGINS = [
   // HTTP (yarn dev)
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:5000',
+  'http://localhost:3000', // burrow-ui docs
+  'http://localhost:5000', // backend (self)
+  'http://localhost:5173', // rabbit.frontend
+  'http://localhost:7173', // rabbit-admin dev
+  'http://localhost:7174', // rabbit-admin preview
   // HTTPS (yarn dev:https / dev:https:443). Browsers omit the port when
   // it's the default (443), so we keep both forms to be safe across UAs.
   'https://localhost',

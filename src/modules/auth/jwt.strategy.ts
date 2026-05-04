@@ -1,51 +1,63 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common'
+import { Inject, Injectable, UnauthorizedException } from '@nestjs/common'
+import { CACHE_MANAGER } from '@nestjs/cache-manager'
+import type { Cache } from 'cache-manager'
 import { PassportStrategy } from '@nestjs/passport'
 import { Strategy, ExtractJwt } from 'passport-jwt'
-import { ConfigService } from '@nestjs/config'
 import { UserService } from '../users/users.service'
 import type { JwtPayload } from './auth.service'
+import { User } from '../users/user.entity'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
+import { getAccessSecret } from './auth-secrets'
+import { jwtUserCacheKey } from './jwt-user-cache-key'
 
-/**
- * JWT authentication strategy
- * @class JwtStrategy
- * @extends {PassportStrategy}
- */
+// Window during which a positive JWT lookup is served from the in-process
+// cache. Trade-off: a user blocked or role-changed by an admin still gets
+// served from cache for up to TTL ms. We accept that — game-user roles
+// and active flags don't change often, and admin-panel actions can wait
+// 30 s to take effect. If you ever need immediate revocation, invalidate
+// `jwt:user:<id>` after the mutation instead of dropping this cache.
+const JWT_USER_CACHE_TTL_MS = 30_000
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
     private readonly userService: UserService,
-    private readonly configService: ConfigService,
+    @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.get<string>('JWT_SECRET'),
+      secretOrKey: getAccessSecret(),
     })
   }
 
-  async validate(payload: JwtPayload) {
-    // Convert sub (user ID) to number since JWT may store it as string
+  async validate(payload: JwtPayload): Promise<User> {
     const userId =
       typeof payload.sub === 'string' ? parseInt(payload.sub, 10) : payload.sub
 
-    // Check if user ID is valid
     if (isNaN(userId) || userId <= 0) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_TOKEN)
     }
 
-    // At least one auth method should be present
-    if (!payload.steam_id && !payload.telegram_id && !payload.google_id) {
-      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_TOKEN)
-    }
+    // We used to also require at least one of steam_id / telegram_id /
+    // google_id to be present in the payload as a "sanity check" that
+    // the token came from a real OAuth flow. Removed: refresh-rotation
+    // issues access tokens with only `sub` + `type` (no OAuth ids), so
+    // the check rejected every refreshed token. Authentication now
+    // relies purely on signature validity + sub → DB lookup, which is
+    // the standard JWT pattern.
+    const cacheKey = jwtUserCacheKey(userId)
+    const cached = await this.cache.get<User>(cacheKey)
+    if (cached) return cached
 
     const user = await this.userService.findById(userId)
-
     if (!user) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
     }
 
+    // Negative results aren't cached — a deleted user must produce 401
+    // immediately on the next request (no caching of the throw path).
+    await this.cache.set(cacheKey, user, JWT_USER_CACHE_TTL_MS)
     return user
   }
 }

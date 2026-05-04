@@ -9,10 +9,11 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import { ClickerChallengesService } from './clicker-challenges.service'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../../core/guards/roles.guard'
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
+import { ApiOperation, ApiResponse, ApiTags, ApiBearerAuth } from '@nestjs/swagger'
 import { UpdateChallengeConditionDto } from './dto/update-challenge-condition.dto'
 
 @ApiTags('clicker-challenges')
@@ -37,8 +38,9 @@ export class ClickerChallengesController {
   }
 
   @Post()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @ApiOperation({ summary: 'Create a new clicker challenge' })
   @ApiResponse({
     status: 201,
@@ -49,8 +51,9 @@ export class ClickerChallengesController {
   }
 
   @Put(':id')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @ApiOperation({ summary: 'Update a clicker challenge by ID' })
   @ApiResponse({
     status: 200,
@@ -61,8 +64,9 @@ export class ClickerChallengesController {
   }
 
   @Delete(':id')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @ApiOperation({ summary: 'Delete a clicker challenge by ID' })
   @ApiResponse({
     status: 200,
@@ -73,8 +77,9 @@ export class ClickerChallengesController {
   }
 
   @Put(':id/condition')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @ApiOperation({ summary: 'Update challenge condition' })
   @ApiResponse({
     status: 200,

@@ -3,14 +3,13 @@ import { Cron } from '@nestjs/schedule'
 import { InjectRepository } from '@nestjs/typeorm'
 import { In, Repository } from 'typeorm'
 import { ClickerUser } from '../entities/clicker_user.entity'
-import { ClickerLevelsService } from '../../clickerLevels/clicker-levels.service'
 import { ClickerLevel } from '../../clickerLevels/entities/clicker_level.entity'
+import { ClickerLevelsCacheService } from '../services/clicker-levels-cache.service'
 import { ClickerRedisService } from './clicker-redis.service'
-
-// Once per minute — halves Redis ops compared to */30 with negligible UX
-// impact (worst-case clicker sync delay 60s; hosted Redis billing notices).
-const FLUSH_CRON = '0 * * * * *'
-const MAX_FLUSH_BATCH = 500
+import {
+  FLUSH_CRON_EXPR,
+  MAX_FLUSH_BATCH,
+} from '../constants/clicker.constants'
 
 /**
  * Periodically drains accumulated click state from Redis into Postgres.
@@ -35,16 +34,10 @@ export class ClickerFlushService implements OnModuleDestroy {
   private flushing = false
   private destroyed = false
 
-  // All level rows, sorted ascending by id. Loaded lazily; re-loaded if the
-  // table grows (admin adds a tier) — we detect that by checking if the
-  // current top level is still the table's top.
-  private levelsCache: ClickerLevel[] | null = null
-  private levelsCachedAt = 0
-
   constructor(
     @InjectRepository(ClickerUser)
     private readonly userRepo: Repository<ClickerUser>,
-    private readonly levelsService: ClickerLevelsService,
+    private readonly levelsCache: ClickerLevelsCacheService,
     private readonly redisService: ClickerRedisService,
   ) {}
 
@@ -60,7 +53,7 @@ export class ClickerFlushService implements OnModuleDestroy {
     })
   }
 
-  @Cron(FLUSH_CRON, { name: 'clicker-flush' })
+  @Cron(FLUSH_CRON_EXPR, { name: 'clicker-flush' })
   async scheduledFlush(): Promise<void> {
     if (this.flushing || this.destroyed) return
     this.flushing = true
@@ -124,8 +117,25 @@ export class ClickerFlushService implements OnModuleDestroy {
           { user_id: userId },
           {
             points: snapshot.points!,
+            // Lifetime tally — persist alongside the spendable balance.
+            // The level bump check below reads from `total_points`
+            // (PG) on cold paths and from `tp` (Redis) on the hot
+            // Lua path; flushing keeps them in sync. Falls back to
+            // current points if the snapshot omits it (warm key from
+            // pre-tp deploys, etc.) — guarantees PG never goes
+            // backwards on the lifetime field.
+            total_points: snapshot.total_points ?? snapshot.points!,
             energy_amount: snapshot.energy!,
             last_energy_update: new Date(snapshot.ts!),
+            // Persist the autoclicker bank too — without this, a
+            // 7-day Redis TTL eviction silently drops whatever the
+            // player accumulated but never claimed. apc/apv default
+            // to 0 in PG so a missing snapshot value (cold user,
+            // pre-migration row) writes 0 cleanly.
+            auto_clicker_pending_count:
+              snapshot.auto_clicker_pending_count ?? 0,
+            auto_clicker_pending_value:
+              snapshot.auto_clicker_pending_value ?? 0,
           },
         ),
       ),
@@ -142,7 +152,7 @@ export class ClickerFlushService implements OnModuleDestroy {
   private async maybeBumpLevels(userIds: number[]): Promise<void> {
     if (userIds.length === 0) return
 
-    const levels = await this.getLevelsAscending()
+    const levels = await this.levelsCache.getBunnyLevels()
     if (levels.length === 0) return
 
     const users = await this.userRepo.find({
@@ -152,10 +162,14 @@ export class ClickerFlushService implements OnModuleDestroy {
 
     for (const user of users) {
       const currentId = user.level?.id ?? 0
+      // Promote off the lifetime tally rather than the spendable
+      // balance — without that switch a player who climbed past the
+      // threshold then spent some carrots in the same flush window
+      // would silently miss the level bump.
       const target = this.findHighestQualifyingLevel(
         levels,
         currentId,
-        user.points,
+        user.total_points ?? user.points,
       )
       if (target && target.id !== currentId) {
         user.level = target
@@ -182,15 +196,4 @@ export class ClickerFlushService implements OnModuleDestroy {
     return best
   }
 
-  private async getLevelsAscending(): Promise<ClickerLevel[]> {
-    const TTL_MS = 60_000
-    const now = Date.now()
-    if (this.levelsCache && now - this.levelsCachedAt < TTL_MS) {
-      return this.levelsCache
-    }
-    const all = await this.levelsService.findAll()
-    this.levelsCache = [...all].sort((a, b) => a.id - b.id)
-    this.levelsCachedAt = now
-    return this.levelsCache
-  }
 }

@@ -1,23 +1,26 @@
 import {
+  Body,
   Controller,
   Get,
-  Put,
-  Post,
-  Delete,
   Param,
-  Body,
   ParseIntPipe,
-  UseGuards,
+  Post,
+  Query,
   Request,
+  UseGuards,
 } from '@nestjs/common'
 import { Throttle } from '@nestjs/throttler'
-import { ClickerUserService } from './clicker-user.service'
-import { ApiOperation, ApiTags, ApiResponse } from '@nestjs/swagger'
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import { AuthGuard } from '@nestjs/passport'
 import { Request as ExpressRequest } from 'express'
 import { IsInt, IsOptional, IsString, MaxLength } from 'class-validator'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { RolesGuard } from '../../core/guards/roles.guard'
+import { ClickerUserService } from './clicker-user.service'
+import { ListClickerUsersQueryDto } from './dto/list-clicker-users.dto'
+import { Admin } from '../admin/entities/admin.entity'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
 
 class GrantPointsDto {
   /**
@@ -35,24 +38,18 @@ class GrantPointsDto {
   reason?: string
 }
 
-interface RequestWithUser extends Omit<ExpressRequest, 'user'> {
+// `me` endpoint runs under the player-side OAuth JWT, so it expects
+// req.user to be a game User. Other endpoints below run under the
+// admin-panel JWT (AdminJwtGuard) — req.user is then an Admin row.
+interface RequestWithPlayer extends Omit<ExpressRequest, 'user'> {
   user: {
     id: number
-    steam_id: number
-    display_name: string
     role: string
-    avatar: string
-    opened_cases: number
-    upgraded_skins: number
-    deposit_amount: number
-    withdrawal_amount: number
-    rank: string
-    balance: number
-    profile_url: string
-    trade_link: string | null
-    created_at: Date
-    referral_parent_id: number | null
   }
+}
+
+interface RequestWithAdmin extends Omit<ExpressRequest, 'user'> {
+  user: Admin
 }
 
 @ApiTags('clicker-users')
@@ -60,11 +57,7 @@ interface RequestWithUser extends Omit<ExpressRequest, 'user'> {
 export class ClickerUserController {
   constructor(private readonly clickerUserService: ClickerUserService) {}
 
-  @Get()
-  @ApiOperation({ summary: 'Get all clicker users' })
-  findAll() {
-    return this.clickerUserService.findAll()
-  }
+  // ─── Player-facing ───────────────────────────────────────────────
 
   @Get('me')
   @UseGuards(AuthGuard('jwt'))
@@ -73,29 +66,45 @@ export class ClickerUserController {
     status: 200,
     description: 'Returns the current user clicker profile (lazy-created on first hit)',
   })
-  async getCurrentUserProfile(@Request() req: RequestWithUser) {
+  async getCurrentUserProfile(@Request() req: RequestWithPlayer) {
     // Lazy creation: the clicker profile no longer exists at registration
     // time. The first time a player opens the clicker tab, this endpoint
     // (or the click bootstrap) materialises the row.
     return this.clickerUserService.findOrCreateByUserId(req.user.id)
   }
 
+  // ─── Admin panel ─────────────────────────────────────────────────
+  //
+  // Everything below is for the admin panel and runs under
+  // AdminJwtGuard + AdminRolesGuard. Read endpoints are open to all
+  // staff roles (including VIEWER); the carrot-mutating action is
+  // restricted to SUPER_ADMIN / ADMIN.
+  //
+  // The legacy generic `PUT /:id` (mass-assignment via Body() any)
+  // and `DELETE /:id` were removed — see the hand-off note at the
+  // bottom of this file for what targeted actions still need to be
+  // built to fully replace them.
+
+  @Get()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER, AdminRole.VIEWER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List clicker users (admin, paginated)' })
+  @ApiResponse({
+    status: 200,
+    description: '{ data: ClickerUser[], total, page, limit }',
+  })
+  findAll(@Query() query: ListClickerUsersQueryDto) {
+    return this.clickerUserService.findAll(query.page ?? 1, query.limit ?? 20)
+  }
+
   @Get(':id')
-  @ApiOperation({ summary: 'Get clicker user by ID' })
-  findOne(@Param('id') id: number) {
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER, AdminRole.VIEWER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get clicker user by ID (admin)' })
+  findOne(@Param('id', ParseIntPipe) id: number) {
     return this.clickerUserService.findById(id)
-  }
-
-  @Put(':id')
-  @ApiOperation({ summary: 'Update a clicker user by ID' })
-  update(@Param('id') id: number, @Body() data: any) {
-    return this.clickerUserService.update(id, data)
-  }
-
-  @Delete(':id')
-  @ApiOperation({ summary: 'Delete a clicker user by ID' })
-  remove(@Param('id') id: number) {
-    return this.clickerUserService.remove(id)
   }
 
   /**
@@ -110,26 +119,23 @@ export class ClickerUserController {
    *     Redis still holds the old value.
    *   - The bunny level needs to be re-evaluated against the new
    *     points threshold; a bare UPDATE leaves it stale.
-   *   - Audit trail goes to clicker_history with the issuer user id,
+   *   - Audit trail goes to clicker_history with the issuer admin id,
    *     the delta, the reason, and a clean state_before/state_after.
    *
-   * `userId` here is the TARGET user — the issuer's identity comes
-   * from the JWT (req.user.id), never from the URL.
-   *
-   * Authorisation: admin role only. RolesGuard handles it; the path
-   * stays role-agnostic so the URL describes the resource, not the
-   * caller.
+   * `userId` here is the TARGET player — the issuer's identity comes
+   * from the admin JWT (req.user.id), never from the URL.
    */
   @Throttle({ default: { ttl: 1_000, limit: 5 } })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
+  @ApiBearerAuth()
   @Post(':userId/grant-points')
-  @ApiOperation({ summary: 'Grant or remove carrots (admin role required)' })
+  @ApiOperation({ summary: 'Grant or remove carrots (admin only)' })
   @ApiResponse({ status: 200, description: 'New points + level for the target user' })
   grantPoints(
     @Param('userId', ParseIntPipe) targetUserId: number,
     @Body() body: GrantPointsDto,
-    @Request() req: RequestWithUser,
+    @Request() req: RequestWithAdmin,
   ) {
     const ip =
       (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
@@ -144,3 +150,64 @@ export class ClickerUserController {
     )
   }
 }
+
+// ─── Hand-off: still TODO (different agent / future PR) ──────────────
+//
+// The generic `PUT /clicker-users/:id` and `DELETE /clicker-users/:id`
+// were removed in this pass because they were:
+//   - unauthenticated (any caller could rewrite/delete any profile),
+//   - typed as `Body() data: any` → mass assignment on every column
+//     including `user_id`, `points`, `total_points`, `level_id`,
+//   - DELETE additionally orphans rows in clicker_history, boost
+//     ownership, case-open audit, etc.
+//
+// To fully replace what they did, build the following targeted admin
+// endpoints. Keep each one role-gated with AdminJwtGuard +
+// AdminRolesGuard, validated through a strict whitelist DTO, and
+// followed by `flushService.flushUser(userId)` BEFORE the write and
+// `redisService.clearUser(userId)` AFTER — otherwise the next cron
+// flush silently overwrites the admin's edit with the cached value.
+//
+//   1. PATCH /clicker-users/:id/balance
+//        body: { points: int>=0, total_points?: int>=0, reason?: string }
+//        roles: SUPER_ADMIN, ADMIN
+//        audit: clicker_history (action='admin_set_balance')
+//        Note: `grantPoints` already covers delta-style edits with
+//        full audit. Only build this if there's a real need to set
+//        an absolute balance instead of applying a delta.
+//
+//   2. PATCH /clicker-users/:id/levels
+//        body: { level?: int, click_level?: int, energy_level?: int,
+//                auto_clicker_level?: int|null,
+//                crit_click_level?: int|null }
+//        Validate each id exists in its catalog table. Keep the
+//        `level` monotonic guard from grantPoints (never demote).
+//        roles: SUPER_ADMIN, ADMIN
+//        audit: clicker_history (action='admin_set_levels')
+//
+//   3. PATCH /clicker-users/:id/energy
+//        body: { energy_amount: int>=0 }
+//        Cap at user's `energy_level.energy_amount`.
+//        roles: SUPER_ADMIN, ADMIN
+//
+//   4. POST /clicker-users/:id/disable  (replaces DELETE)
+//        Soft-disable — add an `is_active`/`disabled_at` column to
+//        clicker_users (migration), set it true here, gateway/click
+//        endpoints reject if disabled. Doesn't break FKs.
+//        roles: SUPER_ADMIN
+//        audit: clicker_history (action='admin_disable')
+//
+//   5. POST /clicker-users/:id/enable
+//        Inverse of (4). roles: SUPER_ADMIN
+//
+// What is NOT needed:
+//   - A generic `PUT /:id` with a partial DTO. The whole point of the
+//     security fix was to drop mass assignment; bringing it back
+//     under a different name reintroduces the foot-gun.
+//   - A real `DELETE /:id`. Hard delete corrupts audit trails and
+//     cross-table FKs. If a profile must truly disappear, write a
+//     dedicated migration script.
+//
+// Frontend (rabbit-admin) currently calls only `GET /clicker-users` and
+// `POST /clicker-users/:userId/grant-points` — anything above will need
+// matching `entities/clicker-user/api` mutations + a UI surface.

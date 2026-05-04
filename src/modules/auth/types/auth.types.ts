@@ -36,6 +36,8 @@ export interface TokenResponse {
   refreshToken: string
 }
 
-export interface RefreshTokenResponse {
-  accessToken: string
-}
+// Refresh now rotates BOTH tokens (one-shot consumption of the old
+// refresh, fresh pair on success), so the response carries the new
+// refreshToken too — clients should overwrite their cookie / storage
+// with whatever comes back.
+export type RefreshTokenResponse = TokenResponse

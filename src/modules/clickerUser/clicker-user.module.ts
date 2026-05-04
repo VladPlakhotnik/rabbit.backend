@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
-import { ConfigModule, ConfigService } from '@nestjs/config'
 import { JwtModule } from '@nestjs/jwt'
 import { ClickerUser } from './entities/clicker_user.entity'
+import { getAccessSecret } from '../auth/auth-secrets'
 import { ClickerUserController } from './clicker-user.controller'
 import { ClickerUserService } from './clicker-user.service'
 import { ClickerLevelsModule } from '../clickerLevels/clicker-levels.module'
@@ -14,6 +14,9 @@ import { ClickerCritClickLevel } from '../clickerCritClickLevels/entities/clicke
 import { ClickerHistoryModule } from '../clickerHistory/clicker-history.module'
 import { ClickerRedisService } from './redis/clicker-redis.service'
 import { ClickerFlushService } from './redis/clicker-flush.service'
+import { ClickerLevelsCacheService } from './services/clicker-levels-cache.service'
+import { ClickerEngineService } from './services/clicker-engine.service'
+import { ClickerMetricsService } from './services/clicker-metrics.service'
 
 @Module({
   imports: [
@@ -31,18 +34,19 @@ import { ClickerFlushService } from './redis/clicker-flush.service'
     ClickerEnergyLevelsModule,
     ClickerHistoryModule,
     // Local JwtModule (mirrors notifications module). Used by the gateway
-    // to verify the access token passed in the websocket handshake.
-    JwtModule.registerAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET'),
-      }),
-      inject: [ConfigService],
+    // to verify the access token passed in the websocket handshake. Must
+    // use the access secret since the WS client supplies its short-lived
+    // bearer.
+    JwtModule.register({
+      secret: getAccessSecret(),
     }),
   ],
   providers: [
     ClickerRedisService,
     ClickerFlushService,
+    ClickerLevelsCacheService,
+    ClickerMetricsService,
+    ClickerEngineService,
     ClickerUserService,
     ClickerUserGateway,
   ],
@@ -51,6 +55,12 @@ import { ClickerFlushService } from './redis/clicker-flush.service'
   // sibling modules (ClickerBoosts, ClickerCases) can lock against
   // the user's points balance without rewiring TypeORM repositories
   // or duplicating the singleton.
-  exports: [ClickerUserService, ClickerFlushService, ClickerRedisService],
+  exports: [
+    ClickerUserService,
+    ClickerFlushService,
+    ClickerRedisService,
+    ClickerLevelsCacheService,
+    ClickerMetricsService,
+  ],
 })
 export class ClickerUserModule {}

@@ -13,9 +13,11 @@ import { PromoCodeService } from './promoCode.service'
 import { PromoCodeStatus, PromoCodeType } from './entities/promoCode.entity'
 import { RewardType } from './entities/promoCodeReward.entity'
 import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../../core/guards/roles.guard'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
 
 class CreatePromoCodeDto {
   code!: string
@@ -58,8 +60,9 @@ export class PromoCodeController {
   @ApiOperation({ summary: 'Get all promo codes' })
   @ApiResponse({ status: 200, description: 'Returns all promo codes' })
   @Get()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   async findAll() {
     return this.promoCodeService.findAll()
   }
@@ -67,8 +70,9 @@ export class PromoCodeController {
   @ApiOperation({ summary: 'Create a new promo code' })
   @ApiResponse({ status: 201, description: 'Returns the created promo code' })
   @Post()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   async create(@Body() createPromoCodeDto: CreatePromoCodeDto) {
     return this.promoCodeService.create(
       createPromoCodeDto.code,
@@ -83,8 +87,9 @@ export class PromoCodeController {
   @ApiOperation({ summary: 'Update promo code' })
   @ApiResponse({ status: 200, description: 'Returns updated promo code' })
   @Patch(':code')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   async update(
     @Param('code') code: string,
     @Body() updatePromoCodeDto: UpdatePromoCodeDto,
@@ -112,8 +117,9 @@ export class PromoCodeController {
     description: 'Returns the deactivated promo code',
   })
   @Post('deactivate/:code')
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   async deactivate(@Param('code') code: string) {
     return this.promoCodeService.deactivate(code)
   }

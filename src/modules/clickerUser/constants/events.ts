@@ -14,8 +14,11 @@ export const EVENTS = {
   UPGRADE_AUTO_CLICKER_RESULT: 'upgradeAutoClickerResult',
   UPGRADE_CRIT_CLICK: 'upgradeCritClick',
   UPGRADE_CRIT_CLICK_RESULT: 'upgradeCritClickResult',
-  ACTIVATE_AUTO_CLICKER: 'activateAutoClicker',
-  ACTIVATE_AUTO_CLICKER_RESULT: 'activateAutoClickerResult',
+  // Bank-model autoclicker — the player claims accumulated pending
+  // points after going idle. Replaces the old ACTIVATE_AUTO_CLICKER
+  // (timed-buff) flow.
+  CLAIM_AUTO_CLICKER: 'claimAutoClicker',
+  CLAIM_AUTO_CLICKER_RESULT: 'claimAutoClickerResult',
   // Sent on the client's own socket only — used for state sync after upgrades
   // and after the periodic Postgres flush bumps a level. Never broadcast.
   USER_UPDATE: 'userUpdate',

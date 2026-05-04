@@ -7,21 +7,22 @@ import {
   ApiParam,
   ApiBearerAuth,
 } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
 import { CsgoSkinService, SkinFilters } from './csgo/csgo-skin.service'
 import { CsgoSyncService } from './csgo/csgo-sync.service'
 import { DotaSkinService, DotaSkinFilters } from './dota/dota-skin.service'
 import { DotaSyncService } from './dota/dota-sync.service'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { RolesGuard } from '../../core/guards/roles.guard'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
 
 // HTTP surface for the CSGO skin module.
 //
 // Public endpoints (paginated catalog, search, single-item lookup) are
 // reachable without auth — the case page and the upgrade market both
-// hit them. Admin-only endpoints (manual sync triggers) sit behind a
-// JWT + admin role guard so a leaked bearer can't kick off heavyweight
-// sync runs.
+// hit them. Admin-only endpoints (manual sync triggers) sit behind the
+// admin-panel JWT (AdminJwtGuard) so a leaked game-user bearer can't
+// kick off heavyweight sync runs.
 
 const parsePositiveInt = (raw: string | undefined): number | undefined => {
   if (raw === undefined || raw === '') return undefined
@@ -189,8 +190,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger CSGO catalog sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/sync-market')
   async syncCatalog() {
     try {
@@ -206,8 +207,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger CSGO price sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/update-prices')
   async updatePrices() {
     try {
@@ -223,8 +224,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger CSGO class_instance metadata sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/sync-class-instance')
   async syncClassInstance() {
     try {
@@ -339,8 +340,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger Dota 2 catalog sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/dota/sync-market')
   async syncDotaCatalog() {
     try {
@@ -356,8 +357,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger Dota 2 price sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/dota/update-prices')
   async updateDotaPrices() {
     try {
@@ -373,8 +374,8 @@ export class SkinController {
 
   @ApiOperation({ summary: 'Manually trigger Dota 2 class_instance metadata sync (admin only)' })
   @ApiBearerAuth()
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post('/dota/sync-class-instance')
   async syncDotaClassInstance() {
     try {

@@ -8,17 +8,37 @@ import {
   Logger,
   Post,
   Body,
+  HttpCode,
+  HttpStatus,
+  Delete,
+  Param,
+  ParseUUIDPipe,
 } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler'
 import { Request, Response } from 'express'
 import { AuthService } from './auth.service'
 import { UserService } from '../users/users.service'
 import { TelegramService } from '../social/services/telegram.service'
 import { ERROR_MESSAGES } from '../../constants/errorMessages'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
 import { User } from '../users/user.entity'
 import { LinkTelegramDto } from './dto/link-telegram.dto'
 import { TelegramMiniAppDto } from './dto/telegram-miniapp.dto'
+import {
+  clearUserRefreshCookie,
+  readUserRefreshCookie,
+  setUserRefreshCookie,
+} from './auth-cookies'
+import {
+  clearSteamLinkStateCookie,
+  readSteamLinkStateCookie,
+} from './steam-link-state'
+import {
+  clearGoogleLinkStateCookie,
+  readGoogleLinkStateCookie,
+} from './google-link-state'
+import { getClientIp, getUserAgent } from '../../common/helpers/request-meta'
 import type {
   SteamAuthResult,
   GoogleAuthResult,
@@ -30,8 +50,24 @@ interface RequestWithUser extends Omit<Request, 'user'> {
   user: { id: number }
 }
 
+// Vocabulary for the post-OAuth redirect URLs. The frontend's
+// AuthCallback / AuthError pages parse these values straight out of
+// the query string — keep both sides in sync.
+type AuthProvider = 'steam' | 'google' | 'telegram'
+type AuthAction = 'auth' | 'link'
+type AuthErrorReason =
+  | 'already_linked'
+  | 'session_expired'
+  | 'invalid_credentials'
+  | 'unknown'
+
+// All endpoints carry the per-IP throttler. The OAuth dance (steam,
+// google, telegram callbacks) and refresh / mini-app sign-in are the
+// abuse-prone surface; specific limits live in @Throttle on each
+// handler. Without ThrottlerGuard mounted here, @Throttle is a no-op.
 @ApiTags('auth')
 @Controller('auth')
+@UseGuards(ThrottlerGuard)
 export class AuthController {
   private readonly logger = new Logger(AuthController.name)
 
@@ -55,6 +91,7 @@ export class AuthController {
 
   @ApiOperation({ summary: 'Steam login callback' })
   @ApiResponse({ status: 200, description: 'Steam login callback successful' })
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get('steam/return')
   @UseGuards(AuthGuard('steam'))
   async steamLoginCallback(@Req() req: Request, @Res() res: Response) {
@@ -75,13 +112,36 @@ export class AuthController {
 
       this.logger.log(`Steam login attempt for Steam ID: ${steamIdString}`)
 
-      // Steam linking via `?link_to_user_id=` query was an account-takeover
-      // hole identical to the one we just fixed for Telegram — the caller
-      // fully controlled the destination user id, so anyone could attach
-      // their Steam to anybody's account. Removed here; Steam linking
-      // needs a proper state-cookie flow (Steam OpenID has no JWT context
-      // in its callback, so we have to round-trip a server-issued state
-      // through the Steam redirect) and is tracked as a follow-up.
+      // Linking branch: if the JWT-protected /users/me/link/steam
+      // endpoint set the state cookie, this round-trip is meant to
+      // attach Steam to that user, not start a new session. The
+      // cookie value is HMAC-signed and short-lived, so the user id
+      // it carries is trustworthy. Sign-in flow continues unchanged
+      // when the cookie is absent / invalid / expired.
+      const linkingUserId = readSteamLinkStateCookie(req)
+      if (linkingUserId !== null) {
+        clearSteamLinkStateCookie(res)
+        try {
+          const linkedUser = await this.userService.linkSteamAccount(
+            linkingUserId,
+            steamIdString,
+          )
+          this.logger.log(
+            `Steam ${steamIdString} linked to user ${linkedUser.id}`,
+          )
+        } catch (linkErr: unknown) {
+          // Linking failed → /auth/error with reason; the original
+          // session is untouched.
+          this.logger.warn(
+            `Steam link failed for user ${linkingUserId}: ${
+              linkErr instanceof Error ? linkErr.message : 'Unknown error'
+            }`,
+          )
+          return res.redirect(this.buildErrorUrl('steam', 'link', linkErr))
+        }
+        return res.redirect(this.buildSuccessUrl('steam', 'link'))
+      }
+
       const userData: AuthCallbackUserData = {
         steam_id: steamIdString,
         display_name: steamUser.display_name ?? '',
@@ -89,26 +149,26 @@ export class AuthController {
         profile_url: steamUser.profile_url ?? '',
       }
 
-      const token = await this.handleAuthCallback(
+      await this.handleAuthCallback(
         userData,
         () => {
           this.logger.log(`Searching for user with Steam ID: ${steamIdString}`)
           return this.userService.findBySteamId(steamIdString)
         },
         'Steam',
+        req,
+        res,
       )
 
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-      return res.redirect(
-        `${frontendUrl}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
-      )
+      return res.redirect(this.buildSuccessUrl('steam', 'auth'))
     } catch (error: unknown) {
-      this.handleAuthError(error, res, 'Steam')
+      this.handleAuthError(error, res, 'steam', 'auth')
     }
   }
 
   @ApiOperation({ summary: 'Google login callback' })
   @ApiResponse({ status: 200, description: 'Google login callback successful' })
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get('google/callback')
   @UseGuards(AuthGuard('google'))
   async googleLoginCallback(@Req() req: Request, @Res() res: Response) {
@@ -117,6 +177,34 @@ export class AuthController {
 
       if (!googleUser || !googleUser.google_id) {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
+      }
+
+      // Linking branch: same shape as the Steam callback above. If the
+      // JWT-protected /users/me/link/google endpoint set the state
+      // cookie, this round-trip is meant to attach Google to that user
+      // (not start a new session). Cookie carries an HMAC-signed
+      // user_id so it can't be tampered with. Sign-in flow continues
+      // unchanged when the cookie is absent / invalid / expired.
+      const linkingUserId = readGoogleLinkStateCookie(req)
+      if (linkingUserId !== null) {
+        clearGoogleLinkStateCookie(res)
+        try {
+          const linkedUser = await this.userService.updateGoogleIdOnly(
+            linkingUserId,
+            googleUser.google_id,
+          )
+          this.logger.log(
+            `Google ${googleUser.google_id} linked to user ${linkedUser.id}`,
+          )
+        } catch (linkErr: unknown) {
+          this.logger.warn(
+            `Google link failed for user ${linkingUserId}: ${
+              linkErr instanceof Error ? linkErr.message : 'Unknown error'
+            }`,
+          )
+          return res.redirect(this.buildErrorUrl('google', 'link', linkErr))
+        }
+        return res.redirect(this.buildSuccessUrl('google', 'link'))
       }
 
       const userData: AuthCallbackUserData = {
@@ -128,18 +216,17 @@ export class AuthController {
         profile_url: '',
       }
 
-      const token = await this.handleAuthCallback(
+      await this.handleAuthCallback(
         userData,
         () => this.userService.findByGoogleId(googleUser.google_id),
         'Google',
+        req,
+        res,
       )
 
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-      return res.redirect(
-        `${frontendUrl}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
-      )
+      return res.redirect(this.buildSuccessUrl('google', 'auth'))
     } catch (error: unknown) {
-      this.handleAuthError(error, res, 'Google')
+      this.handleAuthError(error, res, 'google', 'auth')
     }
   }
 
@@ -148,6 +235,7 @@ export class AuthController {
     status: 200,
     description: 'Telegram login callback successful',
   })
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   @Get('telegram/callback')
   @UseGuards(AuthGuard('telegram'))
   async telegramLoginCallback(@Req() req: Request, @Res() res: Response) {
@@ -171,18 +259,17 @@ export class AuthController {
         profile_url: '',
       }
 
-      const token = await this.handleAuthCallback(
+      await this.handleAuthCallback(
         userData,
         () => this.userService.findByTelegramId(telegramUser.telegram_id),
         'Telegram',
+        req,
+        res,
       )
 
-      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-      return res.redirect(
-        `${frontendUrl}/auth/callback?accessToken=${token.accessToken}&refreshToken=${token.refreshToken}`,
-      )
+      return res.redirect(this.buildSuccessUrl('telegram', 'auth'))
     } catch (error: unknown) {
-      this.handleAuthError(error, res, 'Telegram')
+      this.handleAuthError(error, res, 'telegram', 'auth')
     }
   }
 
@@ -193,6 +280,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Telegram successfully linked' })
   @ApiResponse({ status: 400, description: 'Invalid Telegram payload / already linked elsewhere' })
   @ApiResponse({ status: 401, description: 'Caller is not authenticated' })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('telegram/link')
   @UseGuards(AuthGuard('jwt'))
   async linkTelegram(
@@ -235,10 +323,13 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'JWT pair issued' })
   @ApiResponse({ status: 400, description: 'initData malformed' })
   @ApiResponse({ status: 401, description: 'initData expired / hash mismatch / replay' })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('telegram/miniapp')
   async telegramMiniAppLogin(
     @Body() body: TelegramMiniAppDto,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ accessToken: string }> {
     const verified = await this.telegramService.verifyInitData(body.initData)
 
     // Build a display_name with sensible fallbacks — Telegram users
@@ -261,68 +352,235 @@ export class AuthController {
       profile_url: '',
     }
 
-    return await this.handleAuthCallback(
+    // MiniApp lives inside the Telegram client — there is no browser
+    // redirect to a frontend route, so we return the access token in
+    // the body and stash refresh in the same HttpOnly cookie the OAuth
+    // callbacks use. Subsequent /auth/refresh calls then rotate it.
+    const tokens = await this.handleAuthCallback(
       userData,
       () => this.userService.findByTelegramId(verified.telegramId),
       'TelegramMiniApp',
+      req,
+      res,
     )
+    return { accessToken: tokens.accessToken }
   }
 
-  @ApiOperation({ summary: 'Refresh access token' })
-  @ApiResponse({ status: 200, description: 'Token refreshed successfully' })
-  @ApiResponse({ status: 401, description: 'Invalid refresh token' })
+  @ApiOperation({
+    summary:
+      'Refresh access token. Refresh JWT travels in the HttpOnly user_rt cookie set by /auth/* callbacks; the request body is ignored. The endpoint rotates BOTH tokens — the old refresh is consumed (one-shot) and a fresh pair is issued. The new refresh is set on the cookie; the new access is returned in the response body.',
+  })
+  @ApiResponse({ status: 200, description: 'New access token; refresh rotated via cookie' })
+  @ApiResponse({ status: 401, description: 'Invalid or reused refresh token' })
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
-  async refreshToken(@Body('refreshToken') refreshToken: string | undefined) {
-    if (!refreshToken || typeof refreshToken !== 'string') {
+  @HttpCode(HttpStatus.OK)
+  async refreshToken(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    // Body kept ONLY for the deprecated dev tooling that posted the
+    // refresh in JSON. It will be removed once everything flips to
+    // cookies; in the meantime the cookie wins if both are present.
+    @Body('refreshToken') bodyRefreshToken?: string,
+  ): Promise<{ accessToken: string }> {
+    const presented =
+      readUserRefreshCookie(req) ??
+      (typeof bodyRefreshToken === 'string' && bodyRefreshToken.length > 0
+        ? bodyRefreshToken
+        : null)
+
+    if (!presented) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_REFRESH_TOKEN)
     }
 
     try {
-      const result = await this.authService.refreshToken(refreshToken)
-      return result
+      const ip = getClientIp(req)
+      const userAgent = getUserAgent(req)
+      const pair = await this.authService.refreshToken(presented, ip, userAgent)
+      setUserRefreshCookie(res, pair.refreshToken)
+      return { accessToken: pair.accessToken }
     } catch (error: unknown) {
+      // On any failure (expired, reused, forged) wipe the cookie so the
+      // next request from this browser starts clean instead of repeatedly
+      // tripping reuse-detection on the same dead token.
+      clearUserRefreshCookie(res)
       this.logger.error(
-        `Token refresh failed: ${
-          error instanceof Error ? error.message : 'Unknown error'
-        }`,
+        `Token refresh failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       )
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.INVALID_REFRESH_TOKEN)
     }
   }
 
+  @ApiOperation({
+    summary:
+      'Logout: revoke the presented refresh token and clear the cookie. Returns 204 even if the token was already invalid — the client wipes local state regardless.',
+  })
+  @ApiResponse({ status: 204, description: 'Logged out (best-effort revoke)' })
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async logout(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
+    const presented = readUserRefreshCookie(req)
+    await this.authService.logout(presented)
+    clearUserRefreshCookie(res)
+  }
+
+  // ─── Active sessions ────────────────────────────────────────────
+  // Surface for "what's logged into my account" UIs. Each item maps
+  // to one device/browser. Bearer-protected; the user only sees their
+  // own rows.
+
+  @ApiOperation({ summary: 'List active sessions for the current user' })
+  @ApiResponse({ status: 200, description: 'Array of session rows' })
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @Get('sessions')
+  @UseGuards(AuthGuard('jwt'))
+  async listSessions(@Req() req: RequestWithUser) {
+    return this.authService.listActiveSessions(req.user.id)
+  }
+
+  @ApiOperation({ summary: 'Revoke one session by id' })
+  @ApiResponse({ status: 204, description: 'Revoked' })
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Delete('sessions/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(AuthGuard('jwt'))
+  async revokeSession(
+    @Req() req: RequestWithUser,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<void> {
+    await this.authService.revokeSession(req.user.id, id)
+  }
+
+  @ApiOperation({
+    summary:
+      'Revoke every session except the current one. The "current" session is identified by the jti carried in the user_rt cookie. Without the cookie, no rows are skipped — the caller will be logged out on next 401.',
+  })
+  @ApiResponse({ status: 200, description: '{ revoked: number }' })
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('sessions/revoke-others')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(AuthGuard('jwt'))
+  async revokeOtherSessions(
+    @Req() req: RequestWithUser,
+  ): Promise<{ revoked: number }> {
+    const refreshToken = readUserRefreshCookie(req as unknown as Request)
+    let currentJti = ''
+    if (refreshToken) {
+      const jti = await this.authService.peekRefreshJti(refreshToken)
+      if (jti) currentJti = jti
+    }
+    const revoked = await this.authService.revokeOtherSessions(req.user.id, currentJti)
+    return { revoked }
+  }
+
   /**
-   * Common handler for authentication callbacks
+   * Resolves the user (creating them on first sign-in), issues a fresh
+   * access+refresh pair, sets the refresh on the HttpOnly cookie, and
+   * returns the pair so the caller can decide what to do with the
+   * access token (redirect for OAuth, body for MiniApp).
+   *
+   * Tokens are NEVER appended to the redirect URL — that was leaking
+   * them through browser history, server access logs, and Referer.
    */
   private async handleAuthCallback(
     userData: AuthCallbackUserData,
     findUserFn: () => Promise<User | null>,
     providerName: string,
+    req: Request,
+    res: Response,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     const existingUser = await findUserFn()
+    const ip = getClientIp(req)
+    const userAgent = getUserAgent(req)
 
+    let user: User
     if (existingUser) {
       this.logger.log(
         `${providerName} authentication: Found existing user with ID ${existingUser.id}`,
       )
-      return await this.authService.login(existingUser)
+      user = existingUser
+    } else {
+      // First sign-in via this provider. The clicker profile is no
+      // longer materialised here — it's created lazily the first time
+      // the player actually visits the clicker tab (see
+      // ClickerUserService.findOrCreateByUserId), so users who never
+      // touch the clicker don't accumulate dead rows in `clicker_users`.
+      this.logger.log(
+        `${providerName} authentication: Creating new user with ${providerName} ID`,
+      )
+      user = await this.userService.create(this.createDefaultUserData(userData))
+      this.logger.log(
+        `${providerName} authentication: Created new user with ID ${user.id}`,
+      )
     }
 
-    // No existing user found, create new one. The clicker profile is no
-    // longer materialised here — it's created lazily the first time the
-    // player actually visits the clicker tab (see ClickerUserService
-    // .findOrCreateByUserId), so users who never touch the clicker don't
-    // accumulate dead rows in `clicker_users`.
-    this.logger.log(
-      `${providerName} authentication: Creating new user with ${providerName} ID`,
-    )
-    const newUser = await this.userService.create(
-      this.createDefaultUserData(userData),
-    )
+    const pair = await this.authService.login(user, ip, userAgent)
+    setUserRefreshCookie(res, pair.refreshToken)
+    return pair
+  }
 
-    this.logger.log(
-      `${providerName} authentication: Created new user with ID ${newUser.id}`,
-    )
-    return await this.authService.login(newUser)
+  // ── Post-OAuth redirect targets (frontend) ────────────────────────
+  //
+  // Two routes, two responsibilities:
+  //   • /auth/callback  — happy path: sign-in, sign-up, link success.
+  //   • /auth/error     — anything that went wrong, with reason code
+  //                       so the SPA can show a specific message.
+  //
+  // Both carry `?action=auth|link&provider=steam|google|telegram` so
+  // the frontend doesn't have to guess which flow the user came from.
+  // FRONTEND_URL is mandatory in production; the localhost fallback is
+  // only safe in dev.
+  private frontendBase(): string {
+    return process.env.FRONTEND_URL || 'http://localhost:3000'
+  }
+
+  private buildSuccessUrl(
+    provider: AuthProvider,
+    action: AuthAction,
+  ): string {
+    return `${this.frontendBase()}/auth/callback?action=${action}&provider=${provider}`
+  }
+
+  /**
+   * Builds the error redirect URL with a stable `reason` code so the
+   * SPA can pick a specific translation ("This Google account is
+   * already linked to another user" rather than a generic "linking
+   * failed"). Reason codes must stay in sync with the
+   * `AUTH_ERROR_REASON_KEYS` lookup on the frontend's AuthError page.
+   */
+  private buildErrorUrl(
+    provider: AuthProvider,
+    action: AuthAction,
+    err: unknown,
+  ): string {
+    return `${this.frontendBase()}/auth/error?action=${action}&provider=${provider}&reason=${this.mapErrorToReason(err)}`
+  }
+
+  private mapErrorToReason(err: unknown): AuthErrorReason {
+    const message = err instanceof Error ? err.message.toLowerCase() : ''
+    if (message.includes('already linked')) return 'already_linked'
+    if (
+      message.includes('expired') ||
+      message.includes('replay') ||
+      message.includes('not authenticated')
+    ) {
+      return 'session_expired'
+    }
+    if (
+      message.includes('invalid_credentials') ||
+      message.includes('invalid credentials') ||
+      message.includes('hash mismatch')
+    ) {
+      return 'invalid_credentials'
+    }
+    return 'unknown'
   }
 
   /**
@@ -341,7 +599,7 @@ export class AuthController {
       display_name: userData.display_name,
       avatar: userData.avatar,
       profile_url: userData.profile_url,
-      role: 'user',
+      role: 'player', // PlayerRole.PLAYER — default for newly-registered users
       balance: 0,
       trade_link: null,
       referral_parent_id: null,
@@ -387,16 +645,19 @@ export class AuthController {
   }
 
   /**
-   * Handles authentication errors consistently
+   * Logs the failure and bounces the browser to the frontend's
+   * /auth/error page with provider + action + reason carried in the
+   * query string. The SPA picks the right translation key from the
+   * (provider, action, reason) triple.
    */
   private handleAuthError(
     error: unknown,
     res: Response,
-    providerName: string,
+    provider: AuthProvider,
+    action: AuthAction,
   ): void {
     const message = error instanceof Error ? error.message : 'Unknown error'
-    this.logger.error(`${providerName} authentication error: ${message}`)
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
-    res.redirect(`${frontendUrl}/auth/error`)
+    this.logger.error(`${provider} ${action} error: ${message}`)
+    res.redirect(this.buildErrorUrl(provider, action, error))
   }
 }

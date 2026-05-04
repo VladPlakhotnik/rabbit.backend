@@ -48,6 +48,25 @@ export class GoogleStrategy extends PassportStrategy(Strategy, 'google') {
     )
   }
 
+  /**
+   * Forces Google to ALWAYS show the account picker — even when the
+   * user is already signed in to Google in this browser and has
+   * previously authorised this app. Without it the OAuth round-trip
+   * is invisible: the user clicks "Link Google", their browser
+   * silently bounces to Google and back, and the only feedback they
+   * get is the success toast — making them wonder if anything
+   * happened at all (and offering no way to pick which Google account
+   * to attach when they have several).
+   *
+   * `select_account` is gentler than `consent` — Google still skips
+   * the permission grant step on subsequent uses, but the picker
+   * always shows so the user knows they're handing the app a Google
+   * identity.
+   */
+  authorizationParams(): Record<string, string> {
+    return { prompt: 'select_account' }
+  }
+
   async validate(
     _accessToken: string,
     _refreshToken: string,

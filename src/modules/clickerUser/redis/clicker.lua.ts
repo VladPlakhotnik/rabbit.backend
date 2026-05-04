@@ -25,59 +25,97 @@
 //
 // Hash fields (short names to keep HMGET / HMSET payload small):
 //   p   points              (state)
+//   tp  total_points lifetime tally (state) — bumps on every credit,
+//       never decreases. Used by the level-up gate and the progress
+//       bar fill. Spending hits `p` only.
 //   e   energy              (state)
 //   t   last regen ts (ms)  (state)
 //   c   cost = reward       (meta)
 //   m   max_energy          (meta)
-//   r   regen / sec * 1000  (meta)
+//   r   regen *milli-units* per second (meta) — i.e. (units/sec) * 1000.
+//       Stored at 1000× resolution so fractional rates (0.25/sec → 250)
+//       survive integer storage. Per-ms accumulation: dt_ms * r / 1_000_000.
 //   l   bunny level_id      (meta)
 //   cl  click_level_id      (meta)
 //   el  energy_level_id     (meta)
 //   nl  next_level_cost     (meta; 0 = at max level)
 //   cc  crit_chance_pct     (meta; 0 = skill not unlocked)
-//   as  auto-clicker start ts (ms; 0 = not active)
-//   ad  auto-clicker duration (sec; 0 = not active)
-//   ac  auto-clicker last collected ts (ms; advances every tick)
+//   ad  autoclicker max idle seconds (meta; 0 = autoclicker not unlocked).
+//       Was "activate duration" in v3 — semantics shifted with the
+//       bank model (see top docstring).
+//   as  autoclicker accumulation start ms (state; 0 = not currently
+//       accumulating). Set lazily once the player has been idle for
+//       \`idle_threshold_ms\` and there's no unclaimed bank.
+//   ac  autoclicker last simulated tick ms (state; advances by
+//       AUTO_TICK_MS each tick).
+//   lc  last manual click ms (state; only updated on accepted > 0).
+//       Drives idle detection — autoclicker accumulation kicks in
+//       \`idle_threshold_ms\` after this.
+//   apc autoclicker pending click count (state). Grows during
+//       accumulation, reset to 0 by the claim Lua.
+//   apv autoclicker pending click value (state, points). Stored
+//       separately from apc so a click-level upgrade between
+//       accumulation and claim can't change the payout — apv was
+//       computed at simulation time using the cost in effect then.
 //   ab  active boost key (string; '' = no active boost)
 //   at  active boost expires-at ms (0 = no active boost)
 //   ae  active boost effect type ('infinite_energy' | 'multiplier' | '')
 //   av  active boost effect value (multiplier scalar; 0 for inf-energy)
 //
-// Auto-clicker model: lazy collection. While \`as\`/\`ad\`/\`ac\` are non-zero
-// and \`now < as + ad*1000\`, every tick computes \`floor((min(now, expiry) -
-// ac) / 1000)\` accumulated seconds, awards 1 click per second at the
-// CURRENT cost (the player paid energy upgrades, the autoclicker pays at
-// today's rate), and advances \`ac\`. Past expiry the trio resets to 0 so
-// the next tick is a no-op. No server-side timer needed.
+// Autoclicker model (replaces v3 "lazy collection" model): the autoclicker
+// is an idle-time bank. After the player has been silent for
+// \`idle_threshold_ms\` (typically 60s, configurable per-call), it ticks once
+// every AUTO_TICK_MS (3 sec). Each tick:
+//   - regenerates the 3-sec slice of energy first;
+//   - if energy >= cost, debits cost, increments apc by 1, increments apv
+//     by cost. Otherwise skips (the regen still happened, so future ticks
+//     can resume).
+// Accumulation pauses the moment a manual click lands (lc updates, accepted
+// > 0). Cap is \`as + ad*1000\` — once the player passes that wall-clock
+// instant, no more ticks are credited. Pending stays in apc/apv until the
+// player calls the claim script (clicker.lua.claim), which atomically
+// adds apv to points and resets apc/apv/as/ac and stamps lc=now.
 //
 // Returns: { code, accepted, points, energy, max_energy, cost, level_id,
 //            click_level_id, energy_level_id, level_up_due, regen_milli,
-//            crit_count, auto_clicks }
+//            crit_count, auto_credited, ac_start, ac_max_idle_sec,
+//            apc, apv, total_points }
 //   code = 0 → applied
 //   code = 1 → meta missing; caller must lazy-load and retry
 //   level_up_due = 1 → caller should immediately flush + rebump.
 //   regen_milli is energy units per 1000 ms — surfaced so the client can
 //   locally extrapolate energy regeneration between server round-trips.
 //   crit_count = number of accepted manual clicks that landed a crit.
-//                Crit rolls on auto-clicks fold into points but are NOT
-//                counted here — the frontend uses crit_count to mark
-//                actual cursor-spawn effects, which only exist for
-//                manual taps.
-//   auto_clicks = number of seconds the autoclicker collected this tick.
+//   auto_credited = number of autoclicker ticks credited this Lua call
+//                   (NOT cumulative — just this batch). 0 most of the
+//                   time; nonzero on the first call after a long idle.
+//   ac_start, ac_max_idle_sec → drive the "elapsed since accumulation
+//                   started" UI for the claim modal. 0 when not
+//                   accumulating.
+//   apc, apv → current pending bank. Frontend uses these to render
+//              the claim CTA / modal.
+//   total_points → lifetime monotonic tally; spending leaves it
+//                   untouched. Drives the progress bar fill so the
+//                   bar doesn't regress when the player spends.
 export const CLICK_LUA = `
 local ukey  = KEYS[1]
 local dkey  = KEYS[2]
 local user  = ARGV[1]
 local req   = tonumber(ARGV[2]) or 0
 local now   = tonumber(ARGV[3]) or 0
+local idle_threshold_ms = tonumber(ARGV[4]) or 60000
+
+local AUTO_TICK_MS = 3000
 
 local h = redis.call('HMGET', ukey,
-  'p','e','t','c','m','r','l','cl','el','nl','cc','as','ad','ac','at','ae','av')
+  'p','e','t','c','m','r','l','cl','el','nl','cc',
+  'as','ad','ac','at','ae','av',
+  'lc','apc','apv','tp')
 
 local cost_raw = h[4]
 if cost_raw == false or cost_raw == nil then
   -- meta absent → user not bootstrapped (or meta cleared post-upgrade).
-  return {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+  return {1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 end
 
 local points  = tonumber(h[1]) or 0
@@ -92,11 +130,15 @@ local elvl    = tonumber(h[9]) or 0
 local ncost   = tonumber(h[10]) or 0
 local crit_chance = tonumber(h[11]) or 0
 local ac_start    = tonumber(h[12]) or 0
-local ac_dur      = tonumber(h[13]) or 0
+local ac_max_idle = tonumber(h[13]) or 0
 local ac_last     = tonumber(h[14]) or 0
 local boost_at    = tonumber(h[15]) or 0
 local boost_ae    = h[16] or ''
 local boost_av    = tonumber(h[17]) or 0
+local lc          = tonumber(h[18]) or 0
+local apc         = tonumber(h[19]) or 0
+local apv         = tonumber(h[20]) or 0
+local tp          = tonumber(h[21]) or 0
 if cost < 1 then cost = 1 end
 if crit_chance < 0 then crit_chance = 0 end
 if crit_chance > 100 then crit_chance = 100 end
@@ -113,8 +155,25 @@ if boost_active and boost_ae == 'multiplier' and boost_av > 1 then
   multiplier = boost_av
 end
 
+-- Energy regen.
+--   regen is stored as (units per sec) * 1000, so:
+--     units regenerated = dt_ms * regen / 1_000_000
+--   floor() means fractional rates (0.25/sec → regen=250) only tick
+--   once ~4000ms have accumulated. We track ms ACTUALLY consumed by the
+--   integer ticks, so the sub-unit remainder carries into the next call —
+--   without that carry, batched click flushes (every 250ms) would suppress
+--   regen entirely at slow rates.
+local regen_units = 0
+local regen_ms_used = 0
 if regen > 0 and now > last_ts and energy < max_e then
-  energy = math.min(max_e, energy + math.floor((now - last_ts) * regen / 1000))
+  local computed = math.floor((now - last_ts) * regen / 1000000)
+  if computed > 0 then
+    local headroom = max_e - energy
+    if computed > headroom then computed = headroom end
+    regen_units = computed
+    energy = energy + regen_units
+    regen_ms_used = math.floor(regen_units * 1000000 / regen)
+  end
 end
 if energy < 0 then energy = 0 end
 if energy > max_e then energy = max_e end
@@ -130,84 +189,180 @@ else
 end
 if accepted < 0 then accepted = 0 end
 
--- Auto-clicker collection — runs INDEPENDENTLY of manual clicks. The
--- player can be sitting idle (req=0) and still rack up auto clicks.
-local auto_clicks = 0
-if ac_start > 0 and ac_dur > 0 then
-  local expires_at = ac_start + ac_dur * 1000
-  local effective = now
-  if effective > expires_at then effective = expires_at end
-  if effective > ac_last then
-    local elapsed_ms = effective - ac_last
-    if elapsed_ms >= 1000 then
-      auto_clicks = math.floor(elapsed_ms / 1000)
-      ac_last = ac_last + auto_clicks * 1000
-    end
+-- Manual click bookkeeping for idle detection. We only update lc for
+-- ACCEPTED clicks (req > 0 with an empty energy budget would otherwise
+-- count as activity even though nothing happened).
+if accepted > 0 then
+  lc = now
+end
+
+-- Autoclicker idle accumulation.
+--
+-- Preconditions:
+--   - autoclicker unlocked (ac_max_idle > 0)
+--   - this Lua call is a status check, not a manual click batch
+--     (autoclicker pauses while the player is actively clicking;
+--     advancing ac during req>0 would credit ticks for active time).
+--
+-- Cycle lifecycle:
+--   - First idle: starts a new cycle (apc == 0 gate prevents starting
+--     a SECOND cycle before the player claims the first).
+--   - Mid-cycle status checks: continue advancing the existing cycle
+--     (apc > 0 does NOT block continuation — only new starts).
+--   - Cycle ends on claim, which zeroes as/ac/apc/apv and stamps lc.
+--
+-- Sim window: from max(ac, lc + idle_threshold) — the later of "where
+-- we left off" and "earliest idle-confirmed point" — up to
+-- min(now, cap_at). The lc-floor is what skips active periods: when
+-- the player clicks mid-cycle, lc jumps forward, so the next status
+-- check's sim window starts at the new lc + threshold rather than
+-- counting the active period as autoclick time.
+local auto_credited = 0
+if ac_max_idle > 0 and accepted == 0 then
+  if ac_start == 0 and apc == 0 and lc > 0 and (now - lc) >= idle_threshold_ms then
+    ac_start = lc + idle_threshold_ms
+    ac_last = ac_start
   end
-  -- Past expiry → null out so future ticks short-circuit. Done in
-  -- the same script so a CRON outage can't leave the auto-clicker
-  -- "running forever" in Redis state.
-  if now >= expires_at then
-    redis.call('HMSET', ukey, 'as', '0', 'ad', '0', 'ac', '0')
-  elseif auto_clicks > 0 then
-    redis.call('HSET', ukey, 'ac', tostring(ac_last))
+
+  if ac_start > 0 then
+    local cap_at = ac_start + ac_max_idle * 1000
+    local effective_now = now
+    if effective_now > cap_at then effective_now = cap_at end
+
+    local idle_floor = lc + idle_threshold_ms
+    local sim_from = ac_last
+    if sim_from < idle_floor then sim_from = idle_floor end
+
+    -- Per-tick simulation. Each iteration: apply 3-sec regen window,
+    -- then attempt one click. Loop bounded by max_idle_sec / 3 — at
+    -- 8h cap that's 9600 iterations, well within Redis Lua limits
+    -- (single-millisecond execution).
+    if sim_from < effective_now then
+      local tick_at = sim_from + AUTO_TICK_MS
+      while tick_at <= effective_now do
+        if regen > 0 and energy < max_e then
+          local tick_regen = math.floor(AUTO_TICK_MS * regen / 1000000)
+          local headroom = max_e - energy
+          if tick_regen > headroom then tick_regen = headroom end
+          if tick_regen > 0 then
+            energy = energy + tick_regen
+          end
+        end
+        if energy >= cost then
+          energy = energy - cost
+          -- Credit points immediately so the player's balance grows in
+          -- real time. apc / apv stay as a per-cycle tally for the
+          -- claim-modal summary; the claim Lua just zeroes them since
+          -- the points are already in points. tp also bumps so
+          -- autoclicker progress contributes to the level bar.
+          points = points + cost
+          tp = tp + cost
+          apc = apc + 1
+          apv = apv + cost
+          auto_credited = auto_credited + 1
+        end
+        ac_last = tick_at
+        tick_at = tick_at + AUTO_TICK_MS
+      end
+    end
   end
 end
 
 -- Crit rolls happen server-side. Seed is the microsecond half of redis
 -- TIME — the client doesn't know it and therefore can't time the click
--- to land on a known-good seed. We do TWO independent rolls:
---   1. on accepted manual clicks: counts toward crit_count (the
---      number returned to the client so it can highlight the matching
---      cursor-spawned effects);
---   2. on auto_clicks collected this tick: folds into points but
---      is NOT exposed in crit_count. Auto clicks have no on-screen
---      cursor effect, so attributing them to UI animations would be
---      misleading.
+-- to land on a known-good seed. Only the manual-click path rolls crits;
+-- the autoclicker pays at base cost (no crits in the bank — keeps
+-- claim payouts predictable for the player).
 local crit_count = 0
-local auto_crit = 0
-if (accepted + auto_clicks) > 0 and crit_chance > 0 then
+if accepted > 0 and crit_chance > 0 then
   local t = redis.call('TIME')
-  math.randomseed((tonumber(t[2]) or now) + accepted + auto_clicks)
+  math.randomseed((tonumber(t[2]) or now) + accepted)
   for i = 1, accepted do
     if math.random(1, 100) <= crit_chance then
       crit_count = crit_count + 1
     end
   end
-  for i = 1, auto_clicks do
-    if math.random(1, 100) <= crit_chance then
-      auto_crit = auto_crit + 1
-    end
-  end
 end
 
-local total_clicks = accepted + auto_clicks
-if total_clicks > 0 then
+if accepted > 0 then
   -- Energy debit:
-  --   - autoclicker pays no energy (skill design),
-  --   - infinite-energy boost makes manual clicks free too,
+  --   - infinite-energy boost makes manual clicks free,
   --   - everything else: manual clicks cost cost-each.
-  if accepted > 0 and not infinite_energy then
+  if not infinite_energy then
     energy = energy - accepted * cost
   end
   -- Multiplier scales BOTH the base reward and the crit bonus. Crit
   -- damage = base × multiplier × 10, so a crit during x10 boost pays
   -- 100× the per-click cost, which is the documented intent.
-  points = points
-    + total_clicks * cost * multiplier
-    + (crit_count + auto_crit) * 9 * cost * multiplier
-  redis.call('HMSET', ukey, 'p', points, 'e', energy, 't', now)
-  redis.call('SADD', dkey, user)
-else
-  -- No manual / no auto — still persist the regen result so the next
-  -- call doesn't recompute from scratch.
-  redis.call('HMSET', ukey, 'e', energy, 't', now)
+  local credit = accepted * cost * multiplier
+    + crit_count * 9 * cost * multiplier
+  points = points + credit
+  -- Lifetime tally tracks all earnings, never dropping. The progress
+  -- bar reads from this so spending doesn't visibly demote the player.
+  tp = tp + credit
 end
 
+-- Persist regen anchor: snap to now when regen is disabled or the bar
+-- is full (no carry needed); otherwise advance only by ms that
+-- contributed integer regen units, so the sub-unit residual rolls into
+-- the next call.
+local persisted_ts
+if regen <= 0 or energy >= max_e then
+  persisted_ts = now
+else
+  persisted_ts = last_ts + regen_ms_used
+end
+
+-- Single HMSET batches every state field that may have changed. Keeping
+-- it to one round-trip preserves the per-call op-count budget that
+-- justified the unified-hash design in the first place.
+redis.call('HMSET', ukey,
+  'p', tostring(points),
+  'tp', tostring(tp),
+  'e', tostring(energy),
+  't', tostring(persisted_ts),
+  'lc', tostring(lc),
+  'as', tostring(ac_start),
+  'ac', tostring(ac_last),
+  'apc', tostring(apc),
+  'apv', tostring(apv))
+
+-- Mark dirty for the cron flush whenever something the player would
+-- notice changed: manual clicks (points/energy moved) OR autoclicker
+-- credited a tick (apc/apv grew). Without the autoclicker branch the
+-- bank would be Redis-only until the next manual click, which would
+-- be lost on a 7-day TTL eviction.
+if accepted > 0 or auto_credited > 0 then
+  redis.call('SADD', dkey, user)
+end
+
+-- Level bump gate reads from the lifetime tally rather than the
+-- balance: a player who just crossed the threshold via clicks AND
+-- spent some carrots in the same tick should still trigger the bump.
+-- Both manual and autoclicker credits can push tp past ncost.
 local lvl_up = 0
-if total_clicks > 0 and ncost > 0 and points >= ncost then
+if (accepted > 0 or auto_credited > 0) and ncost > 0 and tp >= ncost then
   lvl_up = 1
 end
 
-return {0, accepted, points, energy, max_e, cost, lvl, clvl, elvl, lvl_up, regen, crit_count, auto_clicks}
+return {
+  0,
+  accepted,
+  points,
+  energy,
+  max_e,
+  cost,
+  lvl,
+  clvl,
+  elvl,
+  lvl_up,
+  regen,
+  crit_count,
+  auto_credited,
+  ac_start,
+  ac_max_idle,
+  apc,
+  apv,
+  tp
+}
 `

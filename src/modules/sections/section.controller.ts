@@ -10,10 +10,11 @@ import {
 } from '@nestjs/common'
 import { SectionService } from './section.service'
 import { Request } from 'express'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
-import { AuthGuard } from '@nestjs/passport'
-import { RolesGuard } from '../../core/guards/roles.guard'
-import { Roles } from '../../core/decorators/roles.decorator'
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
 import { OptionalAuthGuard } from '../../core/guards/optional-auth.guard'
 
 /**
@@ -67,10 +68,11 @@ export class SectionController {
     return this.sectionService.findById(id)
   }
 
-  @ApiOperation({ summary: 'Create a new section' })
+  @ApiOperation({ summary: 'Create a new section (admin panel)' })
   @ApiResponse({ status: 200, description: 'Return created section' })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Post()
   async create(@Body('name') name: string) {
     return this.sectionService.create(name)

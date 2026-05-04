@@ -5,6 +5,7 @@ import {
   NotFoundException,
   UseGuards,
   Req,
+  Res,
   Patch,
   Body,
   BadRequestException,
@@ -14,11 +15,15 @@ import {
 import { UserService } from './users.service'
 import { TelegramService } from '../social/services/telegram.service'
 import { AuthGuard } from '@nestjs/passport'
-import { Request } from 'express'
+import { Request, Response } from 'express'
 import { User } from './user.entity'
-import { RolesGuard } from '../../core/guards/roles.guard'
-import { Roles } from '../../core/decorators/roles.decorator'
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger'
+import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
+import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
+import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { AdminRole } from '../admin/types/admin-role.enum'
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
+import { setSteamLinkStateCookie } from '../auth/steam-link-state'
+import { setGoogleLinkStateCookie } from '../auth/google-link-state'
 
 /**
  * Controller for working with users
@@ -33,12 +38,13 @@ export class UserController {
   constructor(
     private readonly userService: UserService,
     private readonly telegramService: TelegramService,
-  ) {}
+  ) { }
 
-  @ApiOperation({ summary: 'Get all users' })
+  @ApiOperation({ summary: 'Get all users (admin panel)' })
   @ApiResponse({ status: 200, description: 'Return all users' })
-  @UseGuards(AuthGuard('jwt'), RolesGuard)
-  @Roles('admin')
+  @ApiBearerAuth()
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER, AdminRole.VIEWER)
   @Get()
   async findAll() {
     const users = await this.userService.findAll()
@@ -114,8 +120,7 @@ export class UserController {
       }
     } catch (error: unknown) {
       this.logger.error(
-        `Error updating Steam display name for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `Error updating Steam display name for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
         }`,
       )
       throw error
@@ -149,8 +154,7 @@ export class UserController {
       }
     } catch (error) {
       this.logger.error(
-        `Error updating Steam avatar for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `Error updating Steam avatar for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
         }`,
       )
       throw error
@@ -220,8 +224,7 @@ export class UserController {
       }
     } catch (error: unknown) {
       this.logger.error(
-        `Error claiming Telegram subscription bonus for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `Error claiming Telegram subscription bonus for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
         }`,
       )
 
@@ -238,37 +241,49 @@ export class UserController {
     }
   }
 
-  @ApiOperation({ summary: 'Get Steam OAuth URL for linking account' })
-  @ApiResponse({
-    status: 200,
-    description: 'Returns Steam OAuth URL with link_to_user_id parameter',
+  @ApiOperation({
+    summary:
+      'Begin Steam-account linking. Sets a short-lived signed state cookie that ties the next /auth/steam round-trip to the JWT-authenticated caller, then returns the URL to redirect the browser to. Replaces the old `?link_to_user_id=` flow which let any caller specify the destination user (account-takeover hole).',
   })
+  @ApiResponse({ status: 200, description: 'auth_url returned, state cookie set' })
+  @ApiResponse({ status: 400, description: 'Steam already linked' })
   @UseGuards(AuthGuard('jwt'))
   @Get('me/link/steam')
-  async getSteamLinkUrl(@Req() req: Request) {
+  async getSteamLinkUrl(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     try {
       const user = req.user as User
 
-      // Check if user already has Steam account linked
       if (user.steam_id) {
         throw new BadRequestException(
           'Steam account is already linked to this user',
         )
       }
 
+      // The state cookie carries (user_id, nonce, exp) HMAC-signed with
+      // the refresh secret. The Steam callback reads it back, verifies
+      // the signature, and trusts the user_id only if everything checks
+      // out. No user input, no query param — the callback can't be
+      // tricked into linking to a different account.
+      setSteamLinkStateCookie(res, user.id)
+
       const baseUrl = process.env.BASE_URL || 'http://localhost:5000'
-      const steamAuthUrl = `${baseUrl}/auth/steam?link_to_user_id=${user.id}`
+      // No query param — the cookie carries the linking intent. The
+      // /auth/steam handler kicks off the OpenID dance regardless;
+      // /auth/steam/return reads the cookie to decide sign-in vs link.
+      const steamAuthUrl = `${baseUrl}/auth/steam`
 
       return {
         message: 'Steam OAuth URL generated',
         auth_url: steamAuthUrl,
         instructions:
-          'Visit this URL to link your Steam account. After successful authentication, your Steam account will be linked to your existing account without changing your name or other data.',
+          'Visit this URL within 5 minutes to link your Steam account.',
       }
     } catch (error: unknown) {
       this.logger.error(
-        `Error generating Steam link URL for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `Error generating Steam link URL for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
         }`,
       )
 
@@ -337,8 +352,7 @@ export class UserController {
       }
     } catch (error: unknown) {
       this.logger.error(
-        `Error linking Steam account for user ${req.user?.id}: ${
-          error instanceof Error ? error.message : 'Unknown error'
+        `Error linking Steam account for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
         }`,
       )
 
@@ -351,6 +365,61 @@ export class UserController {
 
       throw new BadRequestException(
         'Failed to link Steam account. Please try again later.',
+      )
+    }
+  }
+
+  @ApiOperation({
+    summary:
+      'Begin Google-account linking. Sets a short-lived signed state cookie that ties the next /auth/google round-trip to the JWT-authenticated caller, then returns the URL to redirect the browser to. Same shape as /users/me/link/steam — see that endpoint for the rationale.',
+  })
+  @ApiResponse({ status: 200, description: 'auth_url returned, state cookie set' })
+  @ApiResponse({ status: 400, description: 'Google already linked' })
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/link/google')
+  async getGoogleLinkUrl(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    try {
+      const user = req.user as User
+
+      if (user.google_id) {
+        throw new BadRequestException(
+          'Google account is already linked to this user',
+        )
+      }
+
+      // The state cookie carries (user_id, nonce, exp) HMAC-signed with
+      // the refresh secret. The Google callback reads it back, verifies
+      // the signature, and trusts the user_id only if everything checks
+      // out. No user input, no query param.
+      setGoogleLinkStateCookie(res, user.id)
+
+      const baseUrl = process.env.BASE_URL || 'http://localhost:5000'
+      const googleAuthUrl = `${baseUrl}/auth/google`
+
+      return {
+        message: 'Google OAuth URL generated',
+        auth_url: googleAuthUrl,
+        instructions:
+          'Visit this URL within 5 minutes to link your Google account.',
+      }
+    } catch (error: unknown) {
+      this.logger.error(
+        `Error generating Google link URL for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
+        }`,
+      )
+
+      if (
+        error instanceof BadRequestException ||
+        error instanceof NotFoundException
+      ) {
+        throw error
+      }
+
+      throw new BadRequestException(
+        'Failed to generate Google link URL. Please try again later.',
       )
     }
   }

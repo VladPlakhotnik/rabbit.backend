@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common'
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common'
 import { ScheduleModule } from '@nestjs/schedule'
+import { LoggingMiddleware } from './common/middleware/logging.middleware'
 import { DatabaseModule } from './core/database/database.module'
 import { RedisModule } from './core/redis/redis.module'
 import { PresenceModule } from './core/presence/presence.module'
@@ -33,6 +34,7 @@ import { NewsModule } from './modules/news/news.module'
 import { PartnerModule } from './modules/partners/partner.module'
 import { StatsModule } from './modules/stats/stats.module'
 import { WithdrawModule } from './modules/withdraw/withdraw.module'
+import { AdminModule } from './modules/admin/admin.module'
 
 @Module({
   imports: [
@@ -72,9 +74,18 @@ import { WithdrawModule } from './modules/withdraw/withdraw.module'
     PartnerModule,
     StatsModule,
     WithdrawModule,
+    AdminModule,
     // TO DO
     // PaymentModule,
   ],
   controllers: [AppController],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  // Wire LoggingMiddleware on every route. One LOG line per request +
+  // one per response, with the bearer token redacted. Necessary for
+  // diagnosing "did /auth/refresh even reach the backend" type
+  // questions — without it, NestJS only prints exceptions, not 200s.
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(LoggingMiddleware).forRoutes('*')
+  }
+}

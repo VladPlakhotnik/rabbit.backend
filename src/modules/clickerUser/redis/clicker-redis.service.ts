@@ -2,30 +2,47 @@ import { Inject, Injectable, Logger } from '@nestjs/common'
 import Redis from 'ioredis'
 import { REDIS_CLIENT } from '../../../core/redis/redis.constants'
 import { CLICK_LUA } from './clicker.lua'
+import { CLAIM_AUTO_LUA } from './clicker.lua.claim-auto'
 import { DEDUCT_LUA } from './clicker.deduct.lua'
-import { ACTIVATE_AUTO_LUA } from './clicker.activate-auto.lua'
 import { ACTIVATE_BOOST_LUA } from './clicker.activate-boost.lua'
+import {
+  DEFAULT_AUTO_CLICKER_IDLE_THRESHOLD_SEC,
+  DEFAULT_REGEN_PER_SEC_FALLBACK,
+  REDIS_USER_KEY_TTL_SECONDS,
+} from '../constants/clicker.constants'
 
 /**
- * Lua return codes from the activate-auto-clicker / activate-boost
- * scripts. Positive values are the activation deadline (ms-since-epoch).
+ * Lua return codes shared by activate-boost / claim-auto-clicker.
+ * Positive integers are the activation deadline (ms-since-epoch) for
+ * activate-boost; for claim-auto-clicker positive returns ride in the
+ * tuple's secondary slots (count/value), so the meaning here is
+ * activate-boost-only.
  */
 export const ACTIVATE_META_MISSING = -1
 export const ACTIVATE_ALREADY_RUNNING = -2
 
-// 7 days. Idle users with no flushes for a week get evicted from Redis;
-// the next click triggers a lazy reload from Postgres. Way longer than
-// the previous 24h to avoid forced re-bootstraps that consume ops.
-const TTL_SECONDS = 7 * 24 * 60 * 60
-
-const DEFAULT_REGEN_PER_SEC = 1
+// Env-overridable runtime knobs. Defaults pull from the constants file
+// so the *value* is owned in one place; only the env-binding logic
+// lives here.
 const ENERGY_REGEN_PER_SEC = (() => {
   const raw = process.env.CLICKER_ENERGY_REGEN_PER_SEC
-  if (raw == null || raw === '') return DEFAULT_REGEN_PER_SEC
+  if (raw == null || raw === '') return DEFAULT_REGEN_PER_SEC_FALLBACK
   const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_REGEN_PER_SEC
+  if (!Number.isFinite(parsed) || parsed < 0)
+    return DEFAULT_REGEN_PER_SEC_FALLBACK
   return parsed
 })()
+
+const AUTO_CLICKER_IDLE_THRESHOLD_SEC = (() => {
+  const raw = process.env.CLICKER_AUTO_CLICKER_IDLE_THRESHOLD_SEC
+  if (raw == null || raw === '')
+    return DEFAULT_AUTO_CLICKER_IDLE_THRESHOLD_SEC
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0)
+    return DEFAULT_AUTO_CLICKER_IDLE_THRESHOLD_SEC
+  return parsed
+})()
+const AUTO_CLICKER_IDLE_THRESHOLD_MS = AUTO_CLICKER_IDLE_THRESHOLD_SEC * 1000
 
 export interface ClickerMetaInput {
   cost: number
@@ -40,18 +57,46 @@ export interface ClickerMetaInput {
    * yet — Lua skips the roll loop entirely in that case (perf shortcut).
    */
   crit_chance_pct: number
+  /**
+   * Autoclicker max idle accumulation seconds. 0 = autoclicker not
+   * unlocked. Drives the cap inside the click Lua's idle-bank loop.
+   */
+  auto_clicker_max_idle_sec: number
+  /**
+   * Per-level regen rate in milli-units per second (units/sec × 1000).
+   * Set when the user's energy_level row carries a non-zero
+   * `regen_per_sec_milli`; bootstrap falls back to the global env
+   * override when this is 0 (pre-migration row).
+   */
+  regen_per_sec_milli: number
 }
 
 export interface ClickerStateSnapshot {
   points: number | null
+  /**
+   * Lifetime carrots earned. Read alongside `points` so the flush can
+   * persist the monotonic tally back to Postgres — without it, a
+   * Redis eviction would reset the lifetime counter to whatever PG
+   * last had, undoing any in-session level progress.
+   */
+  total_points: number | null
   energy: number | null
   ts: number | null
+  /**
+   * Bank-style autoclicker state — flushed to Postgres alongside the
+   * regular state so a Redis eviction doesn't lose the player's
+   * pending earnings.
+   */
+  auto_clicker_pending_count: number | null
+  auto_clicker_pending_value: number | null
 }
 
 export interface LuaClickResult {
   meta_missing: boolean
   accepted: number
   points: number
+  /** Lifetime monotonic tally; spending leaves it untouched. */
+  total_points: number
   energy: number
   max_energy: number
   cost: number
@@ -63,8 +108,37 @@ export interface LuaClickResult {
   regen_milli: number
   /** How many of the accepted manual clicks landed a crit (10× payout). */
   crit_count: number
-  /** Seconds collected by the auto-clicker this tick (0 if not active). */
-  auto_clicks: number
+  /**
+   * Autoclicker ticks credited DURING this Lua call (not cumulative).
+   * Useful for the frontend to flash a "+N" indicator on the autoclicker
+   * UpgradeBox without needing to diff `auto_clicker_pending_count`
+   * across acks.
+   */
+  auto_credited: number
+  /**
+   * Autoclicker accumulation start ms (0 = not currently accumulating).
+   * Drives the "elapsed since accumulation started" countdown in the
+   * claim modal.
+   */
+  auto_clicker_started_at_ms: number
+  /** Max idle accumulation seconds (= owned tier's `duration_sec`). */
+  auto_clicker_max_idle_sec: number
+  /** Pending click count waiting to be claimed. */
+  auto_clicker_pending_count: number
+  /** Pending click value (points) waiting to be claimed. */
+  auto_clicker_pending_value: number
+}
+
+export interface LuaClaimResult {
+  meta_missing: boolean
+  /** Number of clicks that were claimed (0 when nothing to claim). */
+  claimed_count: number
+  /** Points credited to the balance from this claim (0 when nothing). */
+  claimed_value: number
+  /** New post-claim points balance. */
+  points: number
+  /** Lifetime tally — unchanged by claim, surfaced for ack consistency. */
+  total_points: number
 }
 
 @Injectable()
@@ -75,24 +149,33 @@ export class ClickerRedisService {
   // NOSCRIPT (Redis was restarted / FLUSH'd).
   private clickShaPromise: Promise<string> | null = null
   private deductShaPromise: Promise<string> | null = null
-  private activateAutoShaPromise: Promise<string> | null = null
+  private claimAutoShaPromise: Promise<string> | null = null
   private activateBoostShaPromise: Promise<string> | null = null
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
 
   /**
-   * `clicker:v2:u:{userId}` — versioned prefix. The previous schema used four
-   * separate keys per user; this one collapses them into a single hash. The
-   * v2 tag keeps the migration risk-free: on first run we read v2, miss,
-   * lazy-load from Postgres into v2, and the old v1 keys expire on their
-   * own (or get cleaned manually).
+   * `clicker:v5:u:{userId}` — versioned prefix. Bumping the version
+   * invalidates all per-user hashes from previous deploys: the lookup
+   * misses, bootstrap re-reads from Postgres, meta fields (cost,
+   * regen rate, level caps) are written fresh.
+   *
+   * v4 → v5 was needed for the lifetime `tp` (total_points) field —
+   * the level-up gate now reads from it, and warm v4 hashes wouldn't
+   * have it populated, so the gate would mis-fire on the first call
+   * (tp=0 < ncost regardless of actual lifetime). Bumping forces a
+   * bootstrap that pulls the backfilled value from Postgres.
+   *
+   * Old keys go orphan and expire on their TTL (7d). Pending unflushed
+   * state in v4 is lost on bump — production deploys should drain the
+   * dirty set first; locally it's a non-issue.
    */
   private userKey(userId: number): string {
-    return `clicker:v2:u:${userId}`
+    return `clicker:v5:u:${userId}`
   }
 
   private get dirtyKey(): string {
-    return 'clicker:v2:dirty'
+    return 'clicker:v5:dirty'
   }
 
   private async loadScript(): Promise<string> {
@@ -119,51 +202,76 @@ export class ClickerRedisService {
     return this.deductShaPromise
   }
 
-  private async loadActivateAutoScript(): Promise<string> {
-    if (!this.activateAutoShaPromise) {
-      this.activateAutoShaPromise = (
-        this.redis.script('LOAD', ACTIVATE_AUTO_LUA) as Promise<string>
+  private async loadClaimAutoScript(): Promise<string> {
+    if (!this.claimAutoShaPromise) {
+      this.claimAutoShaPromise = (
+        this.redis.script('LOAD', CLAIM_AUTO_LUA) as Promise<string>
       ).catch(err => {
-        this.activateAutoShaPromise = null
+        this.claimAutoShaPromise = null
         throw err
       })
     }
-    return this.activateAutoShaPromise
+    return this.claimAutoShaPromise
   }
 
   /**
-   * Set the auto-clicker active for `durationSec` seconds starting at
-   * `nowMs`. Returns the activation deadline in ms on success, or one
-   * of `ACTIVATE_AUTO_*` constants on rejection.
+   * Atomically claim the autoclicker pending bank. Adds `apv` to the
+   * player's points, zeroes pending state and the accumulation cycle,
+   * stamps `lc=now` so the next accumulation only kicks in after
+   * another idle window. Concurrent calls are race-safe — Lua runs
+   * single-threaded, so the second tap reads apc=0 and gets a no-op
+   * back.
    *
-   * The actual server-side timer doesn't exist — the script simply
-   * stamps `as`/`ad`/`ac` and the click hot path collects accumulated
-   * seconds lazily on the next tick. See clicker.lua.
+   * Returns `meta_missing: true` when the user hash is cold; caller
+   * bootstraps and retries.
    */
-  async activateAutoClicker(
+  async claimAutoClicker(
     userId: number,
     nowMs: number,
-    durationSec: number,
-  ): Promise<number> {
+  ): Promise<LuaClaimResult> {
     const ukey = this.userKey(userId)
-    const args = [String(nowMs), String(Math.max(0, Math.floor(durationSec)))]
+    const args = [String(userId), String(nowMs)]
 
     let raw: unknown
     try {
-      const sha = await this.loadActivateAutoScript()
-      raw = await this.redis.evalsha(sha, 1, ukey, ...args)
+      const sha = await this.loadClaimAutoScript()
+      raw = await this.redis.evalsha(sha, 2, ukey, this.dirtyKey, ...args)
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
       if (msg.includes('NOSCRIPT')) {
-        this.activateAutoShaPromise = null
-        raw = await this.redis.eval(ACTIVATE_AUTO_LUA, 1, ukey, ...args)
+        this.claimAutoShaPromise = null
+        raw = await this.redis.eval(
+          CLAIM_AUTO_LUA,
+          2,
+          ukey,
+          this.dirtyKey,
+          ...args,
+        )
       } else {
         throw err
       }
     }
 
-    const n = typeof raw === 'string' ? Number(raw) : (raw as number)
-    return Number.isFinite(n) ? n : ACTIVATE_META_MISSING
+    return this.parseClaimResult(raw)
+  }
+
+  private parseClaimResult(raw: unknown): LuaClaimResult {
+    if (!Array.isArray(raw) || raw.length < 5) {
+      throw new Error('clicker claim lua: malformed return value')
+    }
+    const arr = raw as Array<string | number>
+    const num = (i: number) => {
+      const v = arr[i]
+      const n = typeof v === 'string' ? Number(v) : v
+      return Number.isFinite(n) ? Number(n) : 0
+    }
+    return {
+      meta_missing: num(0) === 1,
+      claimed_count: num(1),
+      claimed_value: num(2),
+      points: num(3),
+      total_points: num(4),
+    }
   }
 
   private async loadActivateBoostScript(): Promise<string> {
@@ -274,6 +382,7 @@ export class ClickerRedisService {
       String(userId),
       String(Math.max(0, Math.floor(count))),
       String(nowMs),
+      String(AUTO_CLICKER_IDLE_THRESHOLD_MS),
     ]
 
     let raw: unknown
@@ -294,7 +403,7 @@ export class ClickerRedisService {
   }
 
   private parseLuaResult(raw: unknown): LuaClickResult {
-    if (!Array.isArray(raw) || raw.length < 13) {
+    if (!Array.isArray(raw) || raw.length < 18) {
       throw new Error('clicker lua: malformed return value')
     }
     const arr = raw as Array<string | number>
@@ -316,7 +425,12 @@ export class ClickerRedisService {
       level_up_due: num(9) === 1,
       regen_milli: num(10),
       crit_count: num(11),
-      auto_clicks: num(12),
+      auto_credited: num(12),
+      auto_clicker_started_at_ms: num(13),
+      auto_clicker_max_idle_sec: num(14),
+      auto_clicker_pending_count: num(15),
+      auto_clicker_pending_value: num(16),
+      total_points: num(17),
     }
   }
 
@@ -332,15 +446,43 @@ export class ClickerRedisService {
    */
   async bootstrap(
     userId: number,
-    state: { points: number; energy: number; ts: number },
+    state: {
+      points: number
+      total_points: number
+      energy: number
+      ts: number
+      auto_clicker_pending_count: number
+      auto_clicker_pending_value: number
+    },
     meta: ClickerMetaInput,
   ): Promise<void> {
     const ukey = this.userKey(userId)
-    const regenMilli = Math.max(0, Math.floor(ENERGY_REGEN_PER_SEC * 1000))
+    // Per-level regen takes precedence; env-driven fallback applies
+    // only when the energy_level row hasn't been backfilled.
+    const fallbackRegenMilli = Math.max(0, Math.floor(ENERGY_REGEN_PER_SEC * 1000))
+    const regenMilli =
+      meta.regen_per_sec_milli > 0 ? meta.regen_per_sec_milli : fallbackRegenMilli
     const pipe = this.redis.multi()
     pipe.hsetnx(ukey, 'p', String(state.points))
+    // Lifetime tally — restored from PG. The Lua hot path bumps it
+    // alongside `p` on every credit; on Redis eviction the flushed
+    // value comes back here. HSETNX so a parallel credit landed
+    // between bootstrap-trigger and now isn't clobbered.
+    pipe.hsetnx(ukey, 'tp', String(state.total_points))
     pipe.hsetnx(ukey, 'e', String(state.energy))
     pipe.hsetnx(ukey, 't', String(state.ts))
+    // Restore pending bank from Postgres. HSETNX so we don't clobber a
+    // value already accumulated in Redis between the bootstrap-trigger
+    // and now.
+    pipe.hsetnx(ukey, 'apc', String(state.auto_clicker_pending_count))
+    pipe.hsetnx(ukey, 'apv', String(state.auto_clicker_pending_value))
+    // `lc` (last manual click) seeds at the ts we just read — treats
+    // the bootstrap moment as "just clicked", so a freshly-loaded user
+    // doesn't immediately start accumulating before they've actually
+    // gone idle. Same for `as`/`ac` which start at 0.
+    pipe.hsetnx(ukey, 'lc', String(state.ts))
+    pipe.hsetnx(ukey, 'as', '0')
+    pipe.hsetnx(ukey, 'ac', '0')
     pipe.hset(ukey, {
       c: String(meta.cost),
       m: String(meta.max_energy),
@@ -350,17 +492,29 @@ export class ClickerRedisService {
       el: String(meta.energy_level_id),
       nl: String(meta.next_level_cost),
       cc: String(meta.crit_chance_pct),
+      ad: String(meta.auto_clicker_max_idle_sec),
     })
-    pipe.expire(ukey, TTL_SECONDS)
+    pipe.expire(ukey, REDIS_USER_KEY_TTL_SECONDS)
     await pipe.exec()
   }
 
   async getState(userId: number): Promise<ClickerStateSnapshot> {
-    const arr = await this.redis.hmget(this.userKey(userId), 'p', 'e', 't')
+    const arr = await this.redis.hmget(
+      this.userKey(userId),
+      'p',
+      'tp',
+      'e',
+      't',
+      'apc',
+      'apv',
+    )
     return {
       points: arr[0] == null ? null : Number(arr[0]),
-      energy: arr[1] == null ? null : Number(arr[1]),
-      ts: arr[2] == null ? null : Number(arr[2]),
+      total_points: arr[1] == null ? null : Number(arr[1]),
+      energy: arr[2] == null ? null : Number(arr[2]),
+      ts: arr[3] == null ? null : Number(arr[3]),
+      auto_clicker_pending_count: arr[4] == null ? null : Number(arr[4]),
+      auto_clicker_pending_value: arr[5] == null ? null : Number(arr[5]),
     }
   }
 
@@ -375,10 +529,11 @@ export class ClickerRedisService {
   }
 
   /**
-   * Drop only the meta fields (c/m/r/l/cl/el/nl/cc), preserving live
-   * state (p/e/t). Used after a cron-driven level-up so the next click
-   * reloads fresh `level_id` / `next_level_cost` / crit chance without
-   * disturbing accumulated points/energy.
+   * Drop only the meta fields (c/m/r/l/cl/el/nl/cc/ad), preserving live
+   * state (p/e/t and the autoclicker bank). Used after a cron-driven
+   * level-up so the next click reloads fresh `level_id` /
+   * `next_level_cost` / crit chance / autoclicker cap without
+   * disturbing accumulated points / energy / pending.
    */
   async clearMeta(userId: number): Promise<void> {
     await this.redis.hdel(
@@ -391,6 +546,7 @@ export class ClickerRedisService {
       'el',
       'nl',
       'cc',
+      'ad',
     )
   }
 

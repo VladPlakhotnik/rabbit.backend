@@ -15,24 +15,17 @@ import { ClickerUserService } from './clicker-user.service'
 import { ClickBatchDto } from './dto/click.dto'
 import { EVENTS, GATEWAY_CONFIG } from './constants/events'
 import {
-  AutoClickerActivateAck,
+  AutoClickerClaimAck,
   ClickAckPayload,
   ErrorResponse,
   SkillUpgradeAckPayload,
   UpgradeAckPayload,
 } from './types/user-update.types'
 import type { JwtPayload } from '../auth/auth.service'
-
-// Maximum drift we accept on the client-supplied timestamp before we treat it
-// as a forgery / clock-skew artifact. Energy regen is server-anchored so this
-// just prevents someone from sending `ts: yearAgo` to fake regenerated energy.
-const MAX_TS_DRIFT_MS = 5 * 60 * 1000
-
-// Min spacing between two upgrade calls from the same socket. The
-// upgradeSkill flow already serialises with a row lock, so this is
-// not the security gate — it's a cheap performance guard that
-// short-circuits a rapid double-tap before we touch the DB.
-const UPGRADE_THROTTLE_MS = 500
+import {
+  MAX_TS_DRIFT_MS,
+  UPGRADE_THROTTLE_MS,
+} from './constants/clicker.constants'
 
 @WebSocketGateway(GATEWAY_CONFIG)
 export class ClickerUserGateway
@@ -87,6 +80,45 @@ export class ClickerUserGateway
     }
 
     this.socketUserId.set(client, userId)
+
+    // Push fresh state on every connection (including reconnects after a
+    // backend restart). The click Lua's bank simulation only advances
+    // when something actually CALLS Lua — without this, a player who
+    // opens the app, closes it, reopens it without refreshing the
+    // browser would never trigger a sim, and their accumulated bank
+    // would stay frozen at the last interaction. Best-effort —
+    // failures are logged but don't reject the connection.
+    void this.pushInitialState(client, userId)
+  }
+
+  private async pushInitialState(client: Socket, userId: number): Promise<void> {
+    try {
+      const state = await this.clickerUserService.getCurrentState(userId)
+      const payload: UpgradeAckPayload = {
+        userId,
+        points: state.points,
+        totalPoints: state.total_points,
+        energy: state.energy,
+        maxEnergy: state.max_energy,
+        cost: state.cost,
+        regenPerSec: state.regen_per_sec,
+        level: state.level_id,
+        clickLevel: state.click_level_id,
+        energyLevel: state.energy_level_id,
+        autoCredited: state.auto_credited,
+        autoClickerStartedAtMs: state.auto_clicker_started_at_ms,
+        autoClickerMaxIdleSec: state.auto_clicker_max_idle_sec,
+        autoClickerPendingCount: state.auto_clicker_pending_count,
+        autoClickerPendingValue: state.auto_clicker_pending_value,
+      }
+      client.emit(EVENTS.STATE, payload)
+    } catch (err) {
+      this.logger.warn(
+        `pushInitialState failed for user ${userId}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
   }
 
   handleDisconnect(client: Socket): void {
@@ -120,6 +152,7 @@ export class ClickerUserGateway
         userId,
         accepted: result.accepted,
         points: result.points,
+        totalPoints: result.total_points,
         energy: result.energy,
         maxEnergy: result.max_energy,
         cost: result.cost,
@@ -128,7 +161,11 @@ export class ClickerUserGateway
         clickLevel: result.click_level_id,
         energyLevel: result.energy_level_id,
         critCount: result.crit_count,
-        autoClicks: result.auto_clicks,
+        autoCredited: result.auto_credited,
+        autoClickerStartedAtMs: result.auto_clicker_started_at_ms,
+        autoClickerMaxIdleSec: result.auto_clicker_max_idle_sec,
+        autoClickerPendingCount: result.auto_clicker_pending_count,
+        autoClickerPendingValue: result.auto_clicker_pending_value,
       }
       // Ack only — no broadcast. Other tabs of the same user see updates via
       // their own batched click cycle / explicit getState calls.
@@ -155,6 +192,7 @@ export class ClickerUserGateway
       const payload: UpgradeAckPayload = {
         userId,
         points: fresh.points,
+        totalPoints: fresh.total_points,
         energy: fresh.energy,
         maxEnergy: fresh.max_energy,
         cost: fresh.cost,
@@ -162,6 +200,11 @@ export class ClickerUserGateway
         level: fresh.level_id,
         clickLevel: fresh.click_level_id,
         energyLevel: fresh.energy_level_id,
+        autoCredited: fresh.auto_credited,
+        autoClickerStartedAtMs: fresh.auto_clicker_started_at_ms,
+        autoClickerMaxIdleSec: fresh.auto_clicker_max_idle_sec,
+        autoClickerPendingCount: fresh.auto_clicker_pending_count,
+        autoClickerPendingValue: fresh.auto_clicker_pending_value,
       }
       this.emitToUserSocket(client, EVENTS.USER_UPDATE, payload)
       return payload
@@ -185,6 +228,7 @@ export class ClickerUserGateway
       const payload: UpgradeAckPayload = {
         userId,
         points: fresh.points,
+        totalPoints: fresh.total_points,
         energy: fresh.energy,
         maxEnergy: fresh.max_energy,
         cost: fresh.cost,
@@ -192,6 +236,11 @@ export class ClickerUserGateway
         level: fresh.level_id,
         clickLevel: fresh.click_level_id,
         energyLevel: fresh.energy_level_id,
+        autoCredited: fresh.auto_credited,
+        autoClickerStartedAtMs: fresh.auto_clicker_started_at_ms,
+        autoClickerMaxIdleSec: fresh.auto_clicker_max_idle_sec,
+        autoClickerPendingCount: fresh.auto_clicker_pending_count,
+        autoClickerPendingValue: fresh.auto_clicker_pending_value,
       }
       this.emitToUserSocket(client, EVENTS.USER_UPDATE, payload)
       return payload
@@ -266,38 +315,33 @@ export class ClickerUserGateway
     }
   }
 
-  @SubscribeMessage(EVENTS.ACTIVATE_AUTO_CLICKER)
-  async handleActivateAutoClicker(
+  @SubscribeMessage(EVENTS.CLAIM_AUTO_CLICKER)
+  async handleClaimAutoClicker(
     @ConnectedSocket() client: Socket,
-  ): Promise<AutoClickerActivateAck | { error: string }> {
+  ): Promise<AutoClickerClaimAck | { error: string }> {
     const userId = this.socketUserId.get(client)
     if (userId == null) {
       return this.errorAck(client, 'Not authenticated')
     }
-    // Same per-socket cooldown as the upgrade events. Activation is
-    // gated by a Lua "already-running" check too — the cooldown is
-    // purely a perf shortcut before that DB / Lua round-trip.
+    // Same cooldown as upgrades. Atomicity is owned by the claim Lua
+    // (concurrent calls serialise inside Redis); this is a perf
+    // shortcut that lets us bounce a rapid double-tap before we touch
+    // Redis.
     if (!this.checkUpgradeCooldown(client)) {
-      return this.errorAck(client, 'Too many activate requests')
+      return this.errorAck(client, 'Too many claim requests')
     }
 
     try {
       const ip = this.extractIp(client)
-      const result = await this.clickerUserService.activateAutoClicker(
+      const result = await this.clickerUserService.claimAutoClicker(userId, ip)
+      const payload: AutoClickerClaimAck = {
         userId,
-        ip,
-      )
-      const payload: AutoClickerActivateAck = {
-        userId,
-        level: result.level,
-        durationSec: result.duration_sec,
-        expiresAtMs: result.expires_at_ms,
+        claimedCount: result.claimed_count,
+        claimedValue: result.claimed_value,
+        points: result.points,
+        totalPoints: result.total_points,
       }
-      this.emitToUserSocket(
-        client,
-        EVENTS.ACTIVATE_AUTO_CLICKER_RESULT,
-        payload,
-      )
+      this.emitToUserSocket(client, EVENTS.CLAIM_AUTO_CLICKER_RESULT, payload)
       return payload
     } catch (err) {
       return this.errorAck(client, err)
@@ -318,6 +362,7 @@ export class ClickerUserGateway
       const payload: UpgradeAckPayload = {
         userId,
         points: state.points,
+        totalPoints: state.total_points,
         energy: state.energy,
         maxEnergy: state.max_energy,
         cost: state.cost,
@@ -325,6 +370,11 @@ export class ClickerUserGateway
         level: state.level_id,
         clickLevel: state.click_level_id,
         energyLevel: state.energy_level_id,
+        autoCredited: state.auto_credited,
+        autoClickerStartedAtMs: state.auto_clicker_started_at_ms,
+        autoClickerMaxIdleSec: state.auto_clicker_max_idle_sec,
+        autoClickerPendingCount: state.auto_clicker_pending_count,
+        autoClickerPendingValue: state.auto_clicker_pending_value,
       }
       client.emit(EVENTS.STATE, payload)
       return payload

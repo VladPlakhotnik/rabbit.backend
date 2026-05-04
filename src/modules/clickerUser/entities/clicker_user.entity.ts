@@ -54,6 +54,43 @@ export class ClickerUser {
   @Column({ default: 0 })
   points!: number
 
+  /**
+   * Lifetime carrots earned. Goes up monotonically on every credit
+   * (manual clicks, crit bonus, autoclicker ticks, admin grants);
+   * never goes down — spending lowers `points`, not this. Drives
+   * level progression and the progress-bar fill so the bar doesn't
+   * regress when the player spends.
+   */
+  @Column({ name: 'total_points', default: 0 })
+  total_points!: number
+
+  /**
+   * Bank-style autoclicker pending fields. Populated by the click Lua
+   * during idle accumulation; cleared atomically on a claim. Persisted
+   * to Postgres on flush so they survive a Redis eviction (TTL or
+   * cache miss); restored to Redis on the next bootstrap.
+   *
+   * `auto_clicker_pending_count` — number of clicks the autoclicker
+   *   has earned but the player hasn't claimed yet.
+   * `auto_clicker_pending_value` — points value those clicks would
+   *   credit, computed at simulation time so a click upgrade between
+   *   accumulation and claim doesn't change the payout (no exploit).
+   * `auto_clicker_last_claim_at` — purely audit / forensics; the
+   *   click pipeline doesn't read this.
+   */
+  @Column({ name: 'auto_clicker_pending_count', default: 0 })
+  auto_clicker_pending_count!: number
+
+  @Column({ name: 'auto_clicker_pending_value', default: 0 })
+  auto_clicker_pending_value!: number
+
+  @Column({
+    name: 'auto_clicker_last_claim_at',
+    type: 'timestamptz',
+    nullable: true,
+  })
+  auto_clicker_last_claim_at!: Date | null
+
   @Column({
     name: 'last_energy_update',
     type: 'timestamp',

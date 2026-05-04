@@ -16,6 +16,7 @@ export type ClickerHistoryAction =
   | 'click_crit_hit'
   | 'auto_clicker_activate'
   | 'auto_clicker_collect'
+  | 'auto_clicker_claim'
   | 'buy_boost'
   | 'activate_boost'
   | 'boost_expire'
