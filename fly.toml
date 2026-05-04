@@ -25,3 +25,11 @@ primary_region = 'ams'
   size = 'shared-cpu-1x'
   memory = '256mb'
   cpus = 1
+
+# Free virtual memory via disk paging. Doesn't replace real RAM (much
+# slower, especially under sustained pressure), but absorbs short
+# bursts — GC pauses, one-off heavy queries, the cold-start spike —
+# without the kernel killing node. If we keep OOM-ing on real traffic
+# rather than bursts, the right answer is `fly scale memory 512`
+# ($5/mo) instead of leaning on swap.
+swap_size_mb = 512
