@@ -1,21 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Request, Response } from 'express'
 import { getRefreshSecret } from './auth-secrets'
-
-// Steam OpenID has no per-request authentication context — by the time
-// the user comes back from steamcommunity.com, we've lost the original
-// JWT. Account-linking therefore needs a server-issued state cookie
-// that ties the round-trip to a specific user_id, signed so the user
-// can't tamper with it.
-//
-// The state contains: user_id, nonce, exp (unix seconds). It's HMAC-SHA256
-// signed with the JWT refresh secret (already required, already kept
-// secret) and base64url-encoded, then stuffed into an HttpOnly cookie
-// scoped to /auth/steam so it isn't shipped on every API request.
-//
-// Lifetime: 5 minutes. The Steam round-trip almost never takes more
-// than ~30 s; 5 min is a comfortable upper bound that survives a slow
-// WiFi blip without ever opening a real attack window.
+import { getCrossSiteCookiePolicy } from './cookie-policy'
 
 const COOKIE_NAME = 'steam_link_state'
 const COOKIE_PATH = '/auth/steam'
@@ -26,9 +12,6 @@ interface StatePayload {
   nonce: string
   exp: number
 }
-
-const isProduction = (): boolean =>
-  (process.env.NODE_ENV ?? '').toLowerCase() === 'production'
 
 function signState(payload: StatePayload): string {
   const json = JSON.stringify(payload)
@@ -45,8 +28,6 @@ function verifyState(token: string): StatePayload | null {
   const sig = token.slice(dot + 1)
 
   const expected = createHmac('sha256', getRefreshSecret()).update(body).digest('base64url')
-  // timingSafeEqual is constant-time only when buffers have equal byte
-  // length — guard against length-mismatch first to avoid throwing.
   if (sig.length !== expected.length) return null
 
   const sigBuf = Buffer.from(sig, 'utf8')
@@ -63,11 +44,6 @@ function verifyState(token: string): StatePayload | null {
   }
 }
 
-/**
- * Mints a fresh state, sets the cookie, returns the value (rarely
- * needed by callers — the cookie is the contract; the return value
- * is exposed mostly for tests).
- */
 export function setSteamLinkStateCookie(res: Response, userId: number): string {
   const payload: StatePayload = {
     user_id: userId,
@@ -78,8 +54,7 @@ export function setSteamLinkStateCookie(res: Response, userId: number): string {
 
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProduction(),
-    sameSite: 'lax', // 'strict' would drop the cookie on the Steam→us return
+    ...getCrossSiteCookiePolicy(),
     path: COOKIE_PATH,
     maxAge: STATE_TTL_MS,
   })
@@ -87,10 +62,6 @@ export function setSteamLinkStateCookie(res: Response, userId: number): string {
   return token
 }
 
-/**
- * Returns the user_id encoded in the state cookie, or null if the
- * cookie is missing, malformed, expired, or signed with the wrong key.
- */
 export function readSteamLinkStateCookie(req: Request): number | null {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies
   const value = cookies?.[COOKIE_NAME]
@@ -100,5 +71,8 @@ export function readSteamLinkStateCookie(req: Request): number | null {
 }
 
 export function clearSteamLinkStateCookie(res: Response): void {
-  res.clearCookie(COOKIE_NAME, { path: COOKIE_PATH })
+  res.clearCookie(COOKIE_NAME, {
+    ...getCrossSiteCookiePolicy(),
+    path: COOKIE_PATH,
+  })
 }

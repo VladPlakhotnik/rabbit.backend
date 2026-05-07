@@ -1,20 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Request, Response } from 'express'
 import { getRefreshSecret } from './auth-secrets'
-
-// Google OAuth account-linking state cookie. Same structure as
-// steam-link-state.ts (HMAC-SHA256 signed payload {user_id, nonce, exp}
-// in an HttpOnly cookie scoped to /auth/google) — see that file for
-// the rationale. Two reasons to keep them as separate modules instead
-// of generalising:
-//   • Cookie names differ (browser would otherwise serve the same
-//     value to both endpoints), so the COOKIE_NAME has to be per
-//     provider anyway.
-//   • Path scoping differs (`/auth/steam` vs `/auth/google`), which
-//     keeps each cookie out of the irrelevant callback's request set.
-// A shared `signLinkState/verifyLinkState` plus per-provider thin
-// wrappers would be 50 lines longer than the two parallel files for
-// no readability win.
+import { getCrossSiteCookiePolicy } from './cookie-policy'
 
 const COOKIE_NAME = 'google_link_state'
 const COOKIE_PATH = '/auth/google'
@@ -25,9 +12,6 @@ interface StatePayload {
   nonce: string
   exp: number
 }
-
-const isProduction = (): boolean =>
-  (process.env.NODE_ENV ?? '').toLowerCase() === 'production'
 
 function signState(payload: StatePayload): string {
   const json = JSON.stringify(payload)
@@ -60,10 +44,6 @@ function verifyState(token: string): StatePayload | null {
   }
 }
 
-/**
- * Mints a fresh state, sets the cookie. Return value is exposed mostly
- * for tests — the cookie is the contract for the OAuth round-trip.
- */
 export function setGoogleLinkStateCookie(res: Response, userId: number): string {
   const payload: StatePayload = {
     user_id: userId,
@@ -74,8 +54,7 @@ export function setGoogleLinkStateCookie(res: Response, userId: number): string 
 
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProduction(),
-    sameSite: 'lax', // 'strict' would drop the cookie on the Google→us return
+    ...getCrossSiteCookiePolicy(),
     path: COOKIE_PATH,
     maxAge: STATE_TTL_MS,
   })
@@ -83,10 +62,6 @@ export function setGoogleLinkStateCookie(res: Response, userId: number): string 
   return token
 }
 
-/**
- * Returns the user_id encoded in the state cookie, or null if the
- * cookie is missing, malformed, expired, or signed with the wrong key.
- */
 export function readGoogleLinkStateCookie(req: Request): number | null {
   const cookies = (req as Request & { cookies?: Record<string, string> }).cookies
   const value = cookies?.[COOKIE_NAME]
@@ -96,5 +71,8 @@ export function readGoogleLinkStateCookie(req: Request): number | null {
 }
 
 export function clearGoogleLinkStateCookie(res: Response): void {
-  res.clearCookie(COOKIE_NAME, { path: COOKIE_PATH })
+  res.clearCookie(COOKIE_NAME, {
+    ...getCrossSiteCookiePolicy(),
+    path: COOKIE_PATH,
+  })
 }
