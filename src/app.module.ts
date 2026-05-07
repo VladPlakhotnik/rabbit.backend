@@ -1,8 +1,11 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common'
+import { APP_INTERCEPTOR } from '@nestjs/core'
 import { ScheduleModule } from '@nestjs/schedule'
 import { LoggingMiddleware } from './common/middleware/logging.middleware'
 import { DatabaseModule } from './core/database/database.module'
 import { RedisModule } from './core/redis/redis.module'
+import { CatalogAuditModule } from './core/audit/catalog-audit.module'
+import { IdempotencyModule } from './core/idempotency/idempotency.module'
 import { PresenceModule } from './core/presence/presence.module'
 import { AuthModule } from './modules/auth/auth.module'
 import { UserModule } from './modules/users/users.module'
@@ -35,6 +38,10 @@ import { PartnerModule } from './modules/partners/partner.module'
 import { StatsModule } from './modules/stats/stats.module'
 import { WithdrawModule } from './modules/withdraw/withdraw.module'
 import { AdminModule } from './modules/admin/admin.module'
+import { AdminMutationAuditInterceptor } from './modules/admin/interceptors/admin-mutation-audit.interceptor'
+import { CrashAutoBetsModule } from './modules/crashAutoBets/crash-auto-bets.module'
+import { CrashLiveModule } from './modules/crashLive/crash-live.module'
+import { CrashModule } from './modules/crash/crash.module'
 
 @Module({
   imports: [
@@ -44,6 +51,8 @@ import { AdminModule } from './modules/admin/admin.module'
     ScheduleModule.forRoot(),
     DatabaseModule,
     RedisModule,
+    CatalogAuditModule,
+    IdempotencyModule,
     PresenceModule,
     AuthModule,
     UserModule,
@@ -74,11 +83,20 @@ import { AdminModule } from './modules/admin/admin.module'
     PartnerModule,
     StatsModule,
     WithdrawModule,
+    CrashModule,
+    CrashAutoBetsModule,
+    CrashLiveModule,
     AdminModule,
     // TO DO
     // PaymentModule,
   ],
   controllers: [AppController],
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: AdminMutationAuditInterceptor,
+    },
+  ],
 })
 export class AppModule implements NestModule {
   // Wire LoggingMiddleware on every route. One LOG line per request +

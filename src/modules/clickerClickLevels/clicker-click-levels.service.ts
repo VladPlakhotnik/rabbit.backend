@@ -2,32 +2,54 @@ import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { ClickerClickLevel } from './entities/clicker_click_level.entity'
+import { CLICKER_CATALOG_CACHE_TTL_MS } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 @Injectable()
 export class ClickerClickLevelsService {
+  private allCache: { expiresAt: number; value: ClickerClickLevel[] } | null = null
+
   constructor(
     @InjectRepository(ClickerClickLevel)
     private readonly levelRepository: Repository<ClickerClickLevel>,
   ) {}
 
-  findAll() {
-    return this.levelRepository.find()
+  async findAll() {
+    if (this.allCache && this.allCache.expiresAt > Date.now()) {
+      return this.allCache.value
+    }
+    const value = await this.levelRepository.find()
+    this.allCache = {
+      value,
+      expiresAt: Date.now() + CLICKER_CATALOG_CACHE_TTL_MS,
+    }
+    return value
   }
 
-  findById(id: number) {
-    return this.levelRepository.findOne({ where: { id } })
+  async findById(id: number) {
+    const cached = (await this.findAll()).find(level => level.id === id)
+    return cached ?? this.levelRepository.findOne({ where: { id } })
   }
 
-  create(data: Partial<ClickerClickLevel>) {
+  async create(data: Partial<ClickerClickLevel>) {
     const level = this.levelRepository.create(data)
-    return this.levelRepository.save(level)
+    const result = await this.levelRepository.save(level)
+    this.invalidateCache()
+    return result
   }
 
-  update(id: number, data: Partial<ClickerClickLevel>) {
-    return this.levelRepository.update(id, data)
+  async update(id: number, data: Partial<ClickerClickLevel>) {
+    const result = await this.levelRepository.update(id, data)
+    this.invalidateCache()
+    return result
   }
 
-  remove(id: number) {
-    return this.levelRepository.delete(id)
+  async remove(id: number) {
+    const result = await this.levelRepository.delete(id)
+    this.invalidateCache()
+    return result
+  }
+
+  private invalidateCache(): void {
+    this.allCache = null
   }
 }

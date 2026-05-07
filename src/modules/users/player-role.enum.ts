@@ -11,6 +11,7 @@ export enum PlayerRole {
   VIP = 'vip', // high-roller — auto-assigned by deposit / wager threshold
   INFLUENCER = 'influencer', // small-scale promoter, bonus codes etc.
   BETA_TESTER = 'beta_tester', // closed-beta access
+  BOT = 'bot', // synthetic feed participant, never authenticated
 }
 
 // Convenience tuple for runtime checks.

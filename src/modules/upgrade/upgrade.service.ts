@@ -23,6 +23,7 @@ import {
 type UpgradeGameType = 'csgo' | 'dota'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { HistoryAction } from '../userHistory/enums/history-action.enum'
+import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
 
 const RARITY_COLUMN_LIMIT = 50
 // Sentinels stored in `old_rarity` / `new_rarity` for cases where there is no
@@ -57,13 +58,14 @@ export class UpgradeService {
   constructor(
     @InjectEntityManager()
     private readonly entityManager: EntityManager,
+    private readonly clickerChallengesService: ClickerChallengesService,
   ) {}
 
   async performUpgrade(
     userId: number,
     upgradeDto: UpgradeDto,
   ): Promise<UpgradeResultDto> {
-    return this.entityManager.transaction(async manager => {
+    const result = await this.entityManager.transaction(async manager => {
       // Pessimistic write lock. Without this, two concurrent upgrades from the
       // same user can both pass the balance / inventory checks and both
       // succeed — user pays once, rolls twice.
@@ -136,7 +138,7 @@ export class UpgradeService {
         `upgrade userId=${userId} mode=${mode} cost=${totalUsedPrice} chance=${chance} roll=${roll} success=${isSuccess} target_skin_id=${targetSkin.id}`,
       )
 
-      return this.buildUpgradeResultDto(
+      const dto = this.buildUpgradeResultDto(
         isSuccess,
         created?.skin ?? null,
         created?.inventoryId ?? null,
@@ -145,7 +147,37 @@ export class UpgradeService {
         upgradeDto,
         user,
       )
+
+      return {
+        dto,
+        challengeEvent: {
+          gameType,
+          mode,
+          cost: totalUsedPrice,
+          chance,
+          success: isSuccess,
+        },
+      }
     })
+
+    try {
+      await this.clickerChallengesService.trackEvent(userId, {
+        type: 'skin_upgrade',
+        gameType: result.challengeEvent.gameType,
+        mode: result.challengeEvent.mode,
+        cost: result.challengeEvent.cost,
+        chance: result.challengeEvent.chance,
+        success: result.challengeEvent.success,
+      })
+    } catch (err) {
+      this.logger.warn(
+        `clicker challenge tracking failed for skin_upgrade user=${userId}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
+
+    return result.dto
   }
 
   private async processBalanceUpgrade(

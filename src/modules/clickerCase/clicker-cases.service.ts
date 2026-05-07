@@ -21,6 +21,8 @@ import { LiveDropsService } from '../liveDrops/liveDrops.service'
 import type { LiveDropPayload } from '../liveDrops/types'
 import { UserService } from '../users/users.service'
 import { User } from '../users/user.entity'
+import { IdempotencyService } from '../../core/idempotency/idempotency.service'
+import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
 
 interface TicketRange {
   skinCase: ClickerSkinCase
@@ -87,6 +89,8 @@ export class ClickerCasesService {
     private readonly userHistoryService: UserHistoryService,
     private readonly liveDropsService: LiveDropsService,
     private readonly userService: UserService,
+    private readonly idempotencyService: IdempotencyService,
+    private readonly clickerChallengesService: ClickerChallengesService,
   ) {}
 
   /**
@@ -202,6 +206,20 @@ export class ClickerCasesService {
     slug: string,
     userId: number,
     count: number = 1,
+    idempotencyKey?: string | string[],
+  ): Promise<ClickerOpenResult> {
+    return this.idempotencyService.run(
+      'open-clicker-case',
+      userId,
+      idempotencyKey,
+      () => this.openCaseOnce(slug, userId, count),
+    )
+  }
+
+  private async openCaseOnce(
+    slug: string,
+    userId: number,
+    count: number = 1,
   ): Promise<ClickerOpenResult> {
     if (!Number.isFinite(count) || count < 1 || count > 5) {
       throw new BadRequestException('Count must be between 1 and 5')
@@ -218,19 +236,35 @@ export class ClickerCasesService {
       throw new BadRequestException('This case is currently locked')
     }
 
-    if (caseEntity.is_limited && caseEntity.remaining_count < count) {
-      throw new BadRequestException(
-        'Not enough copies of this case remaining',
-      )
-    }
-
     const skinCases = await this.getAvailableSkins(caseEntity)
     const totalCost = caseEntity.case_price * count
 
-    const newBalance = await this.clickerUserService.deductPoints(
-      userId,
-      totalCost,
-    )
+    let limitedReserved = false
+    if (caseEntity.is_limited) {
+      limitedReserved = await this.reserveLimitedCopies(caseEntity.id, count)
+      if (!limitedReserved) {
+        throw new BadRequestException(
+          'Not enough copies of this case remaining',
+        )
+      }
+    }
+
+    let newBalance: number
+    try {
+      newBalance = await this.clickerUserService.deductPoints(
+        userId,
+        totalCost,
+      )
+    } catch (err) {
+      if (limitedReserved) {
+        await this.restoreLimitedCopies(caseEntity.id, count).catch(() => {
+          this.logger.warn(
+            `failed to restore clicker case reservation for case ${caseEntity.id}`,
+          )
+        })
+      }
+      throw err
+    }
 
     // Single user lookup reused for all LiveDrop publishes in this call.
     // Fetched eagerly so the feed publish at the end of the loop doesn't
@@ -287,15 +321,6 @@ export class ClickerCasesService {
       })
     }
 
-    if (caseEntity.is_limited) {
-      // Atomic decrement so two parallel opens can't cross zero.
-      await this.caseRepository.decrement(
-        { id: caseEntity.id },
-        'remaining_count',
-        count,
-      )
-    }
-
     // History — one row per event, mirroring CaseService's open-case
     // contract. case_history.case_id has no DB-level FK to `cases`, so
     // writing the clicker_case.id there is safe; readers that care about
@@ -308,7 +333,7 @@ export class ClickerCasesService {
         caseEntity.case_price,
         caseEntity.image_url,
         historyDrops,
-        'csgo',
+        caseEntity.game_type,
       )
     } catch (err) {
       this.logger.warn(
@@ -321,6 +346,23 @@ export class ClickerCasesService {
     // LiveDrop publish — staggered to match the spin animation. Same
     // pattern CaseService uses; pushDrop swallows its own Redis errors so
     // a feed hiccup never affects the open-case response.
+    try {
+      await this.clickerChallengesService.trackEvent(userId, {
+        type: 'case_opened',
+        caseId: caseEntity.id,
+        caseName: caseEntity.name,
+        gameType: caseEntity.game_type,
+        count,
+        totalCost,
+      })
+    } catch (err) {
+      this.logger.warn(
+        `clicker challenge tracking failed for clicker case_opened user=${userId} case=${caseEntity.id}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
+
     const user = await userPromise
     results.forEach((result, i) => {
       const delay =
@@ -339,6 +381,31 @@ export class ClickerCasesService {
     } catch {
       return null
     }
+  }
+
+  private async reserveLimitedCopies(
+    caseId: number,
+    count: number,
+  ): Promise<boolean> {
+    const result = await this.caseRepository
+      .createQueryBuilder()
+      .update(ClickerCase)
+      .set({ remaining_count: () => 'remaining_count - :count' })
+      .where('id = :caseId', { caseId })
+      .andWhere('is_limited = true')
+      .andWhere('is_available = true')
+      .andWhere('remaining_count >= :count', { count })
+      .returning('id')
+      .execute()
+
+    return (result.affected ?? 0) > 0
+  }
+
+  private async restoreLimitedCopies(
+    caseId: number,
+    count: number,
+  ): Promise<void> {
+    await this.caseRepository.increment({ id: caseId }, 'remaining_count', count)
   }
 
   private async publishLiveDrop(

@@ -17,9 +17,13 @@ import {
 import { ClickerHistoryService } from '../clickerHistory/clicker-history.service'
 import { ClickerBoost } from './entities/clicker_boost.entity'
 import { ClickerUserBoost } from './entities/clicker_user_boost.entity'
+import { CLICKER_CATALOG_CACHE_TTL_MS } from '../clickerUser/constants/clicker-catalog-cache.constants'
+import { IdempotencyService } from '../../core/idempotency/idempotency.service'
 
 @Injectable()
 export class ClickerBoostsService {
+  private catalogCache: { expiresAt: number; value: ClickerBoost[] } | null = null
+
   constructor(
     @InjectRepository(ClickerBoost)
     private readonly boostRepo: Repository<ClickerBoost>,
@@ -30,6 +34,7 @@ export class ClickerBoostsService {
     private readonly clickerUserService: ClickerUserService,
     private readonly historyService: ClickerHistoryService,
     private readonly dataSource: DataSource,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
@@ -37,11 +42,19 @@ export class ClickerBoostsService {
    * filtered out — admin can pull a boost without DELETEing it, and
    * the public API treats it as if it never existed.
    */
-  findCatalog(): Promise<ClickerBoost[]> {
-    return this.boostRepo.find({
+  async findCatalog(): Promise<ClickerBoost[]> {
+    if (this.catalogCache && this.catalogCache.expiresAt > Date.now()) {
+      return this.catalogCache.value
+    }
+    const value = await this.boostRepo.find({
       where: { is_available: true },
       order: { id: 'ASC' },
     })
+    this.catalogCache = {
+      value,
+      expiresAt: Date.now() + CLICKER_CATALOG_CACHE_TTL_MS,
+    }
+    return value
   }
 
   /** Stockpile rows for a single user. Empty array when nothing owned. */
@@ -72,6 +85,21 @@ export class ClickerBoostsService {
    * than juggling Redis.
    */
   async buy(
+    userId: number,
+    boostKey: string,
+    ip?: string | null,
+    idempotencyKey?: string | string[],
+  ): Promise<{
+    boostKey: string
+    count: number
+    points: number
+  }> {
+    return this.idempotencyService.run('buy-boost', userId, idempotencyKey, () =>
+      this.buyOnce(userId, boostKey, ip),
+    )
+  }
+
+  private async buyOnce(
     userId: number,
     boostKey: string,
     ip?: string | null,
@@ -181,6 +209,25 @@ export class ClickerBoostsService {
     userId: number,
     boostKey: string,
     ip?: string | null,
+    idempotencyKey?: string | string[],
+  ): Promise<{
+    boostKey: string
+    count: number
+    expiresAtMs: number
+    durationSec: number
+  }> {
+    return this.idempotencyService.run(
+      'activate-boost',
+      userId,
+      idempotencyKey,
+      () => this.activateOnce(userId, boostKey, ip),
+    )
+  }
+
+  private async activateOnce(
+    userId: number,
+    boostKey: string,
+    ip?: string | null,
   ): Promise<{
     boostKey: string
     count: number
@@ -259,6 +306,7 @@ export class ClickerBoostsService {
         boost_key: boostKey,
         duration_sec: boost.duration_sec,
         effect_type: boost.effect_type,
+        effect_value: boost.effect_value,
       },
       state_before: decrementResult.stateBefore,
       state_after: { count: decrementResult.newCount, expires_at_ms: luaResult },

@@ -25,6 +25,22 @@ class AttachReferralDto {
 export class PartnerController {
   constructor(private readonly partnerService: PartnerService) {}
 
+  @ApiOperation({
+    summary: 'Get the partner-program rate card (Bronze..Diamond)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Ordered list of partner levels with deposit thresholds and ' +
+      'payout / bonus percentages. Public reference data — no auth ' +
+      'guard so the level grid can render on the partnership page ' +
+      'before the user signs in.',
+  })
+  @Get('levels')
+  async getLevels() {
+    return this.partnerService.getLevels()
+  }
+
   @ApiOperation({ summary: 'Get partner dashboard for current user' })
   @ApiResponse({ status: 200, description: 'Partner dashboard data' })
   @Get('me')

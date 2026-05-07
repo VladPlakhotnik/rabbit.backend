@@ -45,6 +45,7 @@ import type {
   TelegramAuthResult,
   AuthCallbackUserData,
 } from './types/auth.types'
+import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
 
 interface RequestWithUser extends Omit<Request, 'user'> {
   user: { id: number }
@@ -75,6 +76,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly userService: UserService,
     private readonly telegramService: TelegramService,
+    private readonly clickerChallengesService: ClickerChallengesService,
   ) {}
 
   @ApiOperation({ summary: 'Steam login' })
@@ -306,6 +308,19 @@ export class AuthController {
       req.user.id,
       telegramId,
     )
+
+    try {
+      await this.clickerChallengesService.trackEvent(updated.id, {
+        type: 'telegram_linked',
+        telegramUserId: telegramId,
+      })
+    } catch (error: unknown) {
+      this.logger.warn(
+        `clicker challenge tracking failed for telegram_linked user=${updated.id}: ${
+          error instanceof Error ? error.message : error
+        }`,
+      )
+    }
 
     return {
       success: true,

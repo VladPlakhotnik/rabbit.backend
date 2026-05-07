@@ -25,6 +25,10 @@ export interface AutoClickerAckSlice {
   autoClickerPendingCount: number
   /** Pending point value waiting to be claimed (0 = empty bank). */
   autoClickerPendingValue: number
+  /** Active consumable boost key. null when no server-side boost is running. */
+  activeBoostKey: string | null
+  /** Absolute active boost deadline in ms-since-epoch. 0 when inactive. */
+  activeBoostExpiresAtMs: number
 }
 
 /**

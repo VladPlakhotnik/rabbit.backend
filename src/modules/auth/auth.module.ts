@@ -16,6 +16,7 @@ import { UserModule } from '../users/users.module'
 import { SocialModule } from '../social/social.module'
 import { getAccessSecret } from './auth-secrets'
 import { UserRefreshToken } from './entities/user-refresh-token.entity'
+import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { UserRefreshToken } from './entities/user-refresh-token.entity'
     }),
     UserModule,
     SocialModule,
+    ClickerChallengesModule,
     TypeOrmModule.forFeature([UserRefreshToken]),
     // Global so other modules (UserService) can inject CACHE_MANAGER
      // without re-registering — that would give them a separate cache

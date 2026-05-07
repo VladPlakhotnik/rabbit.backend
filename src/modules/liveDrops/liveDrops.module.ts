@@ -6,6 +6,7 @@ import { DotaSkin } from '../skins/dota-skin.entity'
 import { LiveDropsGateway } from './liveDrops.gateway'
 import { LiveDropsService } from './liveDrops.service'
 import { LiveDropBotsService } from './bots/bots.service'
+import { BotsModule } from '../bots/bots.module'
 
 // RedisModule is @Global, so REDIS_CLIENT/REDIS_SUBSCRIBER are injectable
 // here without explicit import. Case + SkinCase + DotaSkin repos are
@@ -18,7 +19,7 @@ import { LiveDropBotsService } from './bots/bots.service'
 // migrations/drop_live_drops_table.sql. The feed now lives entirely in
 // Redis (LPUSH + LTRIM in livedrop:feed, Pub/Sub fan-out on livedrop:new).
 @Module({
-  imports: [TypeOrmModule.forFeature([Case, SkinCase, DotaSkin])],
+  imports: [TypeOrmModule.forFeature([Case, SkinCase, DotaSkin]), BotsModule],
   providers: [LiveDropsGateway, LiveDropsService, LiveDropBotsService],
   exports: [LiveDropsService],
 })

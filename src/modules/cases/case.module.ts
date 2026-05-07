@@ -13,6 +13,7 @@ import { UserInventoryModule } from '../userInventory/userInventory.module'
 import { UserModule } from '../users/users.module'
 import { UserHistoryModule } from '../userHistory/userHistory.module'
 import { LiveDropsModule } from '../liveDrops/liveDrops.module'
+import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { LiveDropsModule } from '../liveDrops/liveDrops.module'
     UserModule,
     UserHistoryModule,
     LiveDropsModule,
+    ClickerChallengesModule,
     // Per-IP rate limit, applied to the controller via @UseGuards.
     // Default is generous (60/min covers normal browsing); openCase
     // tightens this further with a per-method @Throttle override.

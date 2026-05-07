@@ -17,6 +17,14 @@ interface RecordParams {
   ip?: string | null
 }
 
+export interface ActiveBoostRecoveryAudit {
+  boost_key: string
+  expires_at_ms: number
+  duration_sec: number
+  effect_type: string
+  effect_value: number
+}
+
 /**
  * Append-only writer for clicker_history. Every state-changing clicker
  * operation lands one row here BEFORE returning the response to the
@@ -63,5 +71,62 @@ export class ClickerHistoryService {
       )
       // Intentionally swallow — see class docs.
     }
+  }
+
+  async findLatestUnexpiredActiveBoost(
+    userId: number,
+    nowMs: number,
+  ): Promise<ActiveBoostRecoveryAudit | null> {
+    const row = await this.repo
+      .createQueryBuilder('h')
+      .where('h.user_id = :userId', { userId })
+      .andWhere('h.action = :action', { action: 'activate_boost' })
+      .andWhere("(h.state_after ->> 'expires_at_ms')::bigint > :nowMs", {
+        nowMs,
+      })
+      .orderBy('h.ts', 'DESC')
+      .limit(1)
+      .getOne()
+    if (!row) return null
+
+    const payload = row.payload ?? {}
+    const stateAfter = row.state_after ?? {}
+    const boostKey = this.stringField(payload, 'boost_key')
+    const effectType = this.stringField(payload, 'effect_type')
+    const expiresAtMs = this.numberField(stateAfter, 'expires_at_ms')
+    if (!boostKey || !effectType || expiresAtMs <= nowMs) return null
+    return {
+      boost_key: boostKey,
+      expires_at_ms: expiresAtMs,
+      duration_sec: this.numberField(payload, 'duration_sec'),
+      effect_type: effectType,
+      effect_value: this.recoveredEffectValue(payload, effectType),
+    }
+  }
+
+  private stringField(
+    source: Record<string, unknown>,
+    key: string,
+  ): string {
+    const value = source[key]
+    return typeof value === 'string' ? value : ''
+  }
+
+  private numberField(
+    source: Record<string, unknown>,
+    key: string,
+  ): number {
+    const raw = source[key]
+    const value = typeof raw === 'number' ? raw : Number(raw)
+    return Number.isFinite(value) ? value : 0
+  }
+
+  private recoveredEffectValue(
+    source: Record<string, unknown>,
+    effectType: string,
+  ): number {
+    const value = this.numberField(source, 'effect_value')
+    if (value > 0) return value
+    return effectType === 'multiplier' ? 10 : 0
   }
 }

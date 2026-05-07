@@ -11,6 +11,7 @@ import { ClickerLevelsCacheService } from './clicker-levels-cache.service'
 import { ClickerMetricsService } from './clicker-metrics.service'
 import { MAX_BATCH_PER_REQUEST } from '../constants/clicker.constants'
 import { clickerLog, clickerLogBlock } from '../clicker-debug'
+import { ClickerHistoryService } from '../../clickerHistory/clicker-history.service'
 
 /**
  * Result shape returned to the gateway / sibling services. All fields
@@ -59,6 +60,8 @@ export interface ClickResult {
   auto_clicker_pending_count: number
   /** Pending point value waiting to be claimed. */
   auto_clicker_pending_value: number
+  active_boost_key: string | null
+  active_boost_expires_at_ms: number
 }
 
 interface BootstrapLoader {
@@ -107,6 +110,7 @@ export class ClickerEngineService {
     private readonly flushService: ClickerFlushService,
     private readonly levelsCache: ClickerLevelsCacheService,
     private readonly metrics: ClickerMetricsService,
+    private readonly historyService: ClickerHistoryService,
   ) {}
 
   /**
@@ -301,6 +305,12 @@ export class ClickerEngineService {
         regen_per_sec_milli: user.energy_level.regen_per_sec_milli ?? 0,
       },
     )
+
+    const recoveredBoost =
+      await this.historyService.findLatestUnexpiredActiveBoost(userId, Date.now())
+    if (recoveredBoost) {
+      await this.redisService.restoreActiveBoost(userId, recoveredBoost)
+    }
   }
 
   /**
@@ -407,6 +417,8 @@ export class ClickerEngineService {
       crit_count: result.crit_count,
       apc: result.auto_clicker_pending_count,
       apv: result.auto_clicker_pending_value,
+      active_boost_key: result.active_boost_key,
+      active_boost_expires_at_ms: result.active_boost_expires_at_ms,
       ac_started_at_ms: result.auto_clicker_started_at_ms,
       ac_max_idle_sec: result.auto_clicker_max_idle_sec,
     })
@@ -428,6 +440,8 @@ export class ClickerEngineService {
       auto_clicker_max_idle_sec: result.auto_clicker_max_idle_sec,
       auto_clicker_pending_count: result.auto_clicker_pending_count,
       auto_clicker_pending_value: result.auto_clicker_pending_value,
+      active_boost_key: result.active_boost_key,
+      active_boost_expires_at_ms: result.active_boost_expires_at_ms,
     }
   }
 

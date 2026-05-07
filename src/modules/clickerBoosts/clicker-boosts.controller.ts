@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  Header,
+  Headers,
   Post,
   Req,
   UseGuards,
@@ -12,6 +14,7 @@ import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator'
 import type { Request } from 'express'
 import { ClickerBoostsService } from './clicker-boosts.service'
+import { CLICKER_CATALOG_CACHE_CONTROL } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 interface RequestWithUser extends Omit<Request, 'user'> {
   user: { id: number }
@@ -36,6 +39,7 @@ export class ClickerBoostsController {
   constructor(private readonly service: ClickerBoostsService) {}
 
   @Get()
+  @Header('Cache-Control', CLICKER_CATALOG_CACHE_CONTROL)
   @ApiOperation({ summary: 'Public catalog of available consumable boosts' })
   @ApiResponse({ status: 200, description: 'Boost catalog' })
   findCatalog() {
@@ -60,12 +64,16 @@ export class ClickerBoostsController {
   @Post('buy')
   @ApiOperation({ summary: 'Buy one copy of a boost' })
   @ApiResponse({ status: 200, description: 'New count + updated points' })
-  buy(@Req() req: RequestWithUser, @Body() body: BuyBoostDto) {
+  buy(
+    @Req() req: RequestWithUser,
+    @Body() body: BuyBoostDto,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
+  ) {
     const ip =
       (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
         req.socket?.remoteAddress) ??
       null
-    return this.service.buy(req.user.id, body.boost_key, ip)
+    return this.service.buy(req.user.id, body.boost_key, ip, idempotencyKey)
   }
 
   /**
@@ -80,11 +88,15 @@ export class ClickerBoostsController {
   @Post('activate')
   @ApiOperation({ summary: 'Activate one stockpiled copy of a boost' })
   @ApiResponse({ status: 200, description: 'Active deadline + new count' })
-  activate(@Req() req: RequestWithUser, @Body() body: BuyBoostDto) {
+  activate(
+    @Req() req: RequestWithUser,
+    @Body() body: BuyBoostDto,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
+  ) {
     const ip =
       (req.headers['x-forwarded-for']?.toString().split(',')[0]?.trim() ||
         req.socket?.remoteAddress) ??
       null
-    return this.service.activate(req.user.id, body.boost_key, ip)
+    return this.service.activate(req.user.id, body.boost_key, ip, idempotencyKey)
   }
 }

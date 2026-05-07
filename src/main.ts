@@ -105,6 +105,11 @@ async function bootstrap() {
         'X-Requested-With',
         'X-Forwarded-For',
         'X-Real-IP',
+        // Used by clicker buy/activate/open-case so browser retries
+        // cannot double-spend. Must be explicitly allowed because
+        // credentialed CORS preflight rejects wildcard headers.
+        'Idempotency-Key',
+        'X-Idempotency-Key',
       ],
       exposedHeaders: ['Content-Disposition', 'X-Total-Count'],
       preflightContinue: false,

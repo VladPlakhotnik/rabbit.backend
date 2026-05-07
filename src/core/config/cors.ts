@@ -11,6 +11,9 @@ const DEFAULT_DEV_ORIGINS = [
   'http://localhost:5173', // rabbit.frontend
   'http://localhost:7173', // rabbit-admin dev
   'http://localhost:7174', // rabbit-admin preview
+  'http://127.0.0.1:5173', // Vite printed local URL
+  'http://127.0.0.1:7173', // rabbit-admin dev via loopback
+  'http://127.0.0.1:7174', // rabbit-admin preview via loopback
   // HTTPS (yarn dev:https / dev:https:443). Browsers omit the port when
   // it's the default (443), so we keep both forms to be safe across UAs.
   'https://localhost',

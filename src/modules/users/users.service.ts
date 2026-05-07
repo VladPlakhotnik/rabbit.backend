@@ -508,7 +508,8 @@ export class UserService {
 
       const steamProfile = await this.getSteamProfile(user.steam_id.toString())
 
-      user.avatar = steamProfile.avatar
+      user.avatar =
+        steamProfile.avatarfull || steamProfile.avatarmedium || steamProfile.avatar
       await this.userRepository.save(user)
 
       return user

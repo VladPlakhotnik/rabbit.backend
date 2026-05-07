@@ -22,6 +22,7 @@ import { HistoryAction } from '../userHistory/enums/history-action.enum'
 import { LiveDropsService } from '../liveDrops/liveDrops.service'
 import type { LiveDropPayload } from '../liveDrops/types'
 import { User } from '../users/user.entity'
+import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
 
 // Delay between the openCase response and the LiveDrop fan-out. Matches
 // the frontend `CASE_OPEN_TOTAL_DURATION_MS` (4.5 spin + 3.0 landing +
@@ -87,6 +88,7 @@ export class CaseService {
     private readonly userInventoryService: UserInventoryService,
     private readonly userHistoryService: UserHistoryService,
     private readonly liveDropsService: LiveDropsService,
+    private readonly clickerChallengesService: ClickerChallengesService,
   ) {}
 
   /**
@@ -558,6 +560,23 @@ export class CaseService {
       historyDrops,
       caseEntity.game_type,
     )
+
+    try {
+      await this.clickerChallengesService.trackEvent(userId, {
+        type: 'case_opened',
+        caseId,
+        caseName: caseEntity.name,
+        gameType: caseEntity.game_type,
+        count,
+        totalCost,
+      })
+    } catch (err) {
+      this.logger.warn(
+        `clicker challenge tracking failed for case_opened user=${userId} case=${caseId}: ${
+          err instanceof Error ? err.message : err
+        }`,
+      )
+    }
 
     // LiveDrop publish is deferred until the spin animation finishes.
     // Every client (including the user who opened the case) sees the

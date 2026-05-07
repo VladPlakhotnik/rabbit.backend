@@ -10,6 +10,7 @@ import { UserInventoryModule } from '../userInventory/userInventory.module'
 import { UserHistoryModule } from '../userHistory/userHistory.module'
 import { LiveDropsModule } from '../liveDrops/liveDrops.module'
 import { UserModule } from '../users/users.module'
+import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { UserModule } from '../users/users.module'
     UserHistoryModule,
     LiveDropsModule,
     UserModule,
+    ClickerChallengesModule,
   ],
   providers: [ClickerCasesService],
   controllers: [ClickerCasesController],

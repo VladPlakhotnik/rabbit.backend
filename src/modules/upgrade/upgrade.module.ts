@@ -8,6 +8,7 @@ import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
+import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
         limit: 10,
       },
     ]),
+    ClickerChallengesModule,
   ],
   controllers: [UpgradeController],
   providers: [UpgradeService],

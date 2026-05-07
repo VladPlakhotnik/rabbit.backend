@@ -48,7 +48,7 @@
 //       \`idle_threshold_ms\` and there's no unclaimed bank.
 //   ac  autoclicker last simulated tick ms (state; advances by
 //       AUTO_TICK_MS each tick).
-//   lc  last manual click ms (state; only updated on accepted > 0).
+//   lc  last manual click attempt ms (state; updated after idle sim on req>0).
 //       Drives idle detection — autoclicker accumulation kicks in
 //       \`idle_threshold_ms\` after this.
 //   apc autoclicker pending click count (state). Grows during
@@ -61,6 +61,9 @@
 //   at  active boost expires-at ms (0 = no active boost)
 //   ae  active boost effect type ('infinite_energy' | 'multiplier' | '')
 //   av  active boost effect value (multiplier scalar; 0 for inf-energy)
+//   ib  infinite-energy token bucket balance (state). Limits custom clients
+//       from turning the buff into unbounded packet spam.
+//   it  infinite-energy token bucket last refill ms (state).
 //
 // Autoclicker model (replaces v3 "lazy collection" model): the autoclicker
 // is an idle-time bank. After the player has been silent for
@@ -70,8 +73,9 @@
 //   - if energy >= cost, debits cost, increments apc by 1, increments apv
 //     by cost. Otherwise skips (the regen still happened, so future ticks
 //     can resume).
-// Accumulation pauses the moment a manual click lands (lc updates, accepted
-// > 0). Cap is \`as + ad*1000\` — once the player passes that wall-clock
+// Accumulation pauses the moment a manual click request lands (lc updates
+// after the already-earned idle window is simulated). Cap is \`as + ad*1000\`
+// — once the player passes that wall-clock
 // instant, no more ticks are credited. Pending stays in apc/apv until the
 // player calls the claim script (clicker.lua.claim).
 //
@@ -112,11 +116,13 @@ local now   = tonumber(ARGV[3]) or 0
 local idle_threshold_ms = tonumber(ARGV[4]) or 60000
 
 local AUTO_TICK_MS = 3000
+local INF_ENERGY_RATE_PER_SEC = 20
+local INF_ENERGY_BURST = 40
 
 local h = redis.call('HMGET', ukey,
   'p','e','t','c','m','r','l','cl','el','nl','cc',
-  'as','ad','ac','at','ae','av',
-  'lc','apc','apv','tp')
+  'as','ad','ac','ab','at','ae','av',
+  'lc','apc','apv','tp','ib','it')
 
 local cost_raw = h[4]
 if cost_raw == false or cost_raw == nil then
@@ -138,13 +144,19 @@ local crit_chance = tonumber(h[11]) or 0
 local ac_start    = tonumber(h[12]) or 0
 local ac_max_idle = tonumber(h[13]) or 0
 local ac_last     = tonumber(h[14]) or 0
-local boost_at    = tonumber(h[15]) or 0
-local boost_ae    = h[16] or ''
-local boost_av    = tonumber(h[17]) or 0
-local lc          = tonumber(h[18]) or 0
-local apc         = tonumber(h[19]) or 0
-local apv         = tonumber(h[20]) or 0
-local tp          = tonumber(h[21]) or 0
+local boost_ab    = h[15] or ''
+local boost_at    = tonumber(h[16]) or 0
+local boost_ae    = h[17] or ''
+local boost_av    = tonumber(h[18]) or 0
+local lc          = tonumber(h[19]) or 0
+local apc         = tonumber(h[20]) or 0
+local apv         = tonumber(h[21]) or 0
+local tp          = tonumber(h[22]) or 0
+local inf_tokens  = tonumber(h[23])
+local inf_token_ts = tonumber(h[24]) or now
+if inf_tokens == nil then inf_tokens = INF_ENERGY_BURST end
+if inf_tokens < 0 then inf_tokens = 0 end
+if inf_tokens > INF_ENERGY_BURST then inf_tokens = INF_ENERGY_BURST end
 
 -- Snapshot BEFORE-state for the diagnostic return tuple. Cheap (just
 -- locals) and lets the caller log a clean before→after diff without
@@ -167,6 +179,10 @@ if crit_chance > 100 then crit_chance = 100 end
 local boost_active = boost_at > 0 and now < boost_at
 if boost_at > 0 and now >= boost_at then
   redis.call('HMSET', ukey, 'ab', '', 'at', '0', 'ae', '', 'av', '0')
+  boost_ab = ''
+  boost_at = 0
+  boost_ae = ''
+  boost_av = 0
 end
 local infinite_energy = boost_active and boost_ae == 'infinite_energy'
 local multiplier = 1
@@ -202,30 +218,16 @@ if energy < 0 then energy = 0 end
 if energy > max_e then energy = max_e end
 
 if req < 0 then req = 0 end
--- Infinite-energy boost: every requested click goes through, no energy
--- gate. Otherwise the energy budget caps acceptance as before.
-local accepted
-if infinite_energy then
-  accepted = req
-else
-  accepted = math.min(req, math.floor(energy / cost))
-end
-if accepted < 0 then accepted = 0 end
-
--- Manual click bookkeeping for idle detection. We only update lc for
--- ACCEPTED clicks (req > 0 with an empty energy budget would otherwise
--- count as activity even though nothing happened).
-if accepted > 0 then
-  lc = now
-end
+local accepted = 0
 
 -- Autoclicker idle accumulation.
 --
 -- Preconditions:
 --   - autoclicker unlocked (ac_max_idle > 0)
---   - this Lua call is a status check, not a manual click batch
---     (autoclicker pauses while the player is actively clicking;
---     advancing ac during req>0 would credit ticks for active time).
+--   - the player has crossed the idle threshold. Manual clicks are allowed
+--     to collect the idle window that happened BEFORE the click; after the
+--     sim below, req>0 stamps lc=now so active click spam cannot keep the
+--     idle window open.
 --
 -- Cycle lifecycle:
 --   - First idle: starts a new cycle (apc == 0 gate prevents starting
@@ -244,8 +246,8 @@ local auto_credited = 0
 
 -- Diagnostic snapshot of the autoclicker math the Lua chose. All
 -- four fields are 0 when the autoclicker block didn't engage at all
--- (e.g. ad=0 or accepted>0). When it did engage, they pin down
--- exactly which window was simulated — 'ticks_attempted' is the loop
+-- (e.g. ad=0 or the player has not been idle long enough). When it did engage,
+-- they pin down exactly which window was simulated — 'ticks_attempted' is the loop
 -- iteration count, 'ticks_succeeded' is how many actually credited
 -- (skipped iterations are when energy<cost). dbg_inner_regen_total
 -- sums energy regen credited inside the per-tick loop.
@@ -257,7 +259,7 @@ local dbg_ticks_succeeded = 0
 local dbg_inner_regen_total = 0
 local dbg_ac_started_this_call = 0
 local dbg_idle_dt_at_check = 0
-if ac_max_idle > 0 and accepted == 0 then
+if ac_max_idle > 0 then
   -- Clamp negative idle deltas to 0 — a client clock briefly behind the
   -- server (or two parallel calls with mismatched ts) can produce
   -- now < lc. The math below uses (now - lc) >= idle_threshold_ms,
@@ -283,41 +285,98 @@ if ac_max_idle > 0 and accepted == 0 then
     if sim_from < idle_floor then sim_from = idle_floor end
     dbg_sim_from = sim_from
 
-    -- Per-tick simulation. Each iteration: apply 3-sec regen window,
-    -- then attempt one click. Loop bounded by max_idle_sec / 3 — at
-    -- 8h cap that's 9600 iterations, well within Redis Lua limits
-    -- (single-millisecond execution).
+    -- Per-tick simulation. Common case is solved as a formula when
+    -- per-tick regen covers the click cost: all ticks succeed, so we
+    -- advance the bank and final energy in O(1). If regen is slower
+    -- than the click cost, fall back to the bounded loop because
+    -- success cadence depends on the carried energy residue.
     if sim_from < effective_now then
-      local tick_at = sim_from + AUTO_TICK_MS
-      while tick_at <= effective_now do
-        dbg_ticks_attempted = dbg_ticks_attempted + 1
-        if regen > 0 and energy < max_e then
-          local tick_regen = math.floor(AUTO_TICK_MS * regen / 1000000)
-          local headroom = max_e - energy
-          if tick_regen > headroom then tick_regen = headroom end
-          if tick_regen > 0 then
-            energy = energy + tick_regen
-            dbg_inner_regen_total = dbg_inner_regen_total + tick_regen
+      local attempted = math.floor((effective_now - sim_from) / AUTO_TICK_MS)
+      local tick_regen_full = 0
+      if regen > 0 then
+        tick_regen_full = math.floor(AUTO_TICK_MS * regen / 1000000)
+      end
+
+      if attempted > 0 and tick_regen_full >= cost and max_e >= cost then
+        dbg_ticks_attempted = dbg_ticks_attempted + attempted
+        dbg_ticks_succeeded = dbg_ticks_succeeded + attempted
+        dbg_inner_regen_total = dbg_inner_regen_total + attempted * tick_regen_full
+        apc = apc + attempted
+        apv = apv + attempted * cost
+        auto_credited = auto_credited + attempted
+        local net_per_tick = tick_regen_full - cost
+        local capped_final_energy = max_e - cost
+        if capped_final_energy < 0 then capped_final_energy = 0 end
+        energy = energy + attempted * net_per_tick
+        if energy > capped_final_energy then energy = capped_final_energy end
+        if energy < 0 then energy = 0 end
+        ac_last = sim_from + attempted * AUTO_TICK_MS
+      else
+        local tick_at = sim_from + AUTO_TICK_MS
+        while tick_at <= effective_now do
+          dbg_ticks_attempted = dbg_ticks_attempted + 1
+          if regen > 0 and energy < max_e then
+            local tick_regen = math.floor(AUTO_TICK_MS * regen / 1000000)
+            local headroom = max_e - energy
+            if tick_regen > headroom then tick_regen = headroom end
+            if tick_regen > 0 then
+              energy = energy + tick_regen
+              dbg_inner_regen_total = dbg_inner_regen_total + tick_regen
+            end
           end
+          if energy >= cost then
+            energy = energy - cost
+            -- Bank only — points/tp stay put. The claim Lua flips apv
+            -- into the spendable + lifetime balance atomically when
+            -- the player hits Continue. Banking-only here is what lets
+            -- the modal's "+N reward" actually change the balance:
+            -- crediting during sim made claim a no-op (UX trap) and
+            -- could trip the level-up gate while the player was idle.
+            apc = apc + 1
+            apv = apv + cost
+            auto_credited = auto_credited + 1
+            dbg_ticks_succeeded = dbg_ticks_succeeded + 1
+          end
+          ac_last = tick_at
+          tick_at = tick_at + AUTO_TICK_MS
         end
-        if energy >= cost then
-          energy = energy - cost
-          -- Bank only — points/tp stay put. The claim Lua flips apv
-          -- into the spendable + lifetime balance atomically when
-          -- the player hits Continue. Banking-only here is what lets
-          -- the modal's "+N reward" actually change the balance:
-          -- crediting during sim made claim a no-op (UX trap) and
-          -- could trip the level-up gate while the player was idle.
-          apc = apc + 1
-          apv = apv + cost
-          auto_credited = auto_credited + 1
-          dbg_ticks_succeeded = dbg_ticks_succeeded + 1
-        end
-        ac_last = tick_at
-        tick_at = tick_at + AUTO_TICK_MS
       end
     end
   end
+end
+
+-- Manual clicks happen after the idle-bank simulation above. This preserves
+-- the intuitive "I was away, then tapped once" case: the autoclicker gets the
+-- already-earned idle ticks, then the tap becomes the new activity anchor.
+-- Infinite-energy boost clicks are free, but still paced by a server-side
+-- token bucket.
+if infinite_energy then
+  if now > inf_token_ts then
+    local refill = (now - inf_token_ts) * INF_ENERGY_RATE_PER_SEC / 1000
+    if refill > 0 then
+      inf_tokens = inf_tokens + refill
+      if inf_tokens > INF_ENERGY_BURST then
+        inf_tokens = INF_ENERGY_BURST
+      end
+      inf_token_ts = now
+    end
+  elseif now < inf_token_ts then
+    -- Server time should be monotonic enough for normal operation, but keep
+    -- the bucket sane across clock corrections / test harness rewinds.
+    inf_token_ts = now
+  end
+  accepted = math.min(req, math.floor(inf_tokens))
+  inf_tokens = inf_tokens - accepted
+else
+  accepted = math.min(req, math.floor(energy / cost))
+end
+if accepted < 0 then accepted = 0 end
+
+-- Any manual click request is activity. Do this AFTER autoclicker simulation
+-- so the just-finished idle window is not lost, but custom clients cannot
+-- keep accruing idle ticks by spamming out-of-energy click attempts.
+if req > 0 then
+  lc = now
 end
 
 -- Crit rolls happen server-side. Seed is the microsecond half of redis
@@ -387,7 +446,9 @@ redis.call('HMSET', ukey,
   'as', tostring(ac_start),
   'ac', tostring(ac_last),
   'apc', tostring(apc),
-  'apv', tostring(apv))
+  'apv', tostring(apv),
+  'ib', tostring(inf_tokens),
+  'it', tostring(inf_token_ts))
 
 -- Mark dirty for the cron flush whenever something the player would
 -- notice changed: manual clicks (points/energy moved) OR autoclicker
@@ -426,6 +487,8 @@ return {
   apc,
   apv,
   tp,
+  boost_active and boost_ab or '',
+  boost_active and boost_at or 0,
   -- Diagnostic block — appended for the Ghost-mode debug logger.
   -- Always returned (cheap inside Redis Lua), but consumed only when
   -- CLICKER_DEBUG=true on the Node side. Order MUST match the

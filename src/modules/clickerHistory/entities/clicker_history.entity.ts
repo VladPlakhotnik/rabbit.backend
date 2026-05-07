@@ -21,6 +21,7 @@ export type ClickerHistoryAction =
   | 'activate_boost'
   | 'boost_expire'
   | 'grant_points'
+  | 'challenge_reward_claim'
 
 export type ClickerHistorySource = 'ws' | 'rest' | 'cron' | 'admin'
 

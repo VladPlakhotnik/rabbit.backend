@@ -2,7 +2,10 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   Post,
+  Header,
+  Headers,
   Body,
   Put,
   Delete,
@@ -19,6 +22,8 @@ import {
   UpdateClickerCaseDto,
   OpenClickerCaseDto,
 } from './dto'
+import { AdminMutation } from '../admin/decorators/admin-mutation.decorator'
+import { CLICKER_CATALOG_CACHE_CONTROL } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 interface RequestWithUser extends Omit<ExpressRequest, 'user'> {
   user: { id: number }
@@ -30,6 +35,7 @@ export class ClickerCasesController {
   constructor(private readonly clickerCasesService: ClickerCasesService) {}
 
   @Get()
+  @Header('Cache-Control', CLICKER_CATALOG_CACHE_CONTROL)
   @ApiOperation({ summary: 'Get all clicker cases' })
   @ApiQuery({ name: 'search', required: false, type: String })
   @ApiQuery({ name: 'game', required: false, enum: ['csgo', 'dota'] })
@@ -61,32 +67,40 @@ export class ClickerCasesController {
   // is parsed as a slug, not as an id (which would 404 because the value
   // isn't a number).
   @Get('slug/:slug')
+  @Header('Cache-Control', CLICKER_CATALOG_CACHE_CONTROL)
   @ApiOperation({ summary: 'Get clicker case by slug' })
   findBySlug(@Param('slug') slug: string) {
     return this.clickerCasesService.findCaseBySlug(slug)
   }
 
   @Get(':id')
+  @Header('Cache-Control', CLICKER_CATALOG_CACHE_CONTROL)
   @ApiOperation({ summary: 'Get clicker case by ID' })
-  findOne(@Param('id') id: number) {
+  findOne(@Param('id', ParseIntPipe) id: number) {
     return this.clickerCasesService.findCaseById(id)
   }
 
   @Post()
+  @AdminMutation({ entity: 'clicker_cases', action: 'create' })
   @ApiOperation({ summary: 'Create a new clicker case' })
   create(@Body() dto: CreateClickerCaseDto) {
     return this.clickerCasesService.createCase(dto)
   }
 
   @Put(':id')
+  @AdminMutation({ entity: 'clicker_cases', action: 'update' })
   @ApiOperation({ summary: 'Update a clicker case by ID' })
-  update(@Param('id') id: number, @Body() dto: UpdateClickerCaseDto) {
+  update(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateClickerCaseDto,
+  ) {
     return this.clickerCasesService.updateCase(id, dto)
   }
 
   @Delete(':id')
+  @AdminMutation({ entity: 'clicker_cases', action: 'delete' })
   @ApiOperation({ summary: 'Delete a clicker case by ID' })
-  remove(@Param('id') id: number) {
+  remove(@Param('id', ParseIntPipe) id: number) {
     return this.clickerCasesService.removeCase(id)
   }
 
@@ -104,7 +118,13 @@ export class ClickerCasesController {
     @Param('slug') slug: string,
     @Body() dto: OpenClickerCaseDto,
     @Request() req: RequestWithUser,
+    @Headers('idempotency-key') idempotencyKey?: string | string[],
   ) {
-    return this.clickerCasesService.openCase(slug, req.user.id, dto.count ?? 1)
+    return this.clickerCasesService.openCase(
+      slug,
+      req.user.id,
+      dto.count ?? 1,
+      idempotencyKey,
+    )
   }
 }

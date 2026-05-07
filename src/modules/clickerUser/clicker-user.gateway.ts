@@ -22,11 +22,19 @@ import {
   UpgradeAckPayload,
 } from './types/user-update.types'
 import type { JwtPayload } from '../auth/auth.service'
-import {
-  MAX_TS_DRIFT_MS,
-  UPGRADE_THROTTLE_MS,
-} from './constants/clicker.constants'
+import { UPGRADE_THROTTLE_MS } from './constants/clicker.constants'
 import { clickerLog } from './clicker-debug'
+
+const SOCKET_MAX_LIFETIME_MS = 30 * 60 * 1000
+const SOCKET_BUDGET_WINDOW_MS = 1000
+const SOCKET_MAX_PACKETS_PER_USER_WINDOW = 40
+const SOCKET_MAX_PAYLOAD_BYTES_PER_USER_WINDOW = 32 * 1024
+
+interface SocketBudget {
+  windowStartMs: number
+  packets: number
+  payloadBytes: number
+}
 
 @WebSocketGateway(GATEWAY_CONFIG)
 export class ClickerUserGateway
@@ -41,6 +49,12 @@ export class ClickerUserGateway
   // a per-socket cooldown only — the upgrade method itself is row-locked,
   // so this map is purely a perf shortcut.
   private readonly lastUpgradeAt = new WeakMap<Socket, number>()
+  private readonly socketExpiresAtMs = new WeakMap<Socket, number>()
+  private readonly socketExpiryTimers = new WeakMap<
+    Socket,
+    ReturnType<typeof setTimeout>
+  >()
+  private readonly userSocketBudget = new Map<number, SocketBudget>()
 
   constructor(
     private readonly clickerUserService: ClickerUserService,
@@ -92,6 +106,7 @@ export class ClickerUserGateway
     }
 
     this.socketUserId.set(client, userId)
+    this.trackSocketLifetime(client, payload)
     clickerLog('ws.connect', {
       socket: client.id,
       user: userId,
@@ -127,6 +142,8 @@ export class ClickerUserGateway
         autoClickerMaxIdleSec: state.auto_clicker_max_idle_sec,
         autoClickerPendingCount: state.auto_clicker_pending_count,
         autoClickerPendingValue: state.auto_clicker_pending_value,
+        activeBoostKey: state.active_boost_key,
+        activeBoostExpiresAtMs: state.active_boost_expires_at_ms,
       }
       clickerLog('ws.out', {
         socket: client.id,
@@ -161,6 +178,11 @@ export class ClickerUserGateway
   handleDisconnect(client: Socket): void {
     const userId = this.socketUserId.get(client)
     clickerLog('ws.disconnect', { socket: client.id, user: userId ?? null })
+    const timer = this.socketExpiryTimers.get(client)
+    if (timer) clearTimeout(timer)
+    this.socketExpiryTimers.delete(client)
+    this.socketExpiresAtMs.delete(client)
+    this.lastUpgradeAt.delete(client)
     this.socketUserId.delete(client)
   }
 
@@ -178,6 +200,8 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(client, userId, EVENTS.CLICK, body)
+    if (guard) return guard
 
     try {
       const count = this.coerceCount(body)
@@ -191,7 +215,7 @@ export class ClickerUserGateway
         })
         return this.errorAck(client, 'count must be a positive number')
       }
-      const nowMs = this.coerceTs(body)
+      const nowMs = this.serverNow(body)
       clickerLog('ws.in', {
         socket: client.id,
         user: userId,
@@ -224,6 +248,8 @@ export class ClickerUserGateway
         autoClickerMaxIdleSec: result.auto_clicker_max_idle_sec,
         autoClickerPendingCount: result.auto_clicker_pending_count,
         autoClickerPendingValue: result.auto_clicker_pending_value,
+        activeBoostKey: result.active_boost_key,
+        activeBoostExpiresAtMs: result.active_boost_expires_at_ms,
       }
       clickerLog('ws.out', {
         socket: client.id,
@@ -259,6 +285,8 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(client, userId, EVENTS.UPGRADE_CLICK)
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -286,6 +314,8 @@ export class ClickerUserGateway
         autoClickerMaxIdleSec: fresh.auto_clicker_max_idle_sec,
         autoClickerPendingCount: fresh.auto_clicker_pending_count,
         autoClickerPendingValue: fresh.auto_clicker_pending_value,
+        activeBoostKey: fresh.active_boost_key,
+        activeBoostExpiresAtMs: fresh.active_boost_expires_at_ms,
       }
       clickerLog('ws.out', {
         socket: client.id,
@@ -316,6 +346,8 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(client, userId, EVENTS.UPGRADE_ENERGY)
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -341,6 +373,8 @@ export class ClickerUserGateway
         autoClickerMaxIdleSec: fresh.auto_clicker_max_idle_sec,
         autoClickerPendingCount: fresh.auto_clicker_pending_count,
         autoClickerPendingValue: fresh.auto_clicker_pending_value,
+        activeBoostKey: fresh.active_boost_key,
+        activeBoostExpiresAtMs: fresh.active_boost_expires_at_ms,
       }
       clickerLog('ws.out', {
         socket: client.id,
@@ -372,6 +406,12 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(
+      client,
+      userId,
+      EVENTS.UPGRADE_AUTO_CLICKER,
+    )
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -430,6 +470,12 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(
+      client,
+      userId,
+      EVENTS.UPGRADE_CRIT_CLICK,
+    )
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -488,6 +534,8 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(client, userId, EVENTS.CLAIM_AUTO_CLICKER)
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -546,6 +594,8 @@ export class ClickerUserGateway
       })
       return this.errorAck(client, 'Not authenticated')
     }
+    const guard = this.guardSocketEvent(client, userId, EVENTS.GET_STATE)
+    if (guard) return guard
     clickerLog('ws.in', {
       socket: client.id,
       user: userId,
@@ -570,6 +620,8 @@ export class ClickerUserGateway
         autoClickerMaxIdleSec: state.auto_clicker_max_idle_sec,
         autoClickerPendingCount: state.auto_clicker_pending_count,
         autoClickerPendingValue: state.auto_clicker_pending_value,
+        activeBoostKey: state.active_boost_key,
+        activeBoostExpiresAtMs: state.active_boost_expires_at_ms,
       }
       clickerLog('ws.out', {
         socket: client.id,
@@ -600,16 +652,86 @@ export class ClickerUserGateway
     return Math.max(0, Math.floor(n))
   }
 
-  private coerceTs(body: unknown): number {
+  private serverNow(_body: unknown): number {
+    // Clicker economy time is authoritative on the server. The client may
+    // still send ts for telemetry/debugging, but boost expiry, energy regen,
+    // and autoclicker idle windows must never depend on it.
+    return Date.now()
+  }
+
+  private guardSocketEvent(
+    client: Socket,
+    userId: number,
+    event: string,
+    body?: unknown,
+  ): { error: string } | null {
     const now = Date.now()
-    if (body == null || typeof body !== 'object') return now
-    const raw = (body as { ts?: unknown }).ts
-    const n = typeof raw === 'string' ? Number(raw) : raw
-    if (typeof n !== 'number' || !Number.isFinite(n)) return now
-    // Reject anything implausibly far from server clock — energy regen is
-    // anchored to this timestamp inside Lua.
-    if (Math.abs(now - n) > MAX_TS_DRIFT_MS) return now
-    return n
+    const expiresAt = this.socketExpiresAtMs.get(client) ?? 0
+    if (expiresAt <= now) {
+      const ack = this.errorAck(client, 'Session expired')
+      client.disconnect(true)
+      return ack
+    }
+
+    const payloadBytes = this.payloadSize(body)
+    const budget =
+      this.userSocketBudget.get(userId) ?? {
+        windowStartMs: now,
+        packets: 0,
+        payloadBytes: 0,
+      }
+    if (now - budget.windowStartMs >= SOCKET_BUDGET_WINDOW_MS) {
+      budget.windowStartMs = now
+      budget.packets = 0
+      budget.payloadBytes = 0
+    }
+    budget.packets += 1
+    budget.payloadBytes += payloadBytes
+    this.userSocketBudget.set(userId, budget)
+
+    if (
+      budget.packets > SOCKET_MAX_PACKETS_PER_USER_WINDOW ||
+      budget.payloadBytes > SOCKET_MAX_PAYLOAD_BYTES_PER_USER_WINDOW
+    ) {
+      clickerLog('ws.in', {
+        socket: client.id,
+        user: userId,
+        event,
+        op: 'budget-rejected',
+        packets: budget.packets,
+        payload_bytes: budget.payloadBytes,
+      })
+      return this.errorAck(client, 'Too many websocket requests')
+    }
+
+    return null
+  }
+
+  private trackSocketLifetime(client: Socket, payload: JwtPayload): void {
+    const now = Date.now()
+    const jwtExpiresAtMs =
+      typeof payload.exp === 'number'
+        ? payload.exp * 1000
+        : now + SOCKET_MAX_LIFETIME_MS
+    const expiresAt = Math.min(jwtExpiresAtMs, now + SOCKET_MAX_LIFETIME_MS)
+    this.socketExpiresAtMs.set(client, expiresAt)
+
+    const delay = Math.max(1, expiresAt - now)
+    const timer = setTimeout(() => {
+      client.emit(EVENTS.ERROR, { message: 'Session expired' })
+      client.disconnect(true)
+    }, delay)
+    timer.unref?.()
+    this.socketExpiryTimers.set(client, timer)
+  }
+
+  private payloadSize(body: unknown): number {
+    if (body == null) return 0
+    try {
+      return Buffer.byteLength(JSON.stringify(body), 'utf8')
+    } catch {
+      return SOCKET_MAX_PAYLOAD_BYTES_PER_USER_WINDOW + 1
+    }
   }
 
   /**

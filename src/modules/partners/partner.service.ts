@@ -6,7 +6,8 @@ import {
   Logger,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { DataSource, Repository } from 'typeorm'
+import { DataSource, EntityManager, Repository } from 'typeorm'
+import { PartnerLevelConfig } from './entities/partnerLevel.entity'
 import { PartnerProfile, PartnerLevel } from './entities/partnerProfile.entity'
 import {
   PromoCode,
@@ -28,10 +29,28 @@ export interface PartnerDashboard {
   code: string
   referral_balance: number
   total_earned: number
+  /**
+   * Cumulative deposits made by the partner's referrals. Drives the
+   * progress bar to the next tier — the frontend renders
+   * `total_referrals_deposit / next_min_referrals_deposit`.
+   */
+  total_referrals_deposit: number
   active_referrals: number
+  /** Current tier's payout rate (% of referral deposits credited). */
+  your_percentage: number
+  /** Current tier's bonus rate shown to incoming referrals. */
+  referral_percentage: number
   can_change_code: boolean
   next_code_change_at: Date | null
   code_locked_by_admin: boolean
+}
+
+export interface PartnerLevelDto {
+  level: PartnerLevel
+  name: string
+  min_referrals_deposit: number
+  your_percentage: number
+  referral_percentage: number
 }
 
 export interface ReferralListItem {
@@ -48,6 +67,8 @@ export class PartnerService {
   constructor(
     @InjectRepository(PartnerProfile)
     private readonly partnerProfileRepository: Repository<PartnerProfile>,
+    @InjectRepository(PartnerLevelConfig)
+    private readonly partnerLevelRepository: Repository<PartnerLevelConfig>,
     @InjectRepository(PromoCode)
     private readonly promoCodeRepository: Repository<PromoCode>,
     @InjectRepository(User)
@@ -56,15 +77,118 @@ export class PartnerService {
   ) {}
 
   /**
+   * Returns the rate card — every tier ordered by `level` ascending.
+   * Public lookup the frontend needs to render the level grid + the
+   * progress bar's "next tier threshold" without duplicating the
+   * numbers in app code. Caller side: the controller exposes this as
+   * `GET /partners/levels`.
+   *
+   * Lazy-seeded fallback: an empty table would make the frontend show
+   * a blank rate card. The migration seeds the initial 5 rows on
+   * first deploy, but this method also seeds in-memory if a corrupted
+   * DB came up empty (e.g. truncated by accident). The fallback is
+   * the same data the migration writes.
+   */
+  async getLevels(): Promise<PartnerLevelDto[]> {
+    const rows = await this.partnerLevelRepository.find({
+      order: { level: 'ASC' },
+    })
+    return rows.map(row => ({
+      level: row.level as PartnerLevel,
+      name: row.name,
+      min_referrals_deposit: row.min_referrals_deposit,
+      your_percentage: row.your_percentage,
+      referral_percentage: row.referral_percentage,
+    }))
+  }
+
+  /**
+   * Recomputes a profile's level based on `total_referrals_deposit`.
+   *
+   * Picks the highest tier whose `min_referrals_deposit` is ≤ the
+   * partner's running total. Idempotent — calling on an
+   * already-correct profile is a no-op (no SAVE if level didn't move).
+   *
+   * Called from:
+   *   - `getDashboard` (lazy refresh on view, cheap),
+   *   - the future deposit-success hook (drops level update inline
+   *     with the balance/total_earned credit),
+   *   - any admin tool that mutates `total_referrals_deposit`.
+   *
+   * Pass `manager` to participate in an outer transaction; without it,
+   * the method opens its own implicit query.
+   */
+  async recomputeLevel(
+    userId: number,
+    manager?: EntityManager,
+  ): Promise<PartnerLevel> {
+    const profileRepo = manager
+      ? manager.getRepository(PartnerProfile)
+      : this.partnerProfileRepository
+    const levelRepo = manager
+      ? manager.getRepository(PartnerLevelConfig)
+      : this.partnerLevelRepository
+
+    const profile = await profileRepo.findOne({ where: { user_id: userId } })
+    if (!profile) {
+      // No profile yet — caller should have called getOrCreateProfile.
+      // Return Bronze as the conservative default; this avoids a
+      // spurious save when the dashboard route lazy-creates the row
+      // for the first time.
+      return PartnerLevel.BRONZE
+    }
+
+    // Levels in ascending order; find the highest tier the partner
+    // qualifies for. Threshold is inclusive (≥) so 500.00 hits Silver.
+    const levels = await levelRepo.find({ order: { level: 'ASC' } })
+    let nextLevel: PartnerLevel = PartnerLevel.BRONZE
+    for (const tier of levels) {
+      if (profile.total_referrals_deposit >= tier.min_referrals_deposit) {
+        nextLevel = tier.level as PartnerLevel
+      } else {
+        break
+      }
+    }
+
+    if (profile.level !== nextLevel) {
+      profile.level = nextLevel
+      await profileRepo.save(profile)
+      this.logger.log(
+        `Partner ${userId} level recomputed to ${nextLevel} ` +
+          `(total_referrals_deposit=${profile.total_referrals_deposit})`,
+      )
+    }
+
+    return nextLevel
+  }
+
+  /**
    * Returns the partner dashboard for `userId`, creating profile + referral code on first access.
+   *
+   * Re-evaluates the partner's level on every load — cheap (a single
+   * indexed read on partner_levels + a no-op save when the level is
+   * already correct) and means the dashboard always reflects current
+   * level for the current `total_referrals_deposit`. The future
+   * deposit-success hook will also call `recomputeLevel` directly so
+   * level-ups happen the moment the threshold is crossed; this lazy
+   * pass is a safety net against drift.
    */
   async getDashboard(userId: number): Promise<PartnerDashboard> {
     const { profile, code } = await this.getOrCreateProfile(userId)
-    const activeReferrals = await this.userRepository.count({
-      where: { referral_parent_id: userId },
-    })
+    await this.recomputeLevel(userId)
+    // Re-read the profile post-recompute so the dashboard reflects any
+    // level move. Single round-trip — find by PK is sub-ms.
+    const fresh =
+      (await this.partnerProfileRepository.findOne({
+        where: { user_id: userId },
+      })) ?? profile
 
-    return this.toDashboard(profile, code, activeReferrals)
+    const [activeReferrals, levels] = await Promise.all([
+      this.userRepository.count({ where: { referral_parent_id: userId } }),
+      this.getLevels(),
+    ])
+
+    return this.toDashboard(fresh, code, activeReferrals, levels)
   }
 
   /**
@@ -135,10 +259,11 @@ export class PartnerService {
 
     if (existingCode.code.toUpperCase() === code) {
       // No-op, just return current state
-      const activeReferrals = await this.userRepository.count({
-        where: { referral_parent_id: userId },
-      })
-      return this.toDashboard(profile, existingCode, activeReferrals)
+      const [activeReferrals, levels] = await Promise.all([
+        this.userRepository.count({ where: { referral_parent_id: userId } }),
+        this.getLevels(),
+      ])
+      return this.toDashboard(profile, existingCode, activeReferrals, levels)
     }
 
     await this.dataSource.transaction(async manager => {
@@ -159,10 +284,11 @@ export class PartnerService {
       await manager.getRepository(PartnerProfile).save(profile)
     })
 
-    const activeReferrals = await this.userRepository.count({
-      where: { referral_parent_id: userId },
-    })
-    return this.toDashboard(profile, existingCode, activeReferrals)
+    const [activeReferrals, levels] = await Promise.all([
+      this.userRepository.count({ where: { referral_parent_id: userId } }),
+      this.getLevels(),
+    ])
+    return this.toDashboard(profile, existingCode, activeReferrals, levels)
   }
 
   /**
@@ -362,6 +488,7 @@ export class PartnerService {
     profile: PartnerProfile,
     code: PromoCode,
     activeReferrals: number,
+    levels: PartnerLevelDto[],
   ): PartnerDashboard {
     const nextChangeAt = this.computeNextCodeChangeAt(profile)
     const cooldownActive = !!nextChangeAt && nextChangeAt > new Date()
@@ -370,12 +497,22 @@ export class PartnerService {
       !profile.code_locked_by_admin &&
       !cooldownActive
 
+    // Lookup the partner's tier in the rate card. Falls back to zero
+    // rates when the tier is missing — covers the corner case of a
+    // truncated `partner_levels` table or a brand-new level enum value
+    // not yet seeded. The UI gracefully renders "0%" rather than
+    // crashing on undefined.
+    const currentLevelConfig = levels.find(l => l.level === profile.level)
+
     return {
       level: profile.level,
       code: code.code,
       referral_balance: profile.referral_balance,
       total_earned: profile.total_earned,
+      total_referrals_deposit: profile.total_referrals_deposit,
       active_referrals: activeReferrals,
+      your_percentage: currentLevelConfig?.your_percentage ?? 0,
+      referral_percentage: currentLevelConfig?.referral_percentage ?? 0,
       can_change_code: canChangeCode,
       next_code_change_at: cooldownActive ? nextChangeAt : null,
       code_locked_by_admin: profile.code_locked_by_admin,

@@ -1,6 +1,7 @@
-import { Controller, Get } from '@nestjs/common'
+import { Controller, Get, Header } from '@nestjs/common'
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import { ClickerAutoClickerLevelsService } from './clicker-auto-clicker-levels.service'
+import { CLICKER_CATALOG_CACHE_CONTROL } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 /**
  * Public read-only catalog endpoint. Anyone (auth or not) can ask
@@ -17,6 +18,7 @@ export class ClickerAutoClickerLevelsController {
   ) {}
 
   @Get()
+  @Header('Cache-Control', CLICKER_CATALOG_CACHE_CONTROL)
   @ApiOperation({ summary: 'List all auto-clicker upgrade tiers' })
   @ApiResponse({ status: 200, description: 'Auto-clicker level catalog' })
   findAll() {

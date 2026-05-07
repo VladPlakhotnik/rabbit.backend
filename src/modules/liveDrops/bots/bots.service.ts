@@ -13,7 +13,11 @@ import { CsgoSkin } from '../../skins/csgo-skin.entity'
 import { DotaSkin } from '../../skins/dota-skin.entity'
 import { LiveDropsService } from '../liveDrops.service'
 import type { LiveDropPayload } from '../types'
-import { BOT_NAMES } from './bot-names'
+import { BotProfileService } from '../../bots/bot-profile.service'
+import {
+  BotProfileSnapshot,
+  pickBotStake,
+} from '../../bots/bot-behavior.logic'
 
 // Pacing — uniform 1.5–2.6s. Mean ~2.05s gives ~29 drops/min: tight
 // enough that the feed always feels active without overwhelming the eye.
@@ -80,6 +84,7 @@ export class LiveDropBotsService
 
   constructor(
     private readonly liveDropsService: LiveDropsService,
+    private readonly botProfileService: BotProfileService,
     @InjectRepository(Case)
     private readonly caseRepository: Repository<Case>,
     @InjectRepository(SkinCase)
@@ -134,7 +139,14 @@ export class LiveDropBotsService
     // can buy looks broken.
     const cases = await this.caseRepository
       .createQueryBuilder('cs')
+      .innerJoin(
+        SkinCase,
+        'skin_case',
+        'skin_case.case_id = cs.id AND skin_case.is_drop_out = true',
+      )
       .where('cs.remaining_count > 0')
+      .andWhere('cs.is_available = true')
+      .distinct(true)
       .getMany()
 
     this.casesCache = { cases, loadedAt: now }
@@ -154,7 +166,9 @@ export class LiveDropBotsService
    *   - If the rolled game has no available cases, switch to the other.
    *   - If neither game has cases, return null (caller skips this tick).
    */
-  private async pickRandomCase(): Promise<Case | null> {
+  private async pickRandomCase(
+    profile: BotProfileSnapshot,
+  ): Promise<Case | null> {
     const cases = await this.getCachedCases()
     if (cases.length === 0) return null
 
@@ -167,7 +181,13 @@ export class LiveDropBotsService
     // Primary pool first, fall back to the other if it's empty.
     const primary = rolled === 'csgo' ? csgoCases : dotaCases
     const fallback = rolled === 'csgo' ? dotaCases : csgoCases
-    const pool = primary.length > 0 ? primary : fallback
+    let pool = primary.length > 0 ? primary : fallback
+    const budget = pickBotStake(profile, 'cases')
+    const affordable = pool.filter(c => Number(c.case_price) <= budget * 1.35)
+
+    if (affordable.length > 0) {
+      pool = affordable
+    }
 
     if (pool.length === 0) return null
     return pool[Math.floor(Math.random() * pool.length)]
@@ -244,24 +264,18 @@ export class LiveDropBotsService
     return skinCases[skinCases.length - 1]
   }
 
-  private pickBotIdentity(): { username: string; avatar: string } {
-    const username = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]
-    // DiceBear renders a deterministic avatar from the seed — same name
-    // always gets the same face, so the "user" feels persistent.
-    const avatar = `https://api.dicebear.com/7.x/adventurer/png?seed=${encodeURIComponent(
-      username,
-    )}&size=64`
-    return { username, avatar }
-  }
-
   private buildPayload(
     skinCase: SkinCase,
     caseEntity: Case,
-    identity: { username: string; avatar: string },
+    identity: BotProfileSnapshot,
   ): LiveDropPayload {
     return {
       id: crypto.randomUUID(),
-      user: { id: null, username: identity.username, avatar: identity.avatar },
+      user: {
+        id: identity.id,
+        username: identity.display_name,
+        avatar: identity.avatar,
+      },
       skin: {
         id: skinCase.skin.id,
         name: skinCase.skin.name,
@@ -292,7 +306,13 @@ export class LiveDropBotsService
     if (this.isShuttingDown) return
 
     try {
-      const caseEntity = await this.pickRandomCase()
+      const identity = await this.botProfileService.pickBotProfile()
+      if (!identity) {
+        this.logger.warn('No bot profiles available - skipping bot tick')
+        return
+      }
+
+      const caseEntity = await this.pickRandomCase(identity)
       if (!caseEntity) {
         this.logger.warn('No active cases available — skipping bot tick')
         return
@@ -306,7 +326,6 @@ export class LiveDropBotsService
         return
       }
 
-      const identity = this.pickBotIdentity()
       const isBurst = Math.random() < BURST_PROBABILITY
       const dropCount = isBurst
         ? BURST_MIN_COUNT +

@@ -19,7 +19,9 @@
     "sync:dota:catalog": "ts-node --transpile-only scripts/sync-dota-catalog-once.ts",
     "sync:csgo:class-instance": "ts-node --transpile-only scripts/sync-csgo-class-instance-once.ts",
     "sync:dota:class-instance": "ts-node --transpile-only scripts/sync-dota-class-instance-once.ts",
-    "clicker:redis:clear": "ts-node --transpile-only scripts/clear-clicker-redis.ts"
+    "clicker:redis:clear": "ts-node --transpile-only scripts/clear-clicker-redis.ts",
+    "clicker:load": "node scripts/clicker-ws-load-test.js",
+    "clicker:security:smoke": "node scripts/clicker-security-smoke.js"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",

@@ -2,32 +2,54 @@ import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { ClickerLevel } from './entities/clicker_level.entity'
+import { CLICKER_CATALOG_CACHE_TTL_MS } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 @Injectable()
 export class ClickerLevelsService {
+  private allCache: { expiresAt: number; value: ClickerLevel[] } | null = null
+
   constructor(
     @InjectRepository(ClickerLevel)
     private readonly levelRepository: Repository<ClickerLevel>,
   ) {}
 
-  findAll() {
-    return this.levelRepository.find()
+  async findAll() {
+    if (this.allCache && this.allCache.expiresAt > Date.now()) {
+      return this.allCache.value
+    }
+    const value = await this.levelRepository.find()
+    this.allCache = {
+      value,
+      expiresAt: Date.now() + CLICKER_CATALOG_CACHE_TTL_MS,
+    }
+    return value
   }
 
-  findById(id: number) {
-    return this.levelRepository.findOne({ where: { id } })
+  async findById(id: number) {
+    const cached = (await this.findAll()).find(level => level.id === id)
+    return cached ?? this.levelRepository.findOne({ where: { id } })
   }
 
-  create(data: Partial<ClickerLevel>) {
+  async create(data: Partial<ClickerLevel>) {
     const level = this.levelRepository.create(data)
-    return this.levelRepository.save(level)
+    const result = await this.levelRepository.save(level)
+    this.invalidateCache()
+    return result
   }
 
-  update(id: number, data: Partial<ClickerLevel>) {
-    return this.levelRepository.update(id, data)
+  async update(id: number, data: Partial<ClickerLevel>) {
+    const result = await this.levelRepository.update(id, data)
+    this.invalidateCache()
+    return result
   }
 
-  remove(id: number) {
-    return this.levelRepository.delete(id)
+  async remove(id: number) {
+    const result = await this.levelRepository.delete(id)
+    this.invalidateCache()
+    return result
+  }
+
+  private invalidateCache(): void {
+    this.allCache = null
   }
 }

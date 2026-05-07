@@ -1,12 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger'
-import { IsNumber } from 'class-validator'
+import { Type } from 'class-transformer'
+import { IsInt } from 'class-validator'
 
 export class CashoutDto {
   @ApiProperty({
-    description: 'ID игровой сессии',
+    description: 'Mines game session id',
     example: 1,
   })
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
   game_session_id!: number
 }
-

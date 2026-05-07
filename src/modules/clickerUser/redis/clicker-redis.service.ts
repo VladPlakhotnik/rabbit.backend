@@ -3,6 +3,7 @@ import Redis from 'ioredis'
 import { REDIS_CLIENT } from '../../../core/redis/redis.constants'
 import { clickerLog, clickerLogBlock } from '../clicker-debug'
 import { CLICK_LUA } from './clicker.lua'
+import { deriveRestoredAutoClickerCycle } from './clicker-auto-clicker.logic'
 import { CLAIM_AUTO_LUA } from './clicker.lua.claim-auto'
 import { DEDUCT_LUA } from './clicker.deduct.lua'
 import { ACTIVATE_BOOST_LUA } from './clicker.activate-boost.lua'
@@ -104,9 +105,11 @@ export interface ClickerStateSnapshot {
    * Bank-style autoclicker state — flushed to Postgres alongside the
    * regular state so a Redis eviction doesn't lose the player's
    * pending earnings.
-   */
+  */
   auto_clicker_pending_count: number | null
   auto_clicker_pending_value: number | null
+  active_boost_key: string | null
+  active_boost_expires_at_ms: number | null
 }
 
 export interface LuaClickResult {
@@ -145,6 +148,10 @@ export interface LuaClickResult {
   auto_clicker_pending_count: number
   /** Pending click value (points) waiting to be claimed. */
   auto_clicker_pending_value: number
+  /** Active consumable boost key. null when no server-side boost is running. */
+  active_boost_key: string | null
+  /** Absolute active boost deadline in ms-since-epoch. 0 when inactive. */
+  active_boost_expires_at_ms: number
   /**
    * Diagnostic block populated from the Lua return tuple. Used by the
    * Ghost-mode debug logger to surface every internal decision the
@@ -617,6 +624,10 @@ export class ClickerRedisService {
       const n = typeof v === 'string' ? Number(v) : v
       return Number.isFinite(n) ? Number(n) : 0
     }
+    const hasActiveBoostSlice = arr.length >= 41
+    const dbgOffset = hasActiveBoostSlice ? 20 : 18
+    const activeBoostKeyRaw = hasActiveBoostSlice ? String(arr[18] ?? '') : ''
+    const activeBoostExpiresAtMs = hasActiveBoostSlice ? num(19) : 0
     return {
       meta_missing: num(0) === 1,
       accepted: num(1),
@@ -636,28 +647,33 @@ export class ClickerRedisService {
       auto_clicker_pending_count: num(15),
       auto_clicker_pending_value: num(16),
       total_points: num(17),
+      active_boost_key:
+        activeBoostKeyRaw.length > 0 && activeBoostExpiresAtMs > 0
+          ? activeBoostKeyRaw
+          : null,
+      active_boost_expires_at_ms: activeBoostExpiresAtMs,
       dbg: {
-        points_before: num(18),
-        energy_before: num(19),
-        last_ts_before: num(20),
-        lc_before: num(21),
-        ac_start_before: num(22),
-        ac_last_before: num(23),
-        apc_before: num(24),
-        apv_before: num(25),
-        tp_before: num(26),
-        outer_regen_dt_ms: num(27),
-        outer_regen_computed_raw: num(28),
-        outer_regen_units_applied: num(29),
-        outer_regen_ms_used: num(30),
-        idle_dt_at_check: num(31),
-        ac_started_this_call: num(32),
-        cap_at: num(33),
-        effective_now_used: num(34),
-        sim_from_used: num(35),
-        ticks_attempted: num(36),
-        ticks_succeeded: num(37),
-        inner_regen_total: num(38),
+        points_before: num(dbgOffset),
+        energy_before: num(dbgOffset + 1),
+        last_ts_before: num(dbgOffset + 2),
+        lc_before: num(dbgOffset + 3),
+        ac_start_before: num(dbgOffset + 4),
+        ac_last_before: num(dbgOffset + 5),
+        apc_before: num(dbgOffset + 6),
+        apv_before: num(dbgOffset + 7),
+        tp_before: num(dbgOffset + 8),
+        outer_regen_dt_ms: num(dbgOffset + 9),
+        outer_regen_computed_raw: num(dbgOffset + 10),
+        outer_regen_units_applied: num(dbgOffset + 11),
+        outer_regen_ms_used: num(dbgOffset + 12),
+        idle_dt_at_check: num(dbgOffset + 13),
+        ac_started_this_call: num(dbgOffset + 14),
+        cap_at: num(dbgOffset + 15),
+        effective_now_used: num(dbgOffset + 16),
+        sim_from_used: num(dbgOffset + 17),
+        ticks_attempted: num(dbgOffset + 18),
+        ticks_succeeded: num(dbgOffset + 19),
+        inner_regen_total: num(dbgOffset + 20),
       },
     }
   }
@@ -690,6 +706,10 @@ export class ClickerRedisService {
     const fallbackRegenMilli = Math.max(0, Math.floor(ENERGY_REGEN_PER_SEC * 1000))
     const regenMilli =
       meta.regen_per_sec_milli > 0 ? meta.regen_per_sec_milli : fallbackRegenMilli
+    const restoredAutoClickerCycle = deriveRestoredAutoClickerCycle(
+      state.auto_clicker_pending_count,
+      state.ts,
+    )
     const pipe = this.redis.multi()
     pipe.hsetnx(ukey, 'p', String(state.points))
     // Lifetime tally — restored from PG. The Lua hot path bumps it
@@ -707,10 +727,12 @@ export class ClickerRedisService {
     // `lc` (last manual click) seeds at the ts we just read — treats
     // the bootstrap moment as "just clicked", so a freshly-loaded user
     // doesn't immediately start accumulating before they've actually
-    // gone idle. Same for `as`/`ac` which start at 0.
+    // gone idle. If PG restores a non-empty pending bank, rebuild the
+    // cycle timestamps from the saved count so the claim modal doesn't
+    // show real earnings as "0 seconds".
     pipe.hsetnx(ukey, 'lc', String(state.ts))
-    pipe.hsetnx(ukey, 'as', '0')
-    pipe.hsetnx(ukey, 'ac', '0')
+    pipe.hsetnx(ukey, 'as', String(restoredAutoClickerCycle.startedAtMs))
+    pipe.hsetnx(ukey, 'ac', String(restoredAutoClickerCycle.lastTickAtMs))
     // Test override for the autoclicker cap — see the env-parser at
     // the top of this file. 0 (the default) means "use the per-level
     // value as-is".
@@ -747,6 +769,8 @@ export class ClickerRedisService {
           t: state.ts,
           apc: state.auto_clicker_pending_count,
           apv: state.auto_clicker_pending_value,
+          as: restoredAutoClickerCycle.startedAtMs,
+          ac: restoredAutoClickerCycle.lastTickAtMs,
         }],
         ['meta-write', {
           c: meta.cost,
@@ -779,6 +803,8 @@ export class ClickerRedisService {
       't',
       'apc',
       'apv',
+      'ab',
+      'at',
     )
     return {
       points: arr[0] == null ? null : Number(arr[0]),
@@ -787,7 +813,41 @@ export class ClickerRedisService {
       ts: arr[3] == null ? null : Number(arr[3]),
       auto_clicker_pending_count: arr[4] == null ? null : Number(arr[4]),
       auto_clicker_pending_value: arr[5] == null ? null : Number(arr[5]),
+      active_boost_key:
+        arr[6] != null && String(arr[6]).length > 0 ? String(arr[6]) : null,
+      active_boost_expires_at_ms: arr[7] == null ? null : Number(arr[7]),
     }
+  }
+
+  async restoreActiveBoost(
+    userId: number,
+    boost: {
+      boost_key: string
+      expires_at_ms: number
+      effect_type: string
+      effect_value: number
+    },
+  ): Promise<void> {
+    if (boost.expires_at_ms <= Date.now()) return
+    const ukey = this.userKey(userId)
+    await this.redis.hmset(
+      ukey,
+      'ab',
+      boost.boost_key,
+      'at',
+      String(boost.expires_at_ms),
+      'ae',
+      boost.effect_type,
+      'av',
+      String(boost.effect_value),
+    )
+    await this.redis.expire(ukey, REDIS_USER_KEY_TTL_SECONDS)
+    clickerLog('redis-boost-recovery', {
+      user: userId,
+      boost_key: boost.boost_key,
+      expires_at_ms: boost.expires_at_ms,
+      effect_type: boost.effect_type,
+    })
   }
 
   /**
@@ -796,9 +856,45 @@ export class ClickerRedisService {
    * lazy-load from there rather than reuse the now-stale Redis copy.
    */
   async clearUser(userId: number): Promise<void> {
-    await this.redis.del(this.userKey(userId))
+    const ukey = this.userKey(userId)
+    const active = await this.redis.hmget(
+      ukey,
+      'ab',
+      'at',
+      'ae',
+      'av',
+      'ib',
+      'it',
+    )
+    await this.redis.del(ukey)
     await this.redis.srem(this.dirtyKey, String(userId))
-    clickerLog('redis-clear-user', { user: userId, op: 'DEL+SREM' })
+    const activeKey = active[0] ?? ''
+    const expiresAt = active[1] == null ? 0 : Number(active[1])
+    const preservedActiveBoost =
+      Boolean(activeKey) && Number.isFinite(expiresAt) && expiresAt > Date.now()
+    if (preservedActiveBoost) {
+      await this.redis.hmset(
+        ukey,
+        'ab',
+        activeKey,
+        'at',
+        active[1] ?? '0',
+        'ae',
+        active[2] ?? '',
+        'av',
+        active[3] ?? '0',
+        'ib',
+        active[4] ?? '',
+        'it',
+        active[5] ?? '',
+      )
+      await this.redis.expire(ukey, REDIS_USER_KEY_TTL_SECONDS)
+    }
+    clickerLog('redis-clear-user', {
+      user: userId,
+      op: 'DEL+SREM',
+      preserved_active_boost: preservedActiveBoost,
+    })
   }
 
   /**

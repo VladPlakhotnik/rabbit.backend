@@ -1,266 +1,632 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
-  BadRequestException,
 } from '@nestjs/common'
-import { StartGameDto, MakeMoveDto, CashoutDto } from './dto'
+import { InjectEntityManager } from '@nestjs/typeorm'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { EntityManager } from 'typeorm'
+import { UserInventory } from '../userInventory/userInventory.entity'
+import { User } from '../users/user.entity'
+import { UPGRADE_LIMITS } from '../upgrade/upgrade.constants'
+import { CashoutDto, MakeMoveDto, StartGameDto } from './dto'
+import {
+  MinesSession,
+  MinesSessionStatus,
+  MinesStakeItemSnapshot,
+  MinesStakeMode,
+} from './entities/mines-session.entity'
+import {
+  MINES_BOARD_SIZE,
+  buildMinesMultiplierPath,
+  calculateProjectedWin,
+  countSafeMinesReveals,
+  drawMinePositions,
+  roundMoney,
+  toCellIndex,
+} from './mines-game.logic'
+import { MinesLiveService } from './live/mines-live.service'
+import type { MinesLiveDropPayload } from './live/mines-live.types'
 
-export interface GameSession {
-  id: number
-  user_id: number
+export interface PublicMinesSession {
+  game_session_id: number
+  status: MinesSessionStatus
+  stake_mode: MinesStakeMode
   mines_count: number
+  board_size: number
   bet_amount: number
   current_multiplier: number
-  field: string[][]
-  revealed_cells: { x: number; y: number }[]
-  mine_positions: { x: number; y: number }[]
-  status: 'active' | 'completed' | 'failed'
+  next_multiplier: number | null
+  potential_win: number
+  win_amount: number | null
+  revealed_cells: number[]
+  mine_cells?: number[]
+  multipliers: number[]
+  stake_items: MinesStakeItemSnapshot[]
   created_at: Date
   updated_at: Date
+  new_balance?: number
+  user?: {
+    id: number
+    display_name: string
+    avatar: string | null
+  }
 }
 
 export interface MoveResult {
   success: boolean
   is_mine: boolean
   is_diamond: boolean
-  multiplier: number
-  field: string[][]
   message: string
+  session: PublicMinesSession
 }
 
 export interface CashoutResult {
   success: boolean
   final_multiplier: number
   win_amount: number
+  new_balance: number
   message: string
+  session: PublicMinesSession
 }
 
 @Injectable()
 export class MinesService {
-  private gameSessions: Map<number, GameSession> = new Map()
-  private nextSessionId = 1
+  constructor(
+    @InjectEntityManager()
+    private readonly entityManager: EntityManager,
+    private readonly minesLiveService: MinesLiveService,
+  ) {}
 
   async startGame(
     userId: number,
     startGameDto: StartGameDto,
-  ): Promise<GameSession> {
-    // Валидация входных данных
-    if (!startGameDto.inventory_skin_id && !startGameDto.bet_amount) {
-      throw new BadRequestException(
-        'Either inventory_skin_id or bet_amount must be provided',
-      )
-    }
+  ): Promise<PublicMinesSession> {
+    return this.entityManager.transaction(async manager => {
+      const user = await this.lockUser(manager, userId)
+      await this.assertNoActiveSession(manager, userId)
 
-    if (startGameDto.inventory_skin_id && startGameDto.bet_amount) {
-      throw new BadRequestException(
-        'Cannot use both inventory_skin_id and bet_amount',
-      )
-    }
+      const mode = this.resolveStakeMode(startGameDto)
+      const multipliers = buildMinesMultiplierPath({
+        boardSize: MINES_BOARD_SIZE,
+        minesCount: startGameDto.mines_count,
+      })
 
-    // Создаем новую игровую сессию
-    const sessionId = this.nextSessionId++
-    const minePositions = this.generateMinePositions(startGameDto.mines_count)
+      let betAmount = 0
+      let stakeItems: MinesStakeItemSnapshot[] | null = null
 
-    const gameSession: GameSession = {
-      id: sessionId,
-      user_id: userId,
-      mines_count: startGameDto.mines_count,
-      bet_amount: startGameDto.bet_amount || 0,
-      current_multiplier: 1.0,
-      field: this.createEmptyField(),
-      revealed_cells: [],
-      mine_positions: minePositions,
-      status: 'active',
-      created_at: new Date(),
-      updated_at: new Date(),
-    }
+      if (mode === 'balance') {
+        betAmount = this.getBalanceStake(startGameDto)
+        if (Number(user.balance) < betAmount) {
+          throw new BadRequestException('Insufficient balance for mines game')
+        }
 
-    this.gameSessions.set(sessionId, gameSession)
+        user.balance = roundMoney(Number(user.balance) - betAmount)
+        await manager.save(user)
+      } else {
+        const inventoryItems = await this.lockInventoryStake(
+          manager,
+          userId,
+          this.normalizeInventoryIds(startGameDto),
+        )
+        stakeItems = this.buildStakeItems(inventoryItems)
+        betAmount = this.calculateInventoryStake(stakeItems)
 
-    return gameSession
+        inventoryItems.forEach(item => {
+          item.is_sold = true
+        })
+        await manager.save(UserInventory, inventoryItems)
+      }
+
+      const session = manager.create(MinesSession, {
+        user_id: userId,
+        stake_mode: mode,
+        bet_amount: betAmount,
+        mines_count: startGameDto.mines_count,
+        board_size: MINES_BOARD_SIZE,
+        mine_positions: drawMinePositions(
+          MINES_BOARD_SIZE,
+          startGameDto.mines_count,
+        ),
+        revealed_cells: [],
+        current_multiplier: 1,
+        win_amount: null,
+        status: 'active',
+        mfr_seed_hash: this.createMfrSeedHash(),
+        stake_items: stakeItems,
+      })
+
+      const savedSession = await manager.save(session)
+
+      return this.toPublicSession(savedSession, {
+        multipliers,
+        newBalance: Number(user.balance),
+      })
+    })
   }
 
   async makeMove(
     userId: number,
     makeMoveDto: MakeMoveDto,
   ): Promise<MoveResult> {
-    const session = this.gameSessions.get(makeMoveDto.game_session_id)
+    const result = await this.entityManager.transaction(async manager => {
+      const session = await this.lockSession(
+        manager,
+        userId,
+        makeMoveDto.game_session_id,
+      )
 
-    if (!session) {
-      throw new NotFoundException('Game session not found')
-    }
-
-    if (session.user_id !== userId) {
-      throw new BadRequestException('Access denied to this game session')
-    }
-
-    if (session.status !== 'active') {
-      throw new BadRequestException('Game session is not active')
-    }
-
-    // Проверяем, что клетка еще не открыта
-    const isAlreadyRevealed = session.revealed_cells.some(
-      cell => cell.x === makeMoveDto.x && cell.y === makeMoveDto.y,
-    )
-
-    if (isAlreadyRevealed) {
-      throw new BadRequestException('Cell already revealed')
-    }
-
-    // Проверяем, что координаты в пределах поля
-    if (
-      makeMoveDto.x < 0 ||
-      makeMoveDto.x >= 5 ||
-      makeMoveDto.y < 0 ||
-      makeMoveDto.y >= 5
-    ) {
-      throw new BadRequestException('Invalid coordinates')
-    }
-
-    // Добавляем клетку к открытым
-    session.revealed_cells.push({ x: makeMoveDto.x, y: makeMoveDto.y })
-
-    // Проверяем, попал ли игрок на мину
-    const isMine = session.mine_positions.some(
-      mine => mine.x === makeMoveDto.x && mine.y === makeMoveDto.y,
-    )
-
-    if (isMine) {
-      session.status = 'failed'
-      session.updated_at = new Date()
-      return {
-        success: false,
-        is_mine: true,
-        is_diamond: false,
-        multiplier: session.current_multiplier,
-        field: this.updateFieldDisplay(session),
-        message: 'Game over! You hit a mine!',
+      if (session.status !== 'active') {
+        throw new BadRequestException('Game session is not active')
       }
-    }
 
-    // Если не мина, то алмаз - увеличиваем множитель
-    session.current_multiplier = this.calculateNextMultiplier(
-      session.current_multiplier,
-    )
-    session.updated_at = new Date()
+      const cellIndex = toCellIndex({ x: makeMoveDto.x, y: makeMoveDto.y })
 
-    return {
-      success: true,
-      is_mine: false,
-      is_diamond: true,
-      multiplier: session.current_multiplier,
-      field: this.updateFieldDisplay(session),
-      message: 'Diamond found! Multiplier increased.',
-    }
+      if (cellIndex < 0 || cellIndex >= session.board_size) {
+        throw new BadRequestException('Invalid cell')
+      }
+
+      if (session.revealed_cells.includes(cellIndex)) {
+        throw new BadRequestException('Cell already revealed')
+      }
+
+      const isMine = session.mine_positions.includes(cellIndex)
+      session.revealed_cells = [...session.revealed_cells, cellIndex]
+
+      if (isMine) {
+        session.status = 'lost'
+        session.win_amount = 0
+        await manager.save(session)
+
+        return {
+          success: false,
+          is_mine: true,
+          is_diamond: false,
+          message: 'Game over! You hit a mine.',
+          session: this.toPublicSession(session, { revealMines: true }),
+        }
+      }
+
+      const multipliers = buildMinesMultiplierPath({
+        boardSize: session.board_size,
+        minesCount: session.mines_count,
+      })
+      const safeReveals = this.countSafeReveals(session)
+      session.current_multiplier =
+        multipliers[safeReveals - 1] ?? session.current_multiplier
+
+      const allSafeCellsOpened =
+        safeReveals >= session.board_size - session.mines_count
+      let newBalance: number | undefined
+
+      if (allSafeCellsOpened) {
+        const user = await this.lockUser(manager, userId)
+        const winAmount = calculateProjectedWin(
+          session.bet_amount,
+          session.current_multiplier,
+        )
+        user.balance = roundMoney(Number(user.balance) + winAmount)
+        session.status = 'cashed_out'
+        session.win_amount = winAmount
+        await manager.save(user)
+        newBalance = Number(user.balance)
+      }
+
+      await manager.save(session)
+
+      return {
+        success: true,
+        is_mine: false,
+        is_diamond: true,
+        message: allSafeCellsOpened
+          ? 'All safe cells opened. Winnings paid.'
+          : 'Safe cell opened.',
+        session: this.toPublicSession(session, {
+          revealMines: allSafeCellsOpened,
+          newBalance,
+        }),
+      }
+    })
+
+    await this.publishFinishedGame(userId, result.session)
+
+    return result
   }
 
   async cashout(
     userId: number,
     cashoutDto: CashoutDto,
   ): Promise<CashoutResult> {
-    const session = this.gameSessions.get(cashoutDto.game_session_id)
+    const result = await this.entityManager.transaction(async manager => {
+      const session = await this.lockSession(
+        manager,
+        userId,
+        cashoutDto.game_session_id,
+      )
 
-    if (!session) {
-      throw new NotFoundException('Game session not found')
-    }
+      if (session.status !== 'active') {
+        throw new BadRequestException('Game session is not active')
+      }
 
-    if (session.user_id !== userId) {
-      throw new BadRequestException('Access denied to this game session')
-    }
+      if (this.countSafeReveals(session) <= 0) {
+        throw new BadRequestException(
+          'Open at least one safe cell before cashout',
+        )
+      }
 
-    if (session.status !== 'active') {
-      throw new BadRequestException('Game session is not active')
-    }
+      const user = await this.lockUser(manager, userId)
+      const winAmount = calculateProjectedWin(
+        session.bet_amount,
+        session.current_multiplier,
+      )
 
-    // Завершаем игру
-    session.status = 'completed'
-    session.updated_at = new Date()
+      user.balance = roundMoney(Number(user.balance) + winAmount)
+      session.status = 'cashed_out'
+      session.win_amount = winAmount
 
-    const winAmount = Math.floor(
-      session.bet_amount * session.current_multiplier,
-    )
+      await manager.save(user)
+      await manager.save(session)
 
-    return {
-      success: true,
-      final_multiplier: session.current_multiplier,
-      win_amount: winAmount,
-      message: 'Cashout successful!',
-    }
+      return {
+        success: true,
+        final_multiplier: Number(session.current_multiplier),
+        win_amount: winAmount,
+        new_balance: Number(user.balance),
+        message: 'Cashout successful.',
+        session: this.toPublicSession(session, {
+          revealMines: true,
+          newBalance: Number(user.balance),
+        }),
+      }
+    })
+
+    await this.publishFinishedGame(userId, result.session)
+
+    return result
   }
 
   async getGameSession(
     userId: number,
     sessionId: number,
-  ): Promise<GameSession> {
-    const session = this.gameSessions.get(sessionId)
+  ): Promise<PublicMinesSession> {
+    const session = await this.entityManager.findOne(MinesSession, {
+      where: { id: sessionId, user_id: userId },
+    })
 
     if (!session) {
       throw new NotFoundException('Game session not found')
     }
 
-    if (session.user_id !== userId) {
-      throw new BadRequestException('Access denied to this game session')
+    return this.toPublicSession(session, {
+      revealMines: session.status !== 'active',
+    })
+  }
+
+  async getActiveGameSession(
+    userId: number,
+  ): Promise<PublicMinesSession | null> {
+    const session = await this.entityManager.findOne(MinesSession, {
+      where: { user_id: userId, status: 'active' },
+      order: { created_at: 'DESC' },
+    })
+
+    return session ? this.toPublicSession(session) : null
+  }
+
+  async getGameHistory(userId: number): Promise<PublicMinesSession[]> {
+    const sessions = await this.entityManager.find(MinesSession, {
+      where: { user_id: userId },
+      order: { created_at: 'DESC' },
+      take: 50,
+    })
+
+    return sessions.map(session =>
+      this.toPublicSession(session, {
+        revealMines: session.status !== 'active',
+      }),
+    )
+  }
+
+  async getTopWinners(): Promise<PublicMinesSession[]> {
+    const sessions = await this.entityManager.find(MinesSession, {
+      where: { status: 'cashed_out' },
+      relations: { user: true },
+      order: { win_amount: 'DESC', created_at: 'DESC' },
+      take: 25,
+    })
+
+    return sessions.map(session =>
+      this.toPublicSession(session, {
+        revealMines: true,
+        includeUser: true,
+      }),
+    )
+  }
+
+  private async publishFinishedGame(
+    userId: number,
+    session: PublicMinesSession,
+  ): Promise<void> {
+    if (session.status === 'active') {
+      return
+    }
+
+    const user = await this.loadUserForLiveDrop(userId)
+    const username = user?.display_name || `Player${userId}`
+    const avatar = user?.avatar || null
+    const winAmount = session.status === 'lost' ? 0 : session.win_amount ?? 0
+    const multiplier =
+      session.status === 'lost' ? 0 : Number(session.current_multiplier) || 0
+    const sessionWithUser: PublicMinesSession = {
+      ...session,
+      user: {
+        id: userId,
+        display_name: username,
+        avatar,
+      },
+    }
+
+    const payload: MinesLiveDropPayload = {
+      id: randomUUID(),
+      user: { id: userId, username, avatar },
+      session: sessionWithUser,
+      multiplier,
+      profit: roundMoney(winAmount - session.bet_amount),
+      isBot: false,
+      ts: Date.now(),
+    }
+
+    await this.minesLiveService.pushDrop(payload)
+  }
+
+  private async loadUserForLiveDrop(userId: number): Promise<User | null> {
+    try {
+      return await this.entityManager.findOne(User, {
+        where: { id: userId },
+      })
+    } catch {
+      return null
+    }
+  }
+
+  private async lockUser(
+    manager: EntityManager,
+    userId: number,
+  ): Promise<User> {
+    const user = await manager.findOne(User, {
+      where: { id: userId },
+      lock: { mode: 'pessimistic_write' },
+    })
+
+    if (!user) {
+      throw new NotFoundException('User not found')
+    }
+
+    return user
+  }
+
+  private async assertNoActiveSession(
+    manager: EntityManager,
+    userId: number,
+  ): Promise<void> {
+    const activeSession = await manager.findOne(MinesSession, {
+      where: { user_id: userId, status: 'active' },
+      lock: { mode: 'pessimistic_write' },
+    })
+
+    if (activeSession) {
+      throw new BadRequestException('Finish current mines game first')
+    }
+  }
+
+  private async lockSession(
+    manager: EntityManager,
+    userId: number,
+    sessionId: number,
+  ): Promise<MinesSession> {
+    const session = await manager.findOne(MinesSession, {
+      where: { id: sessionId, user_id: userId },
+      lock: { mode: 'pessimistic_write' },
+    })
+
+    if (!session) {
+      throw new NotFoundException('Game session not found')
     }
 
     return session
   }
 
-  async getGameHistory(userId: number): Promise<GameSession[]> {
-    const userSessions = Array.from(this.gameSessions.values())
-      .filter(session => session.user_id === userId)
-      .sort((a, b) => b.created_at.getTime() - a.created_at.getTime())
+  private resolveStakeMode(dto: StartGameDto): MinesStakeMode {
+    const hasBalanceStake = dto.bet_amount !== undefined
+    const hasInventoryStake =
+      dto.inventory_skin_id !== undefined ||
+      (dto.inventory_skin_ids !== undefined &&
+        dto.inventory_skin_ids.length > 0)
 
-    return userSessions
+    if (dto.mode === 'balance' && !hasBalanceStake) {
+      throw new BadRequestException('bet_amount is required for balance mode')
+    }
+
+    if (dto.mode === 'inventory' && !hasInventoryStake) {
+      throw new BadRequestException(
+        'inventory_skin_ids is required for inventory mode',
+      )
+    }
+
+    if (hasBalanceStake === hasInventoryStake) {
+      throw new BadRequestException(
+        'Provide either bet_amount or inventory_skin_ids',
+      )
+    }
+
+    return hasBalanceStake ? 'balance' : 'inventory'
   }
 
-  private generateMinePositions(
-    minesCount: number,
-  ): { x: number; y: number }[] {
-    const positions: { x: number; y: number }[] = []
-    const totalCells = 25 // 5x5 field
+  private getBalanceStake(dto: StartGameDto): number {
+    const stake = Number(dto.bet_amount)
 
-    // Генерируем случайные позиции для мин
-    while (positions.length < minesCount) {
-      const x = Math.floor(Math.random() * 5)
-      const y = Math.floor(Math.random() * 5)
+    if (!Number.isFinite(stake)) {
+      throw new BadRequestException('Invalid bet amount')
+    }
 
-      // Проверяем, что позиция еще не занята
-      if (!positions.some(pos => pos.x === x && pos.y === y)) {
-        positions.push({ x, y })
+    return this.assertStakeAmount(stake)
+  }
+
+  private normalizeInventoryIds(dto: StartGameDto): number[] {
+    const ids = dto.inventory_skin_ids ?? []
+    const legacyId = dto.inventory_skin_id
+    const normalized = legacyId !== undefined ? [...ids, legacyId] : ids
+    const unique = new Set(normalized)
+
+    if (unique.size !== normalized.length) {
+      throw new BadRequestException('Inventory skin ids must be unique')
+    }
+
+    if (
+      normalized.length < UPGRADE_LIMITS.MIN_MATERIALS ||
+      normalized.length > UPGRADE_LIMITS.MAX_MATERIALS
+    ) {
+      throw new BadRequestException(
+        `Inventory stake must use ${UPGRADE_LIMITS.MIN_MATERIALS}-${UPGRADE_LIMITS.MAX_MATERIALS} skins`,
+      )
+    }
+
+    return normalized
+  }
+
+  private async lockInventoryStake(
+    manager: EntityManager,
+    userId: number,
+    inventoryIds: number[],
+  ): Promise<UserInventory[]> {
+    const inventoryItems = await manager
+      .createQueryBuilder(UserInventory, 'inv')
+      .leftJoinAndSelect('inv.csgoSkin', 'csgoSkin')
+      .leftJoinAndSelect('inv.dotaSkin', 'dotaSkin')
+      .where('inv.id IN (:...ids)', { ids: inventoryIds })
+      .andWhere('inv.user_id = :userId', { userId })
+      .andWhere('inv.is_sold = false')
+      .andWhere('inv.is_withdrawn = false')
+      .setLock('pessimistic_write', undefined, ['inv'])
+      .getMany()
+
+    if (inventoryItems.length !== inventoryIds.length) {
+      throw new NotFoundException(
+        'Some skins not found in inventory or already used',
+      )
+    }
+
+    return inventoryItems
+  }
+
+  private buildStakeItems(
+    inventoryItems: UserInventory[],
+  ): MinesStakeItemSnapshot[] {
+    return inventoryItems.map(item => {
+      const skin = item.skin ?? item.csgoSkin ?? item.dotaSkin
+      const price = Number(skin?.market_price)
+
+      if (!skin || !Number.isFinite(price) || price <= 0) {
+        throw new BadRequestException('Some skins have invalid or zero price')
       }
-    }
 
-    return positions
-  }
-
-  private createEmptyField(): string[][] {
-    return Array(5)
-      .fill(null)
-      .map(() => Array(5).fill('?'))
-  }
-
-  private updateFieldDisplay(session: GameSession): string[][] {
-    const field = this.createEmptyField()
-
-    // Показываем открытые клетки
-    session.revealed_cells.forEach(cell => {
-      field[cell.y][cell.x] = '💎' // Diamond emoji
+      return {
+        inventory_id: item.id,
+        skin_id: skin.id,
+        game_type: item.game_type,
+        name: skin.market_hash_name,
+        image: skin.image ?? null,
+        rarity: skin.quality ?? null,
+        price: roundMoney(price),
+      }
     })
-
-    // Если игра завершена, показываем мины
-    if (session.status === 'failed') {
-      session.mine_positions.forEach(mine => {
-        field[mine.y][mine.x] = '💣' // Bomb emoji
-      })
-    }
-
-    return field
   }
 
-  private calculateNextMultiplier(currentMultiplier: number): number {
-    // Простая формула увеличения множителя
-    // Можно сделать более сложную логику
-    return Math.round((currentMultiplier + 0.15) * 100) / 100
+  private calculateInventoryStake(
+    stakeItems: MinesStakeItemSnapshot[],
+  ): number {
+    const total = stakeItems.reduce((sum, item) => sum + item.price, 0)
+
+    return this.assertStakeAmount(roundMoney(total))
+  }
+
+  private assertStakeAmount(amount: number): number {
+    if (amount < UPGRADE_LIMITS.MIN_AMOUNT) {
+      throw new BadRequestException(
+        `Stake must be at least ${UPGRADE_LIMITS.MIN_AMOUNT}`,
+      )
+    }
+
+    if (amount > UPGRADE_LIMITS.MAX_AMOUNT) {
+      throw new BadRequestException(
+        `Stake must not exceed ${UPGRADE_LIMITS.MAX_AMOUNT}`,
+      )
+    }
+
+    return roundMoney(amount)
+  }
+
+  private createMfrSeedHash(): string {
+    return createHash('sha256').update(randomBytes(32)).digest('hex')
+  }
+
+  private toPublicSession(
+    session: MinesSession,
+    options: {
+      revealMines?: boolean
+      multipliers?: number[]
+      includeUser?: boolean
+      newBalance?: number
+    } = {},
+  ): PublicMinesSession {
+    const multipliers =
+      options.multipliers ??
+      buildMinesMultiplierPath({
+        boardSize: session.board_size,
+        minesCount: session.mines_count,
+      })
+    const safeReveals = this.countSafeReveals(session)
+    const nextMultiplier =
+      session.status === 'active' ? multipliers[safeReveals] ?? null : null
+    const currentMultiplier = Number(session.current_multiplier) || 1
+    const potentialWin =
+      session.status === 'active' && nextMultiplier
+        ? calculateProjectedWin(session.bet_amount, nextMultiplier)
+        : calculateProjectedWin(session.bet_amount, currentMultiplier)
+
+    return {
+      game_session_id: session.id,
+      status: session.status,
+      stake_mode: session.stake_mode,
+      mines_count: session.mines_count,
+      board_size: session.board_size,
+      bet_amount: Number(session.bet_amount),
+      current_multiplier: currentMultiplier,
+      next_multiplier: nextMultiplier,
+      potential_win: potentialWin,
+      win_amount:
+        session.win_amount === null
+          ? null
+          : roundMoney(Number(session.win_amount)),
+      revealed_cells: session.revealed_cells,
+      mine_cells: options.revealMines ? session.mine_positions : undefined,
+      multipliers,
+      stake_items: session.stake_items ?? [],
+      created_at: session.created_at,
+      updated_at: session.updated_at,
+      new_balance: options.newBalance,
+      user:
+        options.includeUser && session.user
+          ? {
+              id: session.user.id,
+              display_name: session.user.display_name,
+              avatar: session.user.avatar,
+            }
+          : undefined,
+    }
+  }
+
+  private countSafeReveals(session: MinesSession): number {
+    return countSafeMinesReveals(session.revealed_cells, session.mine_positions)
   }
 }
-

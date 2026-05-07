@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { ClickerAutoClickerLevel } from './entities/clicker_auto_clicker_level.entity'
+import { CLICKER_CATALOG_CACHE_TTL_MS } from '../clickerUser/constants/clicker-catalog-cache.constants'
 
 /**
  * Read-only catalog of auto-clicker tiers.
@@ -13,17 +14,27 @@ import { ClickerAutoClickerLevel } from './entities/clicker_auto_clicker_level.e
  */
 @Injectable()
 export class ClickerAutoClickerLevelsService {
+  private allCache: { expiresAt: number; value: ClickerAutoClickerLevel[] } | null = null
+
   constructor(
     @InjectRepository(ClickerAutoClickerLevel)
     private readonly repo: Repository<ClickerAutoClickerLevel>,
   ) {}
 
-  findAll(): Promise<ClickerAutoClickerLevel[]> {
-    return this.repo.find({ order: { level: 'ASC' } })
+  async findAll(): Promise<ClickerAutoClickerLevel[]> {
+    if (this.allCache && this.allCache.expiresAt > Date.now()) {
+      return this.allCache.value
+    }
+    const value = await this.repo.find({ order: { level: 'ASC' } })
+    this.allCache = {
+      value,
+      expiresAt: Date.now() + CLICKER_CATALOG_CACHE_TTL_MS,
+    }
+    return value
   }
 
   async findById(id: number): Promise<ClickerAutoClickerLevel> {
-    const row = await this.repo.findOne({ where: { id } })
+    const row = (await this.findAll()).find(level => level.id === id)
     if (!row) throw new NotFoundException('Auto-clicker level not found')
     return row
   }

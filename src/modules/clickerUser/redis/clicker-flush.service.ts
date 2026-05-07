@@ -92,10 +92,19 @@ export class ClickerFlushService implements OnModuleDestroy {
    */
   async flushUser(userId: number): Promise<void> {
     clickerLog('flush.user', { user: userId, op: 'force-flush-start' })
-    // Persist before removing from the dirty set so a failure here doesn't
-    // leak (we'd lose the dirty marker but the next click re-adds the user).
-    await this.persistUsers([userId])
+    // Remove the marker before snapshotting, matching cron's SPOP flow. If a
+    // click lands during persistUsers(), Lua SADDs the user back into dirty and
+    // the newer state gets picked up by the next flush instead of being erased
+    // by a post-persist SREM.
     await this.redisService.removeFromDirty(userId)
+    try {
+      await this.persistUsers([userId])
+    } catch (err) {
+      // If persistence itself fails, restore the dirty marker so the cached
+      // state still has another chance to reach Postgres.
+      await this.redisService.markDirtyMany([userId])
+      throw err
+    }
     clickerLog('flush.user', { user: userId, op: 'force-flush-end' })
   }
 

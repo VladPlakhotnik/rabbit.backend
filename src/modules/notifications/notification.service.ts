@@ -235,6 +235,21 @@ export class NotificationService {
     )
   }
 
+  async notifyGiveawayWon(
+    userId: number,
+    giveawayName: string,
+    skinName: string,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'giveaway.won',
+        i18n_params: { giveawayName, skinName },
+        is_important: true,
+      },
+      userId,
+    )
+  }
+
   async delete(id: number): Promise<void> {
     const notification = await this.notificationRepository.findOneBy({ id })
     if (!notification) {
