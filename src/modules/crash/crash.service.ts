@@ -25,6 +25,11 @@ import {
   roundCrashMoney,
   splitCrashStake,
 } from './crash-game.logic'
+import {
+  CRASH_PRODUCT_HOUSE_EDGE_BPS,
+  calculateFixedHouseEdgeVipEarning,
+} from '../vip/vip-earning.logic'
+import { VipService } from '../vip/vip.service'
 
 export interface PublicCrashSession {
   game_session_id: number
@@ -63,6 +68,7 @@ export class CrashService {
   constructor(
     @InjectEntityManager()
     private readonly entityManager: EntityManager,
+    private readonly vipService: VipService,
   ) {}
 
   async startGame(
@@ -170,6 +176,7 @@ export class CrashService {
       session.cashout_multiplier = finalMultiplier
       session.win_amount = winAmount
 
+      await this.recordVipEarning(manager, user, session)
       await manager.save(user)
       await manager.save(session)
 
@@ -196,10 +203,12 @@ export class CrashService {
       )
 
       if (session.status === 'active') {
+        const user = await this.lockUser(manager, userId)
         session.status = 'crashed'
         session.cashout_multiplier = 0
         session.win_amount = 0
         await manager.save(session)
+        await this.recordVipEarning(manager, user, session)
       }
 
       return {
@@ -240,6 +249,30 @@ export class CrashService {
     }
 
     return session
+  }
+
+  private async recordVipEarning(
+    manager: EntityManager,
+    user: User,
+    session: CrashSession,
+  ): Promise<void> {
+    const earning = calculateFixedHouseEdgeVipEarning({
+      sourceType: 'crash_round',
+      wagerAmount: Number(session.stake_amount),
+      houseEdgeBps: CRASH_PRODUCT_HOUSE_EDGE_BPS,
+    })
+
+    await this.vipService.recordEarning(manager, user, {
+      ...earning,
+      sourceId: `crash:${session.id}`,
+      metadata: {
+        stakeMode: session.stake_mode,
+        slot: session.slot,
+        status: session.status,
+        cashoutMultiplier: session.cashout_multiplier ?? 0,
+        winAmount: session.win_amount ?? 0,
+      },
+    })
   }
 
   private resolveStakeMode(dto: StartCrashGameDto): CrashStakeMode {

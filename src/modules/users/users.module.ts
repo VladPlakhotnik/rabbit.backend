@@ -10,6 +10,8 @@ import { SkinCase } from '../skinCase/skinCase.entity'
 import { Notification } from '../notifications/entities/notification.entity'
 import { HttpModule } from '@nestjs/axios'
 import { SocialModule } from '../social/social.module'
+import { VipLedger } from '../vip/vip-ledger.entity'
+import { VipModule } from '../vip/vip.module'
 
 @Module({
   imports: [
@@ -20,9 +22,11 @@ import { SocialModule } from '../social/social.module'
       Case,
       SkinCase,
       Notification,
+      VipLedger,
     ]),
     HttpModule,
     SocialModule,
+    VipModule,
   ],
   providers: [UserService],
   controllers: [UserController],

@@ -16,6 +16,9 @@ declare global {
       opened_cases: number // Поле 'opened_cases'
       upgraded_skins: number // Поле 'upgraded_skins'
       deposit_amount: number // Поле 'deposit_amount'
+      vip_qualifying_volume: number // VIP qualifying case turnover
+      vip_xp: number // VIP XP normalized by expected site margin
+      vip_theoretical_rake: number // Expected margin used for VIP budgets
       withdrawal_amount: number // Поле 'withdrawal_amount'
       rank: string // Поле 'rank'
     }

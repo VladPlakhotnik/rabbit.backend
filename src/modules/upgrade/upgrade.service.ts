@@ -12,6 +12,10 @@ import { UpgradeDto } from './dto/upgrade.dto'
 import { UpgradeResultDto } from './dto/upgrade-result.dto'
 import { UpgradeLimitsDto } from './dto/upgrade-limits.dto'
 import { UPGRADE_LIMITS } from './upgrade.constants'
+import {
+  UPGRADE_HOUSE_RETURN,
+  calculateUpgradeChanceByPrice,
+} from './upgrade-game.logic'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
 import {
@@ -24,6 +28,11 @@ type UpgradeGameType = 'csgo' | 'dota'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { HistoryAction } from '../userHistory/enums/history-action.enum'
 import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
+import {
+  calculateFixedHouseEdgeVipEarning,
+  estimateUpgradeHouseEdgeBps,
+} from '../vip/vip-earning.logic'
+import { VipService } from '../vip/vip.service'
 
 const RARITY_COLUMN_LIMIT = 50
 // Sentinels stored in `old_rarity` / `new_rarity` for cases where there is no
@@ -59,6 +68,7 @@ export class UpgradeService {
     @InjectEntityManager()
     private readonly entityManager: EntityManager,
     private readonly clickerChallengesService: ClickerChallengesService,
+    private readonly vipService: VipService,
   ) {}
 
   async performUpgrade(
@@ -121,7 +131,7 @@ export class UpgradeService {
         ? await this.createUpgradedSkin(manager, userId, targetSkin, gameType)
         : null
 
-      await this.recordHistory(manager, {
+      const upgradeHistoryId = await this.recordHistory(manager, {
         userId,
         targetSkin,
         isSuccess,
@@ -130,6 +140,31 @@ export class UpgradeService {
         mode,
         usedSkins,
         gameType,
+      })
+
+      const houseEdgeBps = estimateUpgradeHouseEdgeBps({
+        sourceAmount: totalUsedPrice,
+        targetMarketPrice: Number(targetSkin.market_price),
+        winChancePercent: chance,
+      })
+      const vipEarning = calculateFixedHouseEdgeVipEarning({
+        sourceType: 'upgrade_attempt',
+        wagerAmount: totalUsedPrice,
+        houseEdgeBps,
+      })
+
+      await this.vipService.recordEarning(manager, user, {
+        ...vipEarning,
+        sourceId: `upgrade:${upgradeHistoryId}`,
+        metadata: {
+          gameType,
+          mode,
+          success: isSuccess,
+          chance,
+          roll,
+          targetSkinId: targetSkin.id,
+          targetMarketHashName: targetSkin.market_hash_name,
+        },
       })
 
       // Single structured line per attempt — enough to debug "why did my
@@ -442,7 +477,7 @@ export class UpgradeService {
       usedSkins: readonly CsgoSkin[]
       gameType: UpgradeGameType
     },
-  ): Promise<void> {
+  ): Promise<number> {
     const {
       userId,
       targetSkin,
@@ -491,6 +526,8 @@ export class UpgradeService {
       related_id: savedUpgradeHistory.id,
     })
     await manager.save(userHistory)
+
+    return savedUpgradeHistory.id
   }
 
   private buildUpgradeResultDto(
@@ -512,8 +549,9 @@ export class UpgradeService {
     }
   }
 
-  // Mirrors the frontend's `calculateWinChance`: linear ratio of used to
-  // target price, then bounded by `[MIN_CHANCE, MAX_CHANCE]`. Both edges
+  // Mirrors the frontend's `calculateWinChance`: source/target ratio with
+  // the upgrade house return applied, then bounded by `[MIN_CHANCE,
+  // MAX_CHANCE]`. Both edges
   // throw 400 — out-of-bounds targets are filtered out on the frontend
   // already (`MarketSection.isCardDisabled`), so reaching this branch means
   // either a stale UI or a hand-crafted request.
@@ -529,8 +567,7 @@ export class UpgradeService {
       throw new BadRequestException('Used price must be greater than zero')
     }
 
-    const rawChance = (usedPrice / targetPrice) * 100
-    const chance = Math.round(rawChance * 100) / 100
+    const chance = calculateUpgradeChanceByPrice(usedPrice, targetPrice)
 
     if (chance < UPGRADE_LIMITS.MIN_CHANCE) {
       throw new BadRequestException(
@@ -554,6 +591,7 @@ export class UpgradeService {
       max_amount: UPGRADE_LIMITS.MAX_AMOUNT,
       min_materials: UPGRADE_LIMITS.MIN_MATERIALS,
       max_materials: UPGRADE_LIMITS.MAX_MATERIALS,
+      house_return: UPGRADE_HOUSE_RETURN,
     }
   }
 }

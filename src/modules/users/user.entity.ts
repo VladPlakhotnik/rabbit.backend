@@ -1,6 +1,5 @@
 import { Entity, PrimaryGeneratedColumn, Column, OneToMany } from 'typeorm'
 import { UserInventory } from '../userInventory/userInventory.entity'
-import { Notification } from '../notifications/entities/notification.entity'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
 
 @Entity('users')
@@ -28,6 +27,36 @@ export class User {
 
   @Column({ type: 'int', default: 0 })
   deposit_amount!: number
+
+  @Column({
+    name: 'vip_qualifying_volume',
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
+  vip_qualifying_volume!: number
+
+  @Column({
+    name: 'vip_xp',
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
+  vip_xp!: number
+
+  @Column({
+    name: 'vip_theoretical_rake',
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
+  vip_theoretical_rake!: number
 
   @Column({ type: 'int', default: 0 })
   withdrawal_amount!: number

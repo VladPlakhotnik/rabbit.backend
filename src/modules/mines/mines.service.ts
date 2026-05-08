@@ -27,6 +27,11 @@ import {
 } from './mines-game.logic'
 import { MinesLiveService } from './live/mines-live.service'
 import type { MinesLiveDropPayload } from './live/mines-live.types'
+import {
+  MINES_PRODUCT_HOUSE_EDGE_BPS,
+  calculateFixedHouseEdgeVipEarning,
+} from '../vip/vip-earning.logic'
+import { VipService } from '../vip/vip.service'
 
 export interface PublicMinesSession {
   game_session_id: number
@@ -76,6 +81,7 @@ export class MinesService {
     @InjectEntityManager()
     private readonly entityManager: EntityManager,
     private readonly minesLiveService: MinesLiveService,
+    private readonly vipService: VipService,
   ) {}
 
   async startGame(
@@ -174,9 +180,11 @@ export class MinesService {
       session.revealed_cells = [...session.revealed_cells, cellIndex]
 
       if (isMine) {
+        const user = await this.lockUser(manager, userId)
         session.status = 'lost'
         session.win_amount = 0
         await manager.save(session)
+        await this.recordVipEarning(manager, user, session)
 
         return {
           success: false,
@@ -208,6 +216,7 @@ export class MinesService {
         user.balance = roundMoney(Number(user.balance) + winAmount)
         session.status = 'cashed_out'
         session.win_amount = winAmount
+        await this.recordVipEarning(manager, user, session)
         await manager.save(user)
         newBalance = Number(user.balance)
       }
@@ -264,6 +273,7 @@ export class MinesService {
       session.status = 'cashed_out'
       session.win_amount = winAmount
 
+      await this.recordVipEarning(manager, user, session)
       await manager.save(user)
       await manager.save(session)
 
@@ -403,6 +413,30 @@ export class MinesService {
     }
 
     return user
+  }
+
+  private async recordVipEarning(
+    manager: EntityManager,
+    user: User,
+    session: MinesSession,
+  ): Promise<void> {
+    const earning = calculateFixedHouseEdgeVipEarning({
+      sourceType: 'mines_round',
+      wagerAmount: Number(session.bet_amount),
+      houseEdgeBps: MINES_PRODUCT_HOUSE_EDGE_BPS,
+    })
+
+    await this.vipService.recordEarning(manager, user, {
+      ...earning,
+      sourceId: `mines:${session.id}`,
+      metadata: {
+        stakeMode: session.stake_mode,
+        minesCount: session.mines_count,
+        status: session.status,
+        winAmount: session.win_amount ?? 0,
+        safeReveals: this.countSafeReveals(session),
+      },
+    })
   }
 
   private async assertNoActiveSession(

@@ -18,11 +18,14 @@ import { GameType } from '../provably-fair/enums/game-type.enum'
 import { UserService } from '../users/users.service'
 import { UserInventoryService } from '../userInventory/userInventory.service'
 import { UserHistoryService } from '../userHistory/userHistory.service'
-import { HistoryAction } from '../userHistory/enums/history-action.enum'
 import { LiveDropsService } from '../liveDrops/liveDrops.service'
 import type { LiveDropPayload } from '../liveDrops/types'
 import { User } from '../users/user.entity'
 import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
+import {
+  calculateVipEarning,
+  estimateCaseHouseEdgeBps,
+} from '../vip/vip-earning.logic'
 
 // Delay between the openCase response and the LiveDrop fan-out. Matches
 // the frontend `CASE_OPEN_TOTAL_DURATION_MS` (4.5 spin + 3.0 landing +
@@ -475,9 +478,34 @@ export class CaseService {
     }
 
     const totalCost = caseEntity.case_price * count
+    const availableSkinCases = await this.getAvailableSkins(caseEntity)
+    const houseEdgeBps = estimateCaseHouseEdgeBps(
+      caseEntity.case_price,
+      availableSkinCases.map(skinCase => ({
+        chance: skinCase.chance,
+        marketPrice: skinCase.skin?.market_price,
+      })),
+    )
+    const vipEarning = calculateVipEarning({
+      sourceType: 'case_open',
+      wagerAmount: totalCost,
+      houseEdgeBps,
+    })
 
     // Проверка баланса и списание средств — один раз на всё событие.
-    await this.userService.validateAndDeductBalance(userId, totalCost)
+    await this.userService.validateAndDeductBalance(userId, totalCost, {
+      vipEarning: {
+        ...vipEarning,
+        sourceId: `case:${crypto.randomUUID()}`,
+        metadata: {
+          caseId,
+          caseName: caseEntity.name,
+          casePrice: caseEntity.case_price,
+          count,
+          gameType: caseEntity.game_type,
+        },
+      },
+    })
 
     // Single user lookup reused for all LiveDrop publishes in this call.
     // Loaded eagerly so the feed entry doesn't add latency to the
@@ -502,7 +530,7 @@ export class CaseService {
 
     for (let i = 0; i < count; i++) {
       // Получение доступных скинов — polymorphic on case.game_type.
-      const skinCases = await this.getAvailableSkins(caseEntity)
+      const skinCases = availableSkinCases
 
       // Каждый дроп получает свой clientSeed/serverSeed — провабли-фейр
       // верификация работает per-drop даже внутри одного события.

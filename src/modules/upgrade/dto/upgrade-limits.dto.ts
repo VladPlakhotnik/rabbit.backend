@@ -42,4 +42,10 @@ export class UpgradeLimitsDto {
     example: 20,
   })
   max_materials!: number
+
+  @ApiProperty({
+    description: 'Upgrade return-to-player multiplier used in chance formula',
+    example: 0.96,
+  })
+  house_return!: number
 }

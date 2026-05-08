@@ -13,6 +13,15 @@ import { User } from './user.entity'
 import { HttpService } from '@nestjs/axios'
 import { firstValueFrom } from 'rxjs'
 import { jwtUserCacheKey } from '../auth/jwt-user-cache-key'
+import type { VipEarning } from '../vip/vip-earning.logic'
+import { VipService } from '../vip/vip.service'
+
+interface BalanceDeductionOptions {
+  vipEarning?: VipEarning & {
+    sourceId?: string | null
+    metadata?: Record<string, unknown>
+  }
+}
 
 /**
  * Service for working with users
@@ -27,6 +36,7 @@ export class UserService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly httpService: HttpService,
+    private readonly vipService: VipService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
   ) {}
 
@@ -540,6 +550,7 @@ export class UserService {
   async validateAndDeductBalance(
     userId: number,
     amount: number,
+    options: BalanceDeductionOptions = {},
   ): Promise<void> {
     await this.userRepository.manager.transaction(async manager => {
       const user = await manager.findOne(User, { where: { id: userId } })
@@ -550,6 +561,9 @@ export class UserService {
         throw new BadRequestException('Insufficient balance')
       }
       user.balance -= amount
+      if (options.vipEarning) {
+        await this.vipService.recordEarning(manager, user, options.vipEarning)
+      }
       await manager.save(user)
     })
   }

@@ -9,11 +9,13 @@ import { MinesLiveGateway } from './live/mines-live.gateway'
 import { MinesLiveBotsService } from './live/mines-live-bots.service'
 import { MinesLiveService } from './live/mines-live.service'
 import { BotsModule } from '../bots/bots.module'
+import { VipModule } from '../vip/vip.module'
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([MinesSession, User, UserInventory]),
     BotsModule,
+    VipModule,
   ],
   controllers: [MinesController],
   providers: [

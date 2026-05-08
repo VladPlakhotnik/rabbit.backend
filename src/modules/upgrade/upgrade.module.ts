@@ -9,6 +9,7 @@ import { UserInventory } from '../userInventory/userInventory.entity'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
 import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
+import { VipModule } from '../vip/vip.module'
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges
       },
     ]),
     ClickerChallengesModule,
+    VipModule,
   ],
   controllers: [UpgradeController],
   providers: [UpgradeService],
