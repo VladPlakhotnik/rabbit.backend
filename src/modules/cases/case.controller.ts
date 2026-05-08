@@ -68,6 +68,18 @@ export class CaseController {
 
   @ApiOperation({ summary: 'Open case(s) by slug' })
   @ApiResponse({ status: 200, description: 'Return opened case(s)' })
+  @Throttle({ default: { ttl: 1_000, limit: 10 } })
+  @Post(':slug/demo-open')
+  async openDemoCaseBySlug(
+    @Param('slug') slug: string,
+    @Body('count') count: number = 1,
+  ) {
+    const caseEntity = await this.caseService.findBySlug(slug)
+    return this.caseService.openDemoCase(caseEntity.id, count)
+  }
+
+  @ApiOperation({ summary: 'Open case(s) by slug' })
+  @ApiResponse({ status: 200, description: 'Return opened case(s)' })
   // Burst protection on a money-spending endpoint. Allows ~5 opens/sec
   // (handles the user spamming the open button) while blocking automated
   // 100/sec floods. Each open also publishes a LiveDrop, so this doubles

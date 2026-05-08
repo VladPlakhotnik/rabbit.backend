@@ -405,6 +405,10 @@ export class CaseService {
     return winnerRange.skinCase
   }
 
+  private generateEphemeralRandomNumber(): number {
+    return crypto.randomBytes(4).readUInt32BE(0) / 0x100000000
+  }
+
   // Вынесенная логика получения доступных скинов.
   //
   // Polymorphic: for Dota cases, the ManyToOne JOIN to CsgoSkin returns
@@ -457,6 +461,83 @@ export class CaseService {
     return valid
   }
 
+  private async reserveLimitedCopies(
+    caseId: number,
+    count: number,
+  ): Promise<boolean> {
+    const result = await this.caseRepository
+      .createQueryBuilder()
+      .update(Case)
+      .set({ remaining_count: () => 'remaining_count - :count' })
+      .where('id = :caseId', { caseId })
+      .andWhere('is_limited = true')
+      .andWhere('is_available = true')
+      .andWhere('remaining_count >= :count', { count })
+      .returning('id')
+      .execute()
+
+    return (result.affected ?? 0) > 0
+  }
+
+  private async restoreLimitedCopies(
+    caseId: number,
+    count: number,
+  ): Promise<void> {
+    await this.caseRepository.increment({ id: caseId }, 'remaining_count', count)
+  }
+
+  async openDemoCase(
+    caseId: number,
+    count: number = 1,
+  ): Promise<{
+    results: Array<{
+      winner: SkinCase
+      inventory: UserInventory
+      game_id: number
+    }>
+    game_id: number
+    totalCost: number
+  }> {
+    const caseEntity = await this.validateCase(caseId)
+
+    if (count < 1 || count > 5) {
+      throw new BadRequestException('Count must be between 1 and 5')
+    }
+
+    const availableSkinCases = await this.getAvailableSkins(caseEntity)
+    const ticketRanges = this.prepareTicketRanges(availableSkinCases)
+    const results: Array<{
+      winner: SkinCase
+      inventory: UserInventory
+      game_id: number
+    }> = []
+
+    for (let i = 0; i < count; i++) {
+      const winner = this.selectWinner(
+        ticketRanges,
+        this.generateEphemeralRandomNumber(),
+      )
+
+      results.push({
+        winner,
+        inventory: {
+          id: -1 * (i + 1),
+          obtained_at: new Date().toISOString(),
+          is_sold: false,
+          is_withdrawn: false,
+          withdrawn_at: null,
+        } as unknown as UserInventory,
+        game_id: 0,
+      })
+    }
+
+    return {
+      results,
+      game_id: 0,
+      totalCost: caseEntity.case_price * count,
+    }
+  }
+
   async openCase(
     caseId: number,
     userId: number,
@@ -492,20 +573,41 @@ export class CaseService {
       houseEdgeBps,
     })
 
+    let limitedReserved = false
+    if (caseEntity.is_limited) {
+      limitedReserved = await this.reserveLimitedCopies(caseEntity.id, count)
+      if (!limitedReserved) {
+        throw new BadRequestException(
+          'Not enough copies of this case remaining',
+        )
+      }
+    }
+
     // Проверка баланса и списание средств — один раз на всё событие.
-    await this.userService.validateAndDeductBalance(userId, totalCost, {
-      vipEarning: {
-        ...vipEarning,
-        sourceId: `case:${crypto.randomUUID()}`,
-        metadata: {
-          caseId,
-          caseName: caseEntity.name,
-          casePrice: caseEntity.case_price,
-          count,
-          gameType: caseEntity.game_type,
+    try {
+      await this.userService.validateAndDeductBalance(userId, totalCost, {
+        vipEarning: {
+          ...vipEarning,
+          sourceId: `case:${crypto.randomUUID()}`,
+          metadata: {
+            caseId,
+            caseName: caseEntity.name,
+            casePrice: caseEntity.case_price,
+            count,
+            gameType: caseEntity.game_type,
+          },
         },
-      },
-    })
+      })
+    } catch (err) {
+      if (limitedReserved) {
+        await this.restoreLimitedCopies(caseEntity.id, count).catch(() => {
+          this.logger.warn(
+            `failed to restore case reservation for case ${caseEntity.id}`,
+          )
+        })
+      }
+      throw err
+    }
 
     // Single user lookup reused for all LiveDrop publishes in this call.
     // Loaded eagerly so the feed entry doesn't add latency to the
