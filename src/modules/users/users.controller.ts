@@ -200,9 +200,9 @@ export class UserController {
         )
       }
 
-      // Get bonus amount from environment variable (default: 0)
+      // Get bonus amount from environment variable (default: $0.50)
       const bonusAmount = parseFloat(
-        process.env.TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT || '0',
+        process.env.TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT || '0.50',
       )
 
       if (bonusAmount <= 0) {

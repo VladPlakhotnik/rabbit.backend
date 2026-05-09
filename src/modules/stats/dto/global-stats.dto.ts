@@ -15,14 +15,15 @@ export class GlobalStatsDto {
   players!: number
 
   @ApiProperty({
-    description: 'Total games played (case openings + upgrade attempts).',
+    description:
+      'Total games played: case openings, upgrade attempts, completed Mines sessions, completed Crash sessions, and VIP case opens.',
     example: 34091561,
   })
   totalGames!: number
 
   @ApiProperty({
     description:
-      'Total amount won by users — sum of skin prices from case drops and successful upgrades.',
+      'Total amount won by users: case drops, successful upgrades, Mines cashouts, Crash cashouts, and VIP case rewards.',
     example: 87014956,
   })
   won!: number

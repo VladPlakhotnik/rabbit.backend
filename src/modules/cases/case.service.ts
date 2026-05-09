@@ -46,6 +46,10 @@ interface TicketRange {
   end: number
 }
 
+interface OpenCaseOptions {
+  free?: boolean
+}
+
 // `chance` is `numeric(5, 2)` — up to two decimals (e.g. 50.25). Multiplying
 // by 1 000 turns it into integer tickets without losing that resolution, so
 // a case whose chances sum to 100 % yields exactly 100 000 tickets. Both the
@@ -542,6 +546,7 @@ export class CaseService {
     caseId: number,
     userId: number,
     count: number = 1,
+    options: OpenCaseOptions = {},
   ): Promise<{
     results: Array<{
       winner: SkinCase
@@ -558,20 +563,22 @@ export class CaseService {
       throw new BadRequestException('Count must be between 1 and 5')
     }
 
-    const totalCost = caseEntity.case_price * count
+    const paidCost = caseEntity.case_price * count
+    const totalCost = options.free ? 0 : paidCost
     const availableSkinCases = await this.getAvailableSkins(caseEntity)
-    const houseEdgeBps = estimateCaseHouseEdgeBps(
-      caseEntity.case_price,
-      availableSkinCases.map(skinCase => ({
-        chance: skinCase.chance,
-        marketPrice: skinCase.skin?.market_price,
-      })),
-    )
-    const vipEarning = calculateVipEarning({
-      sourceType: 'case_open',
-      wagerAmount: totalCost,
-      houseEdgeBps,
-    })
+    const vipEarning = options.free
+      ? null
+      : calculateVipEarning({
+          sourceType: 'case_open',
+          wagerAmount: paidCost,
+          houseEdgeBps: estimateCaseHouseEdgeBps(
+            caseEntity.case_price,
+            availableSkinCases.map(skinCase => ({
+              chance: skinCase.chance,
+              marketPrice: skinCase.skin?.market_price,
+            })),
+          ),
+        })
 
     let limitedReserved = false
     if (caseEntity.is_limited) {
@@ -585,19 +592,21 @@ export class CaseService {
 
     // Проверка баланса и списание средств — один раз на всё событие.
     try {
-      await this.userService.validateAndDeductBalance(userId, totalCost, {
-        vipEarning: {
-          ...vipEarning,
-          sourceId: `case:${crypto.randomUUID()}`,
-          metadata: {
-            caseId,
-            caseName: caseEntity.name,
-            casePrice: caseEntity.case_price,
-            count,
-            gameType: caseEntity.game_type,
+      if (!options.free && vipEarning) {
+        await this.userService.validateAndDeductBalance(userId, paidCost, {
+          vipEarning: {
+            ...vipEarning,
+            sourceId: `case:${crypto.randomUUID()}`,
+            metadata: {
+              caseId,
+              caseName: caseEntity.name,
+              casePrice: caseEntity.case_price,
+              count,
+              gameType: caseEntity.game_type,
+            },
           },
-        },
-      })
+        })
+      }
     } catch (err) {
       if (limitedReserved) {
         await this.restoreLimitedCopies(caseEntity.id, count).catch(() => {
@@ -685,7 +694,7 @@ export class CaseService {
       userId,
       caseId,
       caseEntity.name,
-      caseEntity.case_price,
+      options.free ? 0 : caseEntity.case_price,
       caseEntity.img_url,
       historyDrops,
       caseEntity.game_type,
@@ -733,5 +742,9 @@ export class CaseService {
       results,
       totalCost,
     }
+  }
+
+  openFreeCase(caseId: number, userId: number) {
+    return this.openCase(caseId, userId, 1, { free: true })
   }
 }

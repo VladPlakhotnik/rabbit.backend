@@ -579,7 +579,10 @@ export class UserService {
     bonusAmount: number,
   ): Promise<User> {
     return this.userRepository.manager.transaction(async manager => {
-      const user = await manager.findOne(User, { where: { id: userId } })
+      const user = await manager.findOne(User, {
+        where: { id: userId },
+        lock: { mode: 'pessimistic_write' },
+      })
 
       if (!user) {
         throw new NotFoundException('User not found')
@@ -591,7 +594,7 @@ export class UserService {
         )
       }
 
-      user.balance += bonusAmount
+      user.balance = Math.round((Number(user.balance) + bonusAmount) * 100) / 100
       user.telegram_bonus_claimed = true
       await manager.save(user)
 

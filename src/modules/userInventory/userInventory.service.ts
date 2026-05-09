@@ -336,6 +336,35 @@ export class UserInventoryService {
     })
   }
 
+  async createInventoryFromReward(
+    userId: number,
+    skin: CsgoSkin | DotaSkin,
+    gameType: GameType,
+  ): Promise<UserInventory> {
+    return this.userInventoryRepository.manager.transaction(async manager => {
+      const inventory = manager.create(UserInventory, {
+        user: { id: userId },
+        game_type: gameType,
+        csgo_skin_id: gameType === 'csgo' ? skin.id : null,
+        dota_skin_id: gameType === 'dota' ? skin.id : null,
+        case: null,
+        clickerCase: null,
+        obtained_at: new Date(),
+        is_sold: false,
+        is_withdrawn: false,
+        withdrawn_at: null,
+      })
+      const saved = await manager.save(inventory)
+      saved.skin = skin as unknown as CsgoSkin
+      if (gameType === 'csgo') {
+        saved.csgoSkin = skin as CsgoSkin
+      } else {
+        saved.dotaSkin = skin as DotaSkin
+      }
+      return saved
+    })
+  }
+
   async sellSelectedSkins(
     inventoryIds: number[],
     userId: number,

@@ -250,6 +250,21 @@ export class NotificationService {
     )
   }
 
+  async notifyVipLevelUp(
+    userId: number,
+    tierId: string,
+    threshold: number,
+  ): Promise<Notification> {
+    return this.create(
+      {
+        i18n_key: 'vip.levelUp',
+        i18n_params: { tierId, threshold },
+        is_important: true,
+      },
+      userId,
+    )
+  }
+
   async delete(id: number): Promise<void> {
     const notification = await this.notificationRepository.findOneBy({ id })
     if (!notification) {

@@ -28,6 +28,13 @@ export class RewardsController {
     return this.rewardsService.getSpinStatus(req.user.id)
   }
 
+  @ApiOperation({ summary: 'Get active bonus wheel reward catalog' })
+  @ApiResponse({ status: 200, description: 'Returns active wheel rewards' })
+  @Get('catalog')
+  async catalog() {
+    return this.rewardsService.getCatalog()
+  }
+
   @ApiOperation({ summary: 'Spin the bonus wheel' })
   @ApiResponse({ status: 200, description: 'Returns the won reward + sector index' })
   @UseGuards(AuthGuard('jwt'))

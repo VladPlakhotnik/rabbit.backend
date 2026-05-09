@@ -1,12 +1,12 @@
 import { Injectable, BadRequestException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { In, Repository } from 'typeorm'
 import { Reward } from './entities/rewards.entity'
 import { RewardsCooldown } from './entities/rewardsCooldown.entity'
 import { UserBonusService } from '../userBonuses/userBonus.service'
+import { RewardType } from './enums/reward-type.enum'
 
-// TEMP: shortened for QA. Restore to 48h before launch.
-const SPIN_COOLDOWN_MS = 10 * 1000
+const SPIN_COOLDOWN_MS = 2 * 24 * 60 * 60 * 1000
 // Bonus card lifetime — same window the user has to claim before it
 // silently disappears (`getUserBonuses` filters by `expired_at > now`).
 // Aligned with the spin cadence: a user can win at most ~one card per
@@ -14,6 +14,14 @@ const SPIN_COOLDOWN_MS = 10 * 1000
 // (1–2 cards typical). Older 14-day cards stay valid until their own
 // expiry — no migration needed.
 const BONUS_CARD_TTL_MS = 2 * 24 * 60 * 60 * 1000
+const WHEEL_REWARD_TYPES = [
+  RewardType.ITEM,
+  RewardType.CASE,
+  RewardType.RESPIN,
+  RewardType.BALANCE,
+  RewardType.CARROTS,
+  RewardType.CODE,
+]
 
 export interface SpinStatus {
   canSpin: boolean
@@ -61,6 +69,17 @@ export class RewardsService {
     }
   }
 
+  async getCatalog(): Promise<Reward[]> {
+    return this.rewardRepository.find({
+      where: {
+        is_active: true,
+        type: In(WHEEL_REWARD_TYPES),
+      },
+      relations: ['case', 'csgoSkin', 'dotaSkin'],
+      order: { id: 'ASC' },
+    })
+  }
+
   async spin(userId: number): Promise<SpinResult> {
     const status = await this.getSpinStatus(userId)
 
@@ -71,7 +90,8 @@ export class RewardsService {
     // Order matches the wheel UI sectors (clockwise from pointer at top).
     // Frontend uses awardIndex to compute the rotation target.
     const rewards = await this.rewardRepository.find({
-      where: { is_active: true },
+      where: { is_active: true, type: In(WHEEL_REWARD_TYPES) },
+      relations: ['case', 'csgoSkin', 'dotaSkin'],
       order: { id: 'ASC' },
     })
 

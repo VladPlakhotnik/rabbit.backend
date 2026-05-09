@@ -1,19 +1,21 @@
 import { Inject, Injectable, Logger } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Repository } from 'typeorm'
+import { Not, Repository } from 'typeorm'
 import Redis from 'ioredis'
 import { User } from '../users/user.entity'
 import { CaseHistory } from '../userHistory/entities/case-history.entity'
 import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
+import { MinesSession } from '../mines/entities/mines-session.entity'
+import { CrashSession } from '../crash/entities/crash-session.entity'
+import { VipRewardClaim } from '../vip/vip-reward-claim.entity'
 import { REDIS_CLIENT } from '../../core/redis/redis.constants'
 import { PresenceService } from '../../core/presence/presence.service'
 import { GlobalStatsDto } from './dto/global-stats.dto'
 import { UserStatsDto } from './dto/user-stats.dto'
 
-// Bumped to v2 — `online` source switched from `user_history` window to
-// real-time presence (socket.io connections). Old cached payloads under v1
-// would otherwise mask the new value for up to 30s after deploy.
-const CACHE_KEY = 'stats:global:v2'
+// Bumped to v3: totals now include completed Mines and Crash sessions
+// plus VIP case opens, not only regular cases and upgrades.
+const CACHE_KEY = 'stats:global:v3'
 const CACHE_TTL_SECONDS = 30
 
 @Injectable()
@@ -27,6 +29,12 @@ export class StatsService {
     private readonly caseHistoryRepository: Repository<CaseHistory>,
     @InjectRepository(UpgradeHistory)
     private readonly upgradeHistoryRepository: Repository<UpgradeHistory>,
+    @InjectRepository(MinesSession)
+    private readonly minesSessionRepository: Repository<MinesSession>,
+    @InjectRepository(CrashSession)
+    private readonly crashSessionRepository: Repository<CrashSession>,
+    @InjectRepository(VipRewardClaim)
+    private readonly vipRewardClaimRepository: Repository<VipRewardClaim>,
     @Inject(REDIS_CLIENT)
     private readonly redis: Redis,
     private readonly presenceService: PresenceService,
@@ -38,21 +46,40 @@ export class StatsService {
       return cached
     }
 
-    const [online, players, casesPlayed, upgradesPlayed, casesWon, upgradesWon] =
-      await Promise.all([
-        this.countOnlineUsers(),
-        this.countTotalPlayers(),
-        this.countCaseOpenings(),
-        this.countUpgradeAttempts(),
-        this.sumCaseWinnings(),
-        this.sumUpgradeWinnings(),
-      ])
+    const [
+      online,
+      players,
+      casesPlayed,
+      upgradesPlayed,
+      minesPlayed,
+      crashPlayed,
+      vipCasesOpened,
+      casesWon,
+      upgradesWon,
+      minesWon,
+      crashWon,
+      vipCasesWon,
+    ] = await Promise.all([
+      this.countOnlineUsers(),
+      this.countTotalPlayers(),
+      this.countCaseOpenings(),
+      this.countUpgradeAttempts(),
+      this.countCompletedMinesSessions(),
+      this.countCompletedCrashSessions(),
+      this.countVipCaseOpens(),
+      this.sumCaseWinnings(),
+      this.sumUpgradeWinnings(),
+      this.sumMinesWinnings(),
+      this.sumCrashWinnings(),
+      this.sumVipCaseWinnings(),
+    ])
 
     const stats: GlobalStatsDto = {
       online,
       players,
-      totalGames: casesPlayed + upgradesPlayed,
-      won: Math.round(casesWon + upgradesWon),
+      totalGames:
+        casesPlayed + upgradesPlayed + minesPlayed + crashPlayed + vipCasesOpened,
+      won: Math.round(casesWon + upgradesWon + minesWon + crashWon + vipCasesWon),
     }
 
     await this.writeCache(stats)
@@ -84,6 +111,24 @@ export class StatsService {
 
   private async countUpgradeAttempts(): Promise<number> {
     return this.upgradeHistoryRepository.count()
+  }
+
+  private async countCompletedMinesSessions(): Promise<number> {
+    return this.minesSessionRepository.count({
+      where: { status: Not('active') },
+    })
+  }
+
+  private async countCompletedCrashSessions(): Promise<number> {
+    return this.crashSessionRepository.count({
+      where: { status: Not('active') },
+    })
+  }
+
+  private async countVipCaseOpens(): Promise<number> {
+    return this.vipRewardClaimRepository.count({
+      where: { reward_type: 'vip_case_open' },
+    })
   }
 
   private async sumCaseWinnings(): Promise<number> {
@@ -120,6 +165,33 @@ export class StatsService {
     return Number(result?.total ?? 0)
   }
 
+  private async sumMinesWinnings(): Promise<number> {
+    const result = await this.minesSessionRepository
+      .createQueryBuilder('m')
+      .select('COALESCE(SUM(m.win_amount), 0)', 'total')
+      .where('m.status = :status', { status: 'cashed_out' })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
+  private async sumCrashWinnings(): Promise<number> {
+    const result = await this.crashSessionRepository
+      .createQueryBuilder('c')
+      .select('COALESCE(SUM(c.win_amount), 0)', 'total')
+      .where('c.status = :status', { status: 'cashed_out' })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
+  private async sumVipCaseWinnings(): Promise<number> {
+    const result = await this.vipRewardClaimRepository
+      .createQueryBuilder('v')
+      .select('COALESCE(SUM(v.amount), 0)', 'total')
+      .where('v.reward_type = :rewardType', { rewardType: 'vip_case_open' })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
   /**
    * Per-user counters for the profile page. Same shape as global stats but
    * scoped to one user_id. No cache layer here — the profile page is hit
@@ -133,30 +205,58 @@ export class StatsService {
       caseWinnings,
       legacyCaseWinnings,
       upgradeWinnings,
+      minesPlayed,
+      crashPlayed,
+      vipCasesOpened,
+      minesWinnings,
+      crashWinnings,
+      vipCaseWinnings,
       caseDropTopWin,
       legacyCaseTopWin,
       upgradeTopWin,
+      minesTopWin,
+      crashTopWin,
+      vipCaseTopWin,
     ] = await Promise.all([
       this.countUserCaseOpenings(userId),
       this.countUserUpgradeAttempts(userId),
       this.sumUserCaseDropWinnings(userId),
       this.sumUserLegacyCaseWinnings(userId),
       this.sumUserUpgradeWinnings(userId),
+      this.countUserCompletedMinesSessions(userId),
+      this.countUserCompletedCrashSessions(userId),
+      this.countUserVipCaseOpens(userId),
+      this.sumUserMinesWinnings(userId),
+      this.sumUserCrashWinnings(userId),
+      this.sumUserVipCaseWinnings(userId),
       this.maxUserCaseDropWin(userId),
       this.maxUserLegacyCaseWin(userId),
       this.maxUserUpgradeWin(userId),
+      this.maxUserMinesWin(userId),
+      this.maxUserCrashWin(userId),
+      this.maxUserVipCaseWin(userId),
     ])
 
-    const totalWon = caseWinnings + legacyCaseWinnings + upgradeWinnings
+    const totalWon =
+      caseWinnings +
+      legacyCaseWinnings +
+      upgradeWinnings +
+      minesWinnings +
+      crashWinnings +
+      vipCaseWinnings
     const topWin = Math.max(
       caseDropTopWin,
       legacyCaseTopWin,
       upgradeTopWin,
+      minesTopWin,
+      crashTopWin,
+      vipCaseTopWin,
       0,
     )
 
     return {
-      gamesPlayed: casesPlayed + upgradesPlayed,
+      gamesPlayed:
+        casesPlayed + upgradesPlayed + minesPlayed + crashPlayed + vipCasesOpened,
       totalWon: Number(totalWon.toFixed(2)),
       topWin: Number(topWin.toFixed(2)),
     }
@@ -173,6 +273,24 @@ export class StatsService {
 
   private async countUserUpgradeAttempts(userId: number): Promise<number> {
     return this.upgradeHistoryRepository.count({ where: { user_id: userId } })
+  }
+
+  private async countUserCompletedMinesSessions(userId: number): Promise<number> {
+    return this.minesSessionRepository.count({
+      where: { user_id: userId, status: Not('active') },
+    })
+  }
+
+  private async countUserCompletedCrashSessions(userId: number): Promise<number> {
+    return this.crashSessionRepository.count({
+      where: { user_id: userId, status: Not('active') },
+    })
+  }
+
+  private async countUserVipCaseOpens(userId: number): Promise<number> {
+    return this.vipRewardClaimRepository.count({
+      where: { user_id: userId, reward_type: 'vip_case_open' },
+    })
   }
 
   private async sumUserCaseDropWinnings(userId: number): Promise<number> {
@@ -205,6 +323,42 @@ export class StatsService {
     return Number(result?.total ?? 0)
   }
 
+  private async sumUserMinesWinnings(userId: number): Promise<number> {
+    const result = await this.minesSessionRepository
+      .createQueryBuilder('m')
+      .select('COALESCE(SUM(m.win_amount), 0)', 'total')
+      .where('m.user_id = :userId AND m.status = :status', {
+        userId,
+        status: 'cashed_out',
+      })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
+  private async sumUserCrashWinnings(userId: number): Promise<number> {
+    const result = await this.crashSessionRepository
+      .createQueryBuilder('c')
+      .select('COALESCE(SUM(c.win_amount), 0)', 'total')
+      .where('c.user_id = :userId AND c.status = :status', {
+        userId,
+        status: 'cashed_out',
+      })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
+  private async sumUserVipCaseWinnings(userId: number): Promise<number> {
+    const result = await this.vipRewardClaimRepository
+      .createQueryBuilder('v')
+      .select('COALESCE(SUM(v.amount), 0)', 'total')
+      .where('v.user_id = :userId AND v.reward_type = :rewardType', {
+        userId,
+        rewardType: 'vip_case_open',
+      })
+      .getRawOne<{ total: string }>()
+    return Number(result?.total ?? 0)
+  }
+
   private async maxUserCaseDropWin(userId: number): Promise<number> {
     const result = await this.caseHistoryRepository.manager.query<
       { max: string | null }[]
@@ -231,6 +385,42 @@ export class StatsService {
       .createQueryBuilder('u')
       .select('MAX(u.skin_price)', 'max')
       .where('u.user_id = :userId AND u.success = true', { userId })
+      .getRawOne<{ max: string | null }>()
+    return Number(result?.max ?? 0)
+  }
+
+  private async maxUserMinesWin(userId: number): Promise<number> {
+    const result = await this.minesSessionRepository
+      .createQueryBuilder('m')
+      .select('MAX(m.win_amount)', 'max')
+      .where('m.user_id = :userId AND m.status = :status', {
+        userId,
+        status: 'cashed_out',
+      })
+      .getRawOne<{ max: string | null }>()
+    return Number(result?.max ?? 0)
+  }
+
+  private async maxUserCrashWin(userId: number): Promise<number> {
+    const result = await this.crashSessionRepository
+      .createQueryBuilder('c')
+      .select('MAX(c.win_amount)', 'max')
+      .where('c.user_id = :userId AND c.status = :status', {
+        userId,
+        status: 'cashed_out',
+      })
+      .getRawOne<{ max: string | null }>()
+    return Number(result?.max ?? 0)
+  }
+
+  private async maxUserVipCaseWin(userId: number): Promise<number> {
+    const result = await this.vipRewardClaimRepository
+      .createQueryBuilder('v')
+      .select('MAX(v.amount)', 'max')
+      .where('v.user_id = :userId AND v.reward_type = :rewardType', {
+        userId,
+        rewardType: 'vip_case_open',
+      })
       .getRawOne<{ max: string | null }>()
     return Number(result?.max ?? 0)
   }

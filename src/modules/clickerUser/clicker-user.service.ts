@@ -649,6 +649,96 @@ export class ClickerUserService implements OnModuleInit {
     }
   }
 
+  async grantWheelRewardPoints(
+    targetUserId: number,
+    amount: number,
+  ): Promise<{
+    user_id: number
+    points: number
+    level_id: number
+  }> {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('amount must be a positive finite number')
+    }
+    const intAmount = Math.trunc(amount)
+
+    await this.findOrCreateByUserId(targetUserId)
+    await this.flushService.flushUser(targetUserId)
+
+    const result = await this.dataSource.transaction(async manager => {
+      const user = await manager
+        .createQueryBuilder(ClickerUser, 'cu')
+        .where('cu.user_id = :targetUserId', { targetUserId })
+        .setLock('pessimistic_write')
+        .getOne()
+      if (!user) {
+        throw new NotFoundException('Clicker profile not found')
+      }
+
+      const userWithLevel = await manager.findOne(ClickerUser, {
+        where: { user_id: targetUserId },
+        relations: ['level'],
+      })
+      const currentLevel = userWithLevel?.level ?? null
+
+      const stateBefore = {
+        points: user.points,
+        total_points: user.total_points,
+        level_id: currentLevel?.id ?? null,
+      }
+
+      user.points += intAmount
+      user.total_points = (user.total_points ?? 0) + intAmount
+
+      const sorted = await this.levelsCache.getBunnyLevels()
+      const currentLevelId = currentLevel?.id ?? 0
+      let nextLevel = currentLevel
+      for (const lv of sorted) {
+        if (lv.id < currentLevelId) continue
+        if (user.total_points >= lv.points_required) {
+          nextLevel = lv
+        } else {
+          break
+        }
+      }
+
+      if (nextLevel) {
+        user.level = nextLevel
+      }
+      user.last_energy_update = new Date()
+      await manager.save(user)
+
+      return {
+        stateBefore,
+        stateAfter: {
+          points: user.points,
+          total_points: user.total_points,
+          level_id: user.level?.id ?? null,
+        },
+        points: user.points,
+        level_id: user.level?.id ?? 0,
+      }
+    })
+
+    await this.redisService.clearUser(targetUserId)
+
+    await this.historyService.record({
+      user_id: targetUserId,
+      action: 'bonus_wheel_reward',
+      payload: { amount: intAmount, reward_type: 'CARROTS' },
+      state_before: result.stateBefore,
+      state_after: result.stateAfter,
+      source: 'rest',
+      ip: null,
+    })
+
+    return {
+      user_id: targetUserId,
+      points: result.points,
+      level_id: result.level_id,
+    }
+  }
+
   /**
    * Claim the autoclicker pending bank. Atomic Redis Lua —
    * concurrent calls (double-tap, two tabs) get serialised and only

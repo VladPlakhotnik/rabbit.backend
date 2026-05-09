@@ -42,6 +42,7 @@ import { AdminMutationAuditInterceptor } from './modules/admin/interceptors/admi
 import { CrashAutoBetsModule } from './modules/crashAutoBets/crash-auto-bets.module'
 import { CrashLiveModule } from './modules/crashLive/crash-live.module'
 import { CrashModule } from './modules/crash/crash.module'
+import { EarnVaultModule } from './modules/earnVault/earn-vault.module'
 import { VipModule } from './modules/vip/vip.module'
 
 @Module({
@@ -88,6 +89,7 @@ import { VipModule } from './modules/vip/vip.module'
     CrashAutoBetsModule,
     CrashLiveModule,
     VipModule,
+    EarnVaultModule,
     AdminModule,
     // TO DO
     // PaymentModule,
