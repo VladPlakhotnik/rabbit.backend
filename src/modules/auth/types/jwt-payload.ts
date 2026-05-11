@@ -11,6 +11,7 @@ export interface AccessTokenPayload {
   steam_id?: number | string | null
   telegram_id?: number | string | null
   google_id?: string | null
+  discord_id?: string | null
   type: 'access'
   iat?: number
   exp?: number

@@ -5,7 +5,6 @@ import 'reflect-metadata'
 import { NestFactory } from '@nestjs/core'
 import { AppModule } from './app.module'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
-import Stripe from 'stripe'
 import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import { Logger, ValidationPipe } from '@nestjs/common'
@@ -17,7 +16,6 @@ import { validateEnv } from './core/config/validate-env'
 // on the first request that needs the missing variable.
 validateEnv()
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '')
 const logger = new Logger('Bootstrap')
 
 async function bootstrap() {

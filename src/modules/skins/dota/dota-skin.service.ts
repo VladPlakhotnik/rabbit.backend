@@ -37,6 +37,14 @@ export interface PaginatedDotaSkins {
   hasMore: boolean
 }
 
+const DEFAULT_SKIN_PAGE = 1
+const DEFAULT_SKIN_PAGE_LIMIT = 100
+const MAX_SKIN_PAGE_LIMIT = 100
+const MAX_SKIN_SEARCH_LIMIT = 50
+
+const normalizePositiveInteger = (value: number, fallback: number): number =>
+  Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback
+
 @Injectable()
 export class DotaSkinService {
   private readonly logger = new Logger(DotaSkinService.name)
@@ -60,20 +68,63 @@ export class DotaSkinService {
   async searchSimilar(searchTerm: string, limit = 20): Promise<DotaSkin[]> {
     if (!searchTerm.trim()) return []
 
+    const safeLimit = Math.min(
+      normalizePositiveInteger(limit, 20),
+      MAX_SKIN_SEARCH_LIMIT,
+    )
+
     return this.repo
       .createQueryBuilder('skin')
       .where('skin.market_hash_name ILIKE :term', { term: `%${searchTerm}%` })
       .andWhere('skin.status != :disabled', { disabled: SkinStatus.Disabled })
       .orderBy('skin.market_price', 'DESC')
-      .limit(limit)
+      .limit(safeLimit)
       .getMany()
   }
 
+  async getItemTypes(): Promise<string[]> {
+    const typeExpression = `
+      COALESCE(
+        NULLIF(TRIM(skin.item_type), ''),
+        NULLIF(TRIM(skin.slot), ''),
+        NULLIF(TRIM(skin.category), ''),
+        NULLIF(TRIM(skin.rarity), '')
+      )
+    `
+
+    const rows = await this.repo
+      .createQueryBuilder('skin')
+      .select(`DISTINCT ${typeExpression}`, 'itemType')
+      .where('skin.status = :available', { available: SkinStatus.Available })
+      .andWhere(`${typeExpression} IS NOT NULL`)
+      .orderBy(typeExpression, 'ASC')
+      .getRawMany<{ itemType: string | null }>()
+
+    const seen = new Set<string>()
+
+    return rows.reduce<string[]>((acc, row) => {
+      const itemType = row.itemType?.trim()
+      const dedupeKey = itemType?.toLowerCase()
+
+      if (!itemType || !dedupeKey || seen.has(dedupeKey)) return acc
+
+      seen.add(dedupeKey)
+      acc.push(itemType)
+
+      return acc
+    }, [])
+  }
+
   async findAllPaginated(
-    page = 1,
-    limit = 100,
+    page = DEFAULT_SKIN_PAGE,
+    limit = DEFAULT_SKIN_PAGE_LIMIT,
     filters: DotaSkinFilters = {},
   ): Promise<PaginatedDotaSkins> {
+    const safePage = normalizePositiveInteger(page, DEFAULT_SKIN_PAGE)
+    const safeLimit = Math.min(
+      normalizePositiveInteger(limit, DEFAULT_SKIN_PAGE_LIMIT),
+      MAX_SKIN_PAGE_LIMIT,
+    )
     const qb = this.repo.createQueryBuilder('skin')
 
     qb.where('skin.status != :disabled', { disabled: SkinStatus.Disabled })
@@ -90,7 +141,17 @@ export class DotaSkinService {
       qb.andWhere("skin.amount_in_market != '' AND skin.amount_in_market != '0'")
     }
     if (filters.category) qb.andWhere('skin.category = :c', { c: filters.category })
-    if (filters.itemType) qb.andWhere('skin.item_type = :it', { it: filters.itemType })
+    if (filters.itemType) {
+      qb.andWhere(
+        `LOWER(COALESCE(
+          NULLIF(TRIM(skin.item_type), ''),
+          NULLIF(TRIM(skin.slot), ''),
+          NULLIF(TRIM(skin.category), ''),
+          NULLIF(TRIM(skin.rarity), '')
+        )) = LOWER(:it)`,
+        { it: filters.itemType },
+      )
+    }
     if (filters.hero) qb.andWhere('skin.hero = :hero', { hero: filters.hero })
     if (filters.rarity) qb.andWhere('skin.rarity = :rarity', { rarity: filters.rarity })
     if (filters.slot) qb.andWhere('skin.slot = :slot', { slot: filters.slot })
@@ -113,10 +174,16 @@ export class DotaSkinService {
     }
 
     qb.orderBy('skin.market_price', filters.sortDir === 'asc' ? 'ASC' : 'DESC')
-    qb.skip((page - 1) * limit).take(limit)
+    qb.skip((safePage - 1) * safeLimit).take(safeLimit)
 
     const [skins, total] = await qb.getManyAndCount()
-    return { skins, total, page, limit, hasMore: page * limit < total }
+    return {
+      skins,
+      total,
+      page: safePage,
+      limit: safeLimit,
+      hasMore: safePage * safeLimit < total,
+    }
   }
 
   async getTotalSkinsCount(): Promise<{ count: number }> {

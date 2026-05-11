@@ -34,10 +34,6 @@ import {
   clearSteamLinkStateCookie,
   readSteamLinkStateCookie,
 } from './steam-link-state'
-import {
-  clearGoogleLinkStateCookie,
-  readGoogleLinkStateCookie,
-} from './google-link-state'
 import { getClientIp, getUserAgent } from '../../common/helpers/request-meta'
 import type {
   SteamAuthResult,
@@ -45,7 +41,6 @@ import type {
   TelegramAuthResult,
   AuthCallbackUserData,
 } from './types/auth.types'
-import { ClickerChallengesService } from '../clickerChallenges/clicker-challenges.service'
 
 interface RequestWithUser extends Omit<Request, 'user'> {
   user: { id: number }
@@ -53,7 +48,7 @@ interface RequestWithUser extends Omit<Request, 'user'> {
 
 // Vocabulary for the post-OAuth redirect URLs. The frontend's
 // AuthCallback / AuthError pages parse these values straight out of
-// the query string — keep both sides in sync.
+// the query string - keep both sides in sync.
 type AuthProvider = 'steam' | 'google' | 'telegram'
 type AuthAction = 'auth' | 'link'
 type AuthErrorReason =
@@ -76,7 +71,6 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly userService: UserService,
     private readonly telegramService: TelegramService,
-    private readonly clickerChallengesService: ClickerChallengesService,
   ) {}
 
   @ApiOperation({ summary: 'Steam login' })
@@ -132,7 +126,7 @@ export class AuthController {
             `Steam ${steamIdString} linked to user ${linkedUser.id}`,
           )
         } catch (linkErr: unknown) {
-          // Linking failed → /auth/error with reason; the original
+          // Linking failed -> /auth/error with reason; the original
           // session is untouched.
           this.logger.warn(
             `Steam link failed for user ${linkingUserId}: ${
@@ -181,34 +175,6 @@ export class AuthController {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
       }
 
-      // Linking branch: same shape as the Steam callback above. If the
-      // JWT-protected /users/me/link/google endpoint set the state
-      // cookie, this round-trip is meant to attach Google to that user
-      // (not start a new session). Cookie carries an HMAC-signed
-      // user_id so it can't be tampered with. Sign-in flow continues
-      // unchanged when the cookie is absent / invalid / expired.
-      const linkingUserId = readGoogleLinkStateCookie(req)
-      if (linkingUserId !== null) {
-        clearGoogleLinkStateCookie(res)
-        try {
-          const linkedUser = await this.userService.updateGoogleIdOnly(
-            linkingUserId,
-            googleUser.google_id,
-          )
-          this.logger.log(
-            `Google ${googleUser.google_id} linked to user ${linkedUser.id}`,
-          )
-        } catch (linkErr: unknown) {
-          this.logger.warn(
-            `Google link failed for user ${linkingUserId}: ${
-              linkErr instanceof Error ? linkErr.message : 'Unknown error'
-            }`,
-          )
-          return res.redirect(this.buildErrorUrl('google', 'link', linkErr))
-        }
-        return res.redirect(this.buildSuccessUrl('google', 'link'))
-      }
-
       const userData: AuthCallbackUserData = {
         google_id: googleUser.google_id,
         steam_id: null,
@@ -248,11 +214,10 @@ export class AuthController {
         throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
       }
 
-      // Sign-in / sign-up only. Linking now lives on the JWT-protected
-      // POST /auth/telegram/link endpoint below — the previous behaviour
-      // of taking `link_to_user_id` from the URL was an account-takeover
-      // hole (any caller could attach their Telegram to anyone's user
-      // by crafting the query string).
+      // Sign-in / sign-up only. Account Settings no longer exposes
+      // Telegram linking; the old `link_to_user_id` query flow was
+      // intentionally removed because it let request input choose the
+      // destination user.
       const userData: AuthCallbackUserData = {
         telegram_user_id: telegramUser.telegram_id,
         steam_id: null,
@@ -277,7 +242,7 @@ export class AuthController {
 
   @ApiOperation({
     summary:
-      'Link Telegram to the currently authenticated account. Body must be the verbatim payload from Telegram Login Widget (or any future bot/Mini-App auth surface). The owning user is derived from the JWT — never from request input.',
+      'Link Telegram to the currently authenticated account. Body must be the verbatim payload from Telegram Login Widget. The owning user is derived from the JWT, never from request input.',
   })
   @ApiResponse({ status: 200, description: 'Telegram successfully linked' })
   @ApiResponse({ status: 400, description: 'Invalid Telegram payload / already linked elsewhere' })
@@ -289,11 +254,6 @@ export class AuthController {
     @Req() req: RequestWithUser,
     @Body() body: LinkTelegramDto,
   ): Promise<{ success: true; user: { id: number; telegram_user_id: number } }> {
-    // Verify the payload exactly the way the sign-in passport strategy
-    // does — same HMAC, same auth_date window, same Redis-backed replay
-    // gate. We use the same TelegramService method directly here instead
-    // of bouncing through the passport strategy because that strategy
-    // sources its data from the URL query, and we want body input.
     const telegramId = await this.telegramService.verifyAuthData({
       id: body.id,
       first_name: body.first_name,
@@ -308,19 +268,6 @@ export class AuthController {
       req.user.id,
       telegramId,
     )
-
-    try {
-      await this.clickerChallengesService.trackEvent(updated.id, {
-        type: 'telegram_linked',
-        telegramUserId: telegramId,
-      })
-    } catch (error: unknown) {
-      this.logger.warn(
-        `clicker challenge tracking failed for telegram_linked user=${updated.id}: ${
-          error instanceof Error ? error.message : error
-        }`,
-      )
-    }
 
     return {
       success: true,
@@ -347,7 +294,7 @@ export class AuthController {
   ): Promise<{ accessToken: string }> {
     const verified = await this.telegramService.verifyInitData(body.initData)
 
-    // Build a display_name with sensible fallbacks — Telegram users
+    // Build a display_name with sensible fallbacks - Telegram users
     // without a public username and a single-word first name are common
     // (especially mobile-only). We never want a blank display_name.
     const displayName =
@@ -367,7 +314,7 @@ export class AuthController {
       profile_url: '',
     }
 
-    // MiniApp lives inside the Telegram client — there is no browser
+    // MiniApp lives inside the Telegram client - there is no browser
     // redirect to a frontend route, so we return the access token in
     // the body and stash refresh in the same HttpOnly cookie the OAuth
     // callbacks use. Subsequent /auth/refresh calls then rotate it.
@@ -383,7 +330,7 @@ export class AuthController {
 
   @ApiOperation({
     summary:
-      'Refresh access token. Refresh JWT travels in the HttpOnly user_rt cookie set by /auth/* callbacks; the request body is ignored. The endpoint rotates BOTH tokens — the old refresh is consumed (one-shot) and a fresh pair is issued. The new refresh is set on the cookie; the new access is returned in the response body.',
+      'Refresh access token. Refresh JWT travels in the HttpOnly user_rt cookie set by /auth/* callbacks; the request body is ignored. The endpoint rotates BOTH tokens - the old refresh is consumed (one-shot) and a fresh pair is issued. The new refresh is set on the cookie; the new access is returned in the response body.',
   })
   @ApiResponse({ status: 200, description: 'New access token; refresh rotated via cookie' })
   @ApiResponse({ status: 401, description: 'Invalid or reused refresh token' })
@@ -428,7 +375,7 @@ export class AuthController {
 
   @ApiOperation({
     summary:
-      'Logout: revoke the presented refresh token and clear the cookie. Returns 204 even if the token was already invalid — the client wipes local state regardless.',
+      'Logout: revoke the presented refresh token and clear the cookie. Returns 204 even if the token was already invalid - the client wipes local state regardless.',
   })
   @ApiResponse({ status: 204, description: 'Logged out (best-effort revoke)' })
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -443,7 +390,7 @@ export class AuthController {
     clearUserRefreshCookie(res)
   }
 
-  // ─── Active sessions ────────────────────────────────────────────
+  // --- Active sessions --------------------------------------------
   // Surface for "what's logged into my account" UIs. Each item maps
   // to one device/browser. Bearer-protected; the user only sees their
   // own rows.
@@ -474,7 +421,7 @@ export class AuthController {
 
   @ApiOperation({
     summary:
-      'Revoke every session except the current one. The "current" session is identified by the jti carried in the user_rt cookie. Without the cookie, no rows are skipped — the caller will be logged out on next 401.',
+      'Revoke every session except the current one. The "current" session is identified by the jti carried in the user_rt cookie. Without the cookie, no rows are skipped - the caller will be logged out on next 401.',
   })
   @ApiResponse({ status: 200, description: '{ revoked: number }' })
   @ApiBearerAuth()
@@ -501,7 +448,7 @@ export class AuthController {
    * returns the pair so the caller can decide what to do with the
    * access token (redirect for OAuth, body for MiniApp).
    *
-   * Tokens are NEVER appended to the redirect URL — that was leaking
+   * Tokens are NEVER appended to the redirect URL - that was leaking
    * them through browser history, server access logs, and Referer.
    */
   private async handleAuthCallback(
@@ -523,7 +470,7 @@ export class AuthController {
       user = existingUser
     } else {
       // First sign-in via this provider. The clicker profile is no
-      // longer materialised here — it's created lazily the first time
+      // longer materialised here - it's created lazily the first time
       // the player actually visits the clicker tab (see
       // ClickerUserService.findOrCreateByUserId), so users who never
       // touch the clicker don't accumulate dead rows in `clicker_users`.
@@ -541,11 +488,11 @@ export class AuthController {
     return pair
   }
 
-  // ── Post-OAuth redirect targets (frontend) ────────────────────────
+  // -- Post-OAuth redirect targets (frontend) ------------------------
   //
   // Two routes, two responsibilities:
-  //   • /auth/callback  — happy path: sign-in, sign-up, link success.
-  //   • /auth/error     — anything that went wrong, with reason code
+  //   - /auth/callback  - happy path: sign-in, sign-up, link success.
+  //   - /auth/error     - anything that went wrong, with reason code
   //                       so the SPA can show a specific message.
   //
   // Both carry `?action=auth|link&provider=steam|google|telegram` so
@@ -614,7 +561,7 @@ export class AuthController {
       display_name: userData.display_name,
       avatar: userData.avatar,
       profile_url: userData.profile_url,
-      role: 'player', // PlayerRole.PLAYER — default for newly-registered users
+      role: 'player', // PlayerRole.PLAYER - default for newly-registered users
       balance: 0,
       trade_link: null,
       referral_parent_id: null,

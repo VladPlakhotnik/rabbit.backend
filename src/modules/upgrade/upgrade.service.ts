@@ -49,9 +49,15 @@ interface BalanceUpgradeContext {
 
 interface InventoryUpgradeContext {
   usedSkins: CsgoSkin[]
+  usedMaterials: UpgradeMaterialContext[]
   targetSkin: CsgoSkin
   chance: number
   totalUsedPrice: number
+}
+
+interface UpgradeMaterialContext {
+  skin: CsgoSkin
+  gameType: UpgradeGameType
 }
 
 @Injectable()
@@ -98,6 +104,7 @@ export class UpgradeService {
       const gameType: UpgradeGameType = upgradeDto.game_type ?? 'csgo'
 
       let usedSkins: CsgoSkin[] = []
+      let usedMaterials: UpgradeMaterialContext[] = []
       let targetSkin: CsgoSkin
       let chance: number
       let totalUsedPrice = 0
@@ -121,6 +128,7 @@ export class UpgradeService {
           gameType,
         )
         usedSkins = result.usedSkins
+        usedMaterials = result.usedMaterials
         targetSkin = result.targetSkin
         chance = result.chance
         totalUsedPrice = result.totalUsedPrice
@@ -139,6 +147,7 @@ export class UpgradeService {
         chance,
         mode,
         usedSkins,
+        usedMaterials,
         gameType,
       })
 
@@ -322,22 +331,17 @@ export class UpgradeService {
       )
     }
 
-    // All materials must be from the same game as the target. Mixing
-    // CSGO and Dota materials is disallowed: prices in different games
-    // aren't directly comparable for chance calculation, and the result
-    // skin lands in one game's inventory so the materials must match it.
-    const wrongGame = inventoryItems.find(item => item.game_type !== gameType)
-    if (wrongGame) {
-      throw new BadRequestException(
-        `All upgrade materials must be ${gameType} skins`,
-      )
-    }
-
     const usedSkins: CsgoSkin[] = inventoryItems.map(
       // `inv.skin` is set by @AfterLoad on UserInventory; type-narrowed
       // to CsgoSkin for downstream compatibility (runtime is DotaSkin
       // for Dota inventory rows, sharing the columns we read).
       (item: UserInventory) => item.skin,
+    )
+    const usedMaterials: UpgradeMaterialContext[] = inventoryItems.map(
+      (item: UserInventory) => ({
+        skin: item.skin,
+        gameType: item.game_type,
+      }),
     )
 
     // Note: we do NOT dedupe by `csgo_skin.id` here. Two distinct
@@ -354,7 +358,13 @@ export class UpgradeService {
     // accident on numeric collisions. Owning another copy of the target
     // skin (not used as material) is fine — see commit history for the
     // dropped `userOwnsTargetSkin` check.
-    if (usedSkins.some(skin => skin.id === upgradeDto.target_skin_id)) {
+    if (
+      inventoryItems.some(
+        item =>
+          item.game_type === gameType &&
+          item.skin.id === upgradeDto.target_skin_id,
+      )
+    ) {
       throw new BadRequestException(
         'Target skin cannot be used as upgrade material',
       )
@@ -401,7 +411,7 @@ export class UpgradeService {
 
     const chance = this.calculateChanceByPrice(totalUsedPrice, targetPrice)
 
-    return { usedSkins, targetSkin, chance, totalUsedPrice }
+    return { usedSkins, usedMaterials, targetSkin, chance, totalUsedPrice }
   }
 
   // Returns both the boolean outcome AND the actual rolled value so the
@@ -451,7 +461,13 @@ export class UpgradeService {
       Number(skin.market_price) > Number(top.market_price) ? skin : top,
     )
 
-    return this.safeRarity(mostExpensive.quality)
+    return this.safeSkinRarity(mostExpensive)
+  }
+
+  private safeSkinRarity(skin: CsgoSkin): string {
+    const skinWithDotaRarity = skin as CsgoSkin & { rarity?: string | null }
+
+    return this.safeRarity(skin.quality ?? skinWithDotaRarity.rarity)
   }
 
   private safeRarity(raw: string | null | undefined): string {
@@ -475,6 +491,7 @@ export class UpgradeService {
       chance: number
       mode: UpgradeMode
       usedSkins: readonly CsgoSkin[]
+      usedMaterials: readonly UpgradeMaterialContext[]
       gameType: UpgradeGameType
     },
   ): Promise<number> {
@@ -486,21 +503,22 @@ export class UpgradeService {
       chance,
       mode,
       usedSkins,
+      usedMaterials,
       gameType,
     } = params
 
     const oldRarity =
       mode === 'balance' ? BALANCE_RARITY : this.pickOldRarity(usedSkins)
     const newRarity = isSuccess
-      ? this.safeRarity(targetSkin.quality)
+      ? this.safeSkinRarity(targetSkin)
       : FAILED_RARITY
 
-    const materials: UpgradeHistoryMaterial[] = usedSkins.map(skin => ({
-      skin_id: skin.id,
-      name: skin.market_hash_name,
-      rarity: this.safeRarity(skin.quality),
-      price: Number(skin.market_price),
-      game_type: gameType,
+    const materials: UpgradeHistoryMaterial[] = usedMaterials.map(material => ({
+      skin_id: material.skin.id,
+      name: material.skin.market_hash_name,
+      rarity: this.safeSkinRarity(material.skin),
+      price: Number(material.skin.market_price),
+      game_type: material.gameType,
     }))
 
     const upgradeHistory = manager.create(UpgradeHistory, {

@@ -25,7 +25,7 @@ export type UpgradeGameType = 'csgo' | 'dota'
 export class UpgradeDto {
   @ApiPropertyOptional({
     description:
-      'ID скинов из инвентаря пользователя для апгрейда (обязательно при use_balance: false)',
+      'User inventory item IDs used as upgrade materials. Required when use_balance is false. Materials may come from any supported game.',
     example: [123, 456],
   })
   @ValidateIf(o => o.use_balance !== true)
@@ -39,7 +39,7 @@ export class UpgradeDto {
 
   @ApiProperty({
     description:
-      'ID скина из маркета, на который производится апгрейд. Обязателен в обоих режимах (как для инвентаря, так и для баланса).',
+      'Target catalog skin ID. The target catalog is selected by game_type.',
     example: 456,
   })
   @IsInt()
@@ -47,7 +47,7 @@ export class UpgradeDto {
   target_skin_id!: number
 
   @ApiPropertyOptional({
-    description: 'Использовать деньги с баланса вместо скинов из инвентаря',
+    description: 'Use balance instead of inventory materials.',
     example: false,
   })
   @IsOptional()
@@ -56,7 +56,7 @@ export class UpgradeDto {
 
   @ApiPropertyOptional({
     description:
-      'Сумма денег для апгрейда (обязательна и используется только при use_balance: true)',
+      'Balance amount used for the upgrade. Required and used only when use_balance is true.',
     example: 500,
     minimum: UPGRADE_LIMITS.MIN_AMOUNT,
     maximum: UPGRADE_LIMITS.MAX_AMOUNT,
@@ -69,7 +69,7 @@ export class UpgradeDto {
 
   @ApiProperty({
     description:
-      'Игра, к которой относятся скины: "csgo" или "dota". Все материалы (если режим инвентаря) должны быть из этой игры; target_skin_id ищется в соответствующем каталоге (csgo_skins или dota_skins).',
+      'Target catalog for target_skin_id: "csgo" or "dota". Inventory materials may come from any supported game.',
     enum: ['csgo', 'dota'],
     example: 'csgo',
     default: 'csgo',

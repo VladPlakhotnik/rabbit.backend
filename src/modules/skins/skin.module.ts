@@ -15,6 +15,7 @@ import { RateLimiterService } from './services/rate-limiter.service'
 import { RetryService } from './services/retry.service'
 import { SyncSchedulerService } from './scheduler/sync-scheduler.service'
 import { buildDMarketConfig } from './config/skin-sync.config'
+import { SkinPurchaseService } from './skin-purchase.service'
 
 // DI tokens for the per-game TM clients. Two instances of the same
 // class — one pointed at market.csgo.com, one at market.dota2.net.
@@ -68,6 +69,7 @@ export const TM_DOTA2_CLIENT = 'TM_DOTA2_CLIENT'
     DmarketDotaClient,
     DotaSkinService,
     DotaSyncService,
+    SkinPurchaseService,
 
     // --- Cron scheduler (drives both games) ---
     SyncSchedulerService,

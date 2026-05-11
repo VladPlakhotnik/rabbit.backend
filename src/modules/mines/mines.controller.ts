@@ -5,6 +5,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
   Req,
   UnauthorizedException,
   UseGuards,
@@ -15,6 +16,7 @@ import { Request } from 'express'
 import { User } from '../users/user.entity'
 import { CashoutDto, MakeMoveDto, StartGameDto } from './dto'
 import { MinesService } from './mines.service'
+import { normalizePagination } from '../../common/pagination'
 
 @ApiTags('mines')
 @Controller('mines')
@@ -76,10 +78,23 @@ export class MinesController {
     description: 'Game history retrieved successfully',
   })
   @Get('history')
-  async getGameHistory(@Req() req: Request & { user?: User }) {
-    const games = await this.minesService.getGameHistory(this.getUserId(req))
+  async getGameHistory(
+    @Req() req: Request & { user?: User },
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const history = await this.minesService.getGameHistory(
+      this.getUserId(req),
+      normalizePagination({ page, limit }),
+    )
 
-    return { games }
+    return {
+      games: history.items,
+      total: history.total,
+      page: history.page,
+      limit: history.limit,
+      totalPages: history.totalPages,
+    }
   }
 
   @ApiOperation({ summary: 'Get mines top winners' })

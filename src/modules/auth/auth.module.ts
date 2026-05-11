@@ -6,6 +6,7 @@ import { CacheModule } from '@nestjs/cache-manager'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { AuthController } from './auth.controller'
+import { DiscordAuthController, DiscordController } from './discord.controller'
 import { AuthService } from './auth.service'
 import { JwtStrategy } from './jwt.strategy'
 import { JwtUserCacheSubscriber } from './jwt-user-cache.subscriber'
@@ -16,7 +17,6 @@ import { UserModule } from '../users/users.module'
 import { SocialModule } from '../social/social.module'
 import { getAccessSecret } from './auth-secrets'
 import { UserRefreshToken } from './entities/user-refresh-token.entity'
-import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges.module'
 
 @Module({
   imports: [
@@ -50,7 +50,6 @@ import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges
     }),
     UserModule,
     SocialModule,
-    ClickerChallengesModule,
     TypeOrmModule.forFeature([UserRefreshToken]),
     // Global so other modules (UserService) can inject CACHE_MANAGER
      // without re-registering — that would give them a separate cache
@@ -61,11 +60,11 @@ import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges
        isGlobal: true,
      }),
     // Per-controller throttling for OAuth callbacks, /auth/refresh and
-    // telegram link/miniapp endpoints. Specific limits live as
+    // telegram miniapp endpoints. Specific limits live as
     // @Throttle({ default: { limit, ttl } }) on the handlers themselves.
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, DiscordController, DiscordAuthController],
   providers: [
     AuthService,
     JwtStrategy,

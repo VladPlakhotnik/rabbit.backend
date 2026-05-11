@@ -14,6 +14,12 @@ import {
 } from './dto/upgrade-history-detail.dto'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type NormalizedPagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
 
 type HistoryGameType = 'csgo' | 'dota'
 
@@ -127,9 +133,8 @@ export class UserHistoryService {
       cost,
       game_type: gameType,
     })
-    const savedUpgradeHistory = await this.upgradeHistoryRepository.save(
-      upgradeHistory,
-    )
+    const savedUpgradeHistory =
+      await this.upgradeHistoryRepository.save(upgradeHistory)
 
     // Добавляем запись в общую историю с generic FK
     await this.addHistory(
@@ -149,11 +154,18 @@ export class UserHistoryService {
     })
   }
 
-  async getCaseHistory(userId: number) {
-    return this.caseHistoryRepository.find({
+  async getCaseHistory(
+    userId: number,
+    pagination: NormalizedPagination = normalizePagination(),
+  ): Promise<PaginatedResponse<CaseHistory>> {
+    const [rows, total] = await this.caseHistoryRepository.findAndCount({
       where: { user_id: userId },
       order: { created_at: 'DESC' },
+      skip: pagination.skip,
+      take: pagination.limit,
     })
+
+    return buildPaginatedResponse(rows, total, pagination)
   }
 
   // Detail view for one upgrade — powers the Figma "Результат игры" modal
@@ -251,21 +263,32 @@ export class UserHistoryService {
   ): Promise<UpgradeMaterialDetailDto[]> {
     if (snapshot.length === 0) return []
 
-    const skinIds = snapshot.map(m => m.skin_id)
-    const imageById = new Map<number, string | null>()
+    const getMaterialGameType = (material: UpgradeHistoryMaterial) =>
+      material.game_type ?? gameType ?? 'csgo'
+    const getImageKey = (materialGameType: 'csgo' | 'dota', skinId: number) =>
+      `${materialGameType}:${skinId}`
+    const csgoSkinIds = snapshot
+      .filter(material => getMaterialGameType(material) === 'csgo')
+      .map(material => material.skin_id)
+    const dotaSkinIds = snapshot
+      .filter(material => getMaterialGameType(material) === 'dota')
+      .map(material => material.skin_id)
+    const imageByKey = new Map<string, string | null>()
 
-    if (gameType === 'dota') {
+    if (dotaSkinIds.length > 0) {
       const skins = await this.dotaSkinRepository.find({
-        where: { id: In(skinIds) },
+        where: { id: In(dotaSkinIds) },
         select: ['id', 'image'],
       })
-      for (const s of skins) imageById.set(s.id, s.image)
-    } else {
+      for (const s of skins) imageByKey.set(getImageKey('dota', s.id), s.image)
+    }
+
+    if (csgoSkinIds.length > 0) {
       const skins = await this.csgoSkinRepository.find({
-        where: { id: In(skinIds) },
+        where: { id: In(csgoSkinIds) },
         select: ['id', 'image'],
       })
-      for (const s of skins) imageById.set(s.id, s.image)
+      for (const s of skins) imageByKey.set(getImageKey('csgo', s.id), s.image)
     }
 
     return snapshot.map(material => ({
@@ -273,14 +296,22 @@ export class UserHistoryService {
       name: material.name,
       rarity: material.rarity,
       price: Number(material.price),
-      image: imageById.get(material.skin_id) ?? null,
+      image:
+        imageByKey.get(
+          getImageKey(getMaterialGameType(material), material.skin_id),
+        ) ?? null,
     }))
   }
 
-  async getUpgradeHistory(userId: number): Promise<UpgradeHistoryItemDto[]> {
-    const rows = await this.upgradeHistoryRepository.find({
+  async getUpgradeHistory(
+    userId: number,
+    pagination: NormalizedPagination = normalizePagination(),
+  ): Promise<PaginatedResponse<UpgradeHistoryItemDto>> {
+    const [rows, total] = await this.upgradeHistoryRepository.findAndCount({
       where: { user_id: userId },
       order: { created_at: 'DESC' },
+      skip: pagination.skip,
+      take: pagination.limit,
     })
 
     // Map to DTO so the wire contract stays narrow. `chance`, `skin_price`,
@@ -289,7 +320,7 @@ export class UserHistoryService {
     // can type the row as fully populated. A pre-migration row therefore
     // surfaces as a "lost upgrade" with `0` skin_price, which matches the
     // history table's loss state.
-    return rows.map(row => ({
+    const items = rows.map(row => ({
       id: row.id,
       cost: Number(row.cost),
       chance: row.chance != null ? Number(row.chance) : 0,
@@ -298,6 +329,8 @@ export class UserHistoryService {
       skin_id: row.skin_id,
       created_at: row.created_at,
     }))
+
+    return buildPaginatedResponse(items, total, pagination)
   }
 
   // Метод для получения детальной информации по generic FK

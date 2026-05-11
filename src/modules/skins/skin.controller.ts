@@ -1,4 +1,16 @@
-import { Controller, Get, Post, Query, Param, UseGuards } from '@nestjs/common'
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Param,
+  Req,
+  UseGuards,
+} from '@nestjs/common'
+import { AuthGuard } from '@nestjs/passport'
+import { Request } from 'express'
 import {
   ApiTags,
   ApiOperation,
@@ -15,6 +27,10 @@ import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
 import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
 import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
 import { AdminRole } from '../admin/types/admin-role.enum'
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
+import { User } from '../users/user.entity'
+import { BuySkinsDto } from './dto/buy-skins.dto'
+import { SkinPurchaseService } from './skin-purchase.service'
 
 // HTTP surface for the CSGO skin module.
 //
@@ -43,6 +59,12 @@ const parseBoolOrUndefined = (raw: string | undefined): boolean | undefined => {
   return undefined
 }
 
+const parseTextOrUndefined = (raw: string | undefined): string | undefined => {
+  const value = raw?.trim()
+
+  return value ? value : undefined
+}
+
 @ApiTags('skins')
 @Controller('skins')
 export class SkinController {
@@ -51,6 +73,7 @@ export class SkinController {
     private readonly sync: CsgoSyncService,
     private readonly dotaSkins: DotaSkinService,
     private readonly dotaSync: DotaSyncService,
+    private readonly purchases: SkinPurchaseService,
   ) {}
 
   // ---- Public read endpoints ----------------------------------------
@@ -91,14 +114,14 @@ export class SkinController {
     try {
       const filters: SkinFilters = {
         inStock: parseBoolOrUndefined(inStock),
-        category,
-        itemType,
+        category: parseTextOrUndefined(category),
+        itemType: parseTextOrUndefined(itemType),
         search: search?.trim() || undefined,
         minPrice: parseFloatOrUndefined(minPrice),
         maxPrice: parseFloatOrUndefined(maxPrice),
-        quality,
-        exterior,
-        collection,
+        quality: parseTextOrUndefined(quality),
+        exterior: parseTextOrUndefined(exterior),
+        collection: parseTextOrUndefined(collection),
         sortDir: sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
       }
 
@@ -117,6 +140,22 @@ export class SkinController {
         skins: result.skins,
         filters,
       }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Get available CSGO skin item types' })
+  @ApiResponse({ status: 200, description: 'Distinct item_type values for market filters' })
+  @Get('/csgo/item-types')
+  async getCsgoItemTypes() {
+    try {
+      const itemTypes = await this.skins.getItemTypes()
+
+      return { success: true, itemTypes }
     } catch (error) {
       return {
         success: false,
@@ -280,16 +319,16 @@ export class SkinController {
     try {
       const filters: DotaSkinFilters = {
         inStock: parseBoolOrUndefined(inStock),
-        category,
-        itemType,
+        category: parseTextOrUndefined(category),
+        itemType: parseTextOrUndefined(itemType),
         search: search?.trim() || undefined,
         minPrice: parseFloatOrUndefined(minPrice),
         maxPrice: parseFloatOrUndefined(maxPrice),
-        hero,
-        rarity,
-        slot,
-        quality,
-        collection,
+        hero: parseTextOrUndefined(hero),
+        rarity: parseTextOrUndefined(rarity),
+        slot: parseTextOrUndefined(slot),
+        quality: parseTextOrUndefined(quality),
+        collection: parseTextOrUndefined(collection),
         sortDir: sortDir === 'asc' || sortDir === 'desc' ? sortDir : undefined,
       }
 
@@ -308,6 +347,22 @@ export class SkinController {
         skins: result.skins,
         filters,
       }
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }
+    }
+  }
+
+  @ApiOperation({ summary: 'Get available Dota 2 skin item types' })
+  @ApiResponse({ status: 200, description: 'Distinct item_type values for market filters' })
+  @Get('/dota/item-types')
+  async getDotaItemTypes() {
+    try {
+      const itemTypes = await this.dotaSkins.getItemTypes()
+
+      return { success: true, itemTypes }
     } catch (error) {
       return {
         success: false,
@@ -336,6 +391,24 @@ export class SkinController {
         error: error instanceof Error ? error.message : 'Unknown error',
       }
     }
+  }
+
+  @ApiOperation({ summary: 'Buy market skins for the current user' })
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), UserThrottlerGuard)
+  @Post('/buy')
+  async buySkins(
+    @Req() req: Request & { user?: User },
+    @Body() dto: BuySkinsDto,
+  ) {
+    if (!req.user) {
+      throw new BadRequestException('User is required')
+    }
+
+    return this.purchases.buySkins(req.user.id, {
+      skinIds: dto.skin_ids,
+      gameType: dto.game_type,
+    })
   }
 
   @ApiOperation({ summary: 'Manually trigger Dota 2 catalog sync (admin only)' })

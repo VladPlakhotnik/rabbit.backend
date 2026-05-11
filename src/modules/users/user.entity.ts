@@ -85,6 +85,15 @@ export class User {
   @Column({ type: 'int', nullable: true, name: 'referral_parent_id' })
   referral_parent_id?: number | null
 
+  @Column({ type: 'int', nullable: true, name: 'referral_campaign_id' })
+  referral_campaign_id?: number | null
+
+  @Column({ type: 'varchar', length: 64, nullable: true, name: 'referral_source' })
+  referral_source?: string | null
+
+  @Column({ type: 'varchar', length: 64, nullable: true, name: 'referral_sub_id' })
+  referral_sub_id?: string | null
+
   @Column({
     type: 'bigint',
     nullable: true,
@@ -108,6 +117,72 @@ export class User {
     name: 'telegram_bonus_claimed',
   })
   telegram_bonus_claimed!: boolean
+
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    unique: true,
+    name: 'discord_user_id',
+  })
+  discord_user_id!: string | null
+
+  @Column({
+    type: 'varchar',
+    length: 100,
+    nullable: true,
+    name: 'discord_username',
+  })
+  discord_username!: string | null
+
+  @Column({
+    type: 'boolean',
+    default: false,
+    name: 'discord_bonus_claimed',
+  })
+  discord_bonus_claimed!: boolean
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+    name: 'steam_avatar_bonus_claimed_at',
+  })
+  steam_avatar_bonus_claimed_at!: Date | null
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+    name: 'steam_avatar_bonus_last_verified_at',
+  })
+  steam_avatar_bonus_last_verified_at!: Date | null
+
+  @Column({
+    type: 'boolean',
+    default: false,
+    name: 'steam_avatar_bonus_active',
+  })
+  steam_avatar_bonus_active!: boolean
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+    name: 'steam_nickname_bonus_claimed_at',
+  })
+  steam_nickname_bonus_claimed_at!: Date | null
+
+  @Column({
+    type: 'timestamp',
+    nullable: true,
+    name: 'steam_nickname_bonus_last_verified_at',
+  })
+  steam_nickname_bonus_last_verified_at!: Date | null
+
+  @Column({
+    type: 'boolean',
+    default: false,
+    name: 'steam_nickname_bonus_active',
+  })
+  steam_nickname_bonus_active!: boolean
 
   @OneToMany(() => UserInventory, inventory => inventory.user)
   inventories!: UserInventory[]

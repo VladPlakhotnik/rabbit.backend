@@ -12,18 +12,20 @@ import {
   Logger,
   Post,
 } from '@nestjs/common'
+import { Throttle } from '@nestjs/throttler'
 import { UserService } from './users.service'
+import type { SteamProfileBonusType } from './users.service'
 import { TelegramService } from '../social/services/telegram.service'
 import { AuthGuard } from '@nestjs/passport'
 import { Request, Response } from 'express'
 import { User } from './user.entity'
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
 import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
 import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
 import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
 import { AdminRole } from '../admin/types/admin-role.enum'
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger'
 import { setSteamLinkStateCookie } from '../auth/steam-link-state'
-import { setGoogleLinkStateCookie } from '../auth/google-link-state'
 
 /**
  * Controller for working with users
@@ -34,11 +36,30 @@ import { setGoogleLinkStateCookie } from '../auth/google-link-state'
 @Controller('users')
 export class UserController {
   private readonly logger = new Logger(UserController.name)
+  private static readonly MAX_TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT = 1
 
   constructor(
     private readonly userService: UserService,
     private readonly telegramService: TelegramService,
   ) { }
+
+  private getTelegramSubscriptionBonusAmount(): number {
+    const bonusAmount = Number(
+      process.env.TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT || '0.05',
+    )
+
+    if (
+      !Number.isFinite(bonusAmount) ||
+      bonusAmount <= 0 ||
+      bonusAmount > UserController.MAX_TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT
+    ) {
+      throw new BadRequestException(
+        'Telegram subscription bonus is not configured',
+      )
+    }
+
+    return bonusAmount
+  }
 
   @ApiOperation({ summary: 'Get all users (admin panel)' })
   @ApiResponse({ status: 200, description: 'Return all users' })
@@ -161,6 +182,70 @@ export class UserController {
     }
   }
 
+  @ApiOperation({ summary: 'Get Steam profile bonus status' })
+  @ApiResponse({
+    status: 200,
+    description: 'Steam avatar and nickname bonus verification status',
+  })
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/steam-profile-bonus/status')
+  async getSteamProfileBonusStatus(@Req() req: Request) {
+    const user = req.user as User
+    return this.userService.getSteamProfileBonusStatus(user.id)
+  }
+
+  @ApiOperation({
+    summary:
+      'Verify Steam profile bonus and reduce Bonus Wheel cooldown once by 6 hours',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Steam profile bonus verified successfully',
+  })
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseGuards(AuthGuard('jwt'), UserThrottlerGuard)
+  @Post('me/steam-profile-bonus/:type/claim')
+  async claimSteamProfileBonus(
+    @Param('type') type: SteamProfileBonusType,
+    @Req() req: Request,
+  ) {
+    if (type !== 'avatar' && type !== 'nickname') {
+      throw new BadRequestException('Invalid Steam profile bonus type')
+    }
+
+    const user = req.user as User
+    const result = await this.userService.claimSteamProfileBonus(user.id, type)
+
+    return {
+      message: 'Steam profile bonus verified successfully',
+      status: result.status,
+      cooldown_reduced_seconds: result.cooldownReducedSeconds,
+      user: {
+        id: result.user.id,
+        avatar: result.user.avatar,
+        display_name: result.user.display_name,
+        steam_id: result.user.steam_id,
+      },
+    }
+  }
+
+  @ApiOperation({ summary: 'Get Telegram subscription bonus status' })
+  @ApiResponse({
+    status: 200,
+    description: 'Return Telegram link, claim state and configured bonus amount',
+  })
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/telegram-subscription-bonus/status')
+  getTelegramSubscriptionBonusStatus(@Req() req: Request) {
+    const user = req.user as User
+
+    return {
+      isLinked: Boolean(user.telegram_user_id),
+      isClaimed: Boolean(user.telegram_bonus_claimed),
+      bonusAmount: this.getTelegramSubscriptionBonusAmount(),
+    }
+  }
+
   @ApiOperation({ summary: 'Claim Telegram subscription bonus' })
   @ApiResponse({
     status: 200,
@@ -170,7 +255,8 @@ export class UserController {
     status: 400,
     description: 'User is not subscribed or bonus already claimed',
   })
-  @UseGuards(AuthGuard('jwt'))
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @UseGuards(AuthGuard('jwt'), UserThrottlerGuard)
   @Post('me/telegram-subscription-bonus')
   async claimTelegramSubscriptionBonus(@Req() req: Request) {
     try {
@@ -200,16 +286,7 @@ export class UserController {
         )
       }
 
-      // Get bonus amount from environment variable (default: $0.50)
-      const bonusAmount = parseFloat(
-        process.env.TELEGRAM_SUBSCRIPTION_BONUS_AMOUNT || '0.50',
-      )
-
-      if (bonusAmount <= 0) {
-        throw new BadRequestException(
-          'Telegram subscription bonus is not configured',
-        )
-      }
+      const bonusAmount = this.getTelegramSubscriptionBonusAmount()
 
       // Claim the bonus
       const updatedUser = await this.userService.claimTelegramSubscriptionBonus(
@@ -265,12 +342,12 @@ export class UserController {
       // The state cookie carries (user_id, nonce, exp) HMAC-signed with
       // the refresh secret. The Steam callback reads it back, verifies
       // the signature, and trusts the user_id only if everything checks
-      // out. No user input, no query param — the callback can't be
+      // out. No user input, no query param - the callback can't be
       // tricked into linking to a different account.
       setSteamLinkStateCookie(res, user.id)
 
       const baseUrl = process.env.BASE_URL || 'http://localhost:5000'
-      // No query param — the cookie carries the linking intent. The
+      // No query param - the cookie carries the linking intent. The
       // /auth/steam handler kicks off the OpenID dance regardless;
       // /auth/steam/return reads the cookie to decide sign-in vs link.
       const steamAuthUrl = `${baseUrl}/auth/steam`
@@ -369,69 +446,5 @@ export class UserController {
     }
   }
 
-  @ApiOperation({
-    summary:
-      'Begin Google-account linking. Sets a short-lived signed state cookie that ties the next /auth/google round-trip to the JWT-authenticated caller, then returns the URL to redirect the browser to. Same shape as /users/me/link/steam — see that endpoint for the rationale.',
-  })
-  @ApiResponse({ status: 200, description: 'auth_url returned, state cookie set' })
-  @ApiResponse({ status: 400, description: 'Google already linked' })
-  @UseGuards(AuthGuard('jwt'))
-  @Get('me/link/google')
-  async getGoogleLinkUrl(
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    try {
-      const user = req.user as User
-
-      if (user.google_id) {
-        throw new BadRequestException(
-          'Google account is already linked to this user',
-        )
-      }
-
-      // The state cookie carries (user_id, nonce, exp) HMAC-signed with
-      // the refresh secret. The Google callback reads it back, verifies
-      // the signature, and trusts the user_id only if everything checks
-      // out. No user input, no query param.
-      setGoogleLinkStateCookie(res, user.id)
-
-      const baseUrl = process.env.BASE_URL || 'http://localhost:5000'
-      const googleAuthUrl = `${baseUrl}/auth/google`
-
-      return {
-        message: 'Google OAuth URL generated',
-        auth_url: googleAuthUrl,
-        instructions:
-          'Visit this URL within 5 minutes to link your Google account.',
-      }
-    } catch (error: unknown) {
-      this.logger.error(
-        `Error generating Google link URL for user ${req.user?.id}: ${error instanceof Error ? error.message : 'Unknown error'
-        }`,
-      )
-
-      if (
-        error instanceof BadRequestException ||
-        error instanceof NotFoundException
-      ) {
-        throw error
-      }
-
-      throw new BadRequestException(
-        'Failed to generate Google link URL. Please try again later.',
-      )
-    }
-  }
-
-  // GET /users/me/link/telegram and POST /users/me/link/telegram were
-  // removed as part of the Telegram-auth security overhaul. Both relied
-  // on `?link_to_user_id=` (unauthenticated query input) or accepted a
-  // raw `telegram_user_id` from request body without HMAC verification —
-  // either path let any caller attach an arbitrary Telegram id to their
-  // own account, or attach their Telegram to anyone's account. The
-  // canonical replacement is POST /auth/telegram/link, which requires
-  // JWT and the full HMAC-signed Telegram payload. See
-  // src/modules/auth/auth.controller.ts → linkTelegram.
 
 }

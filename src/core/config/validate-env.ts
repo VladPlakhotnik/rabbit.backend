@@ -1,7 +1,7 @@
 // Runtime sanity check on the environment. Catches missing/empty config at
 // startup instead of failing on the first request that needs it (e.g. a
-// 500 from Stripe halfway through a checkout flow because STRIPE_SECRET_KEY
-// was undefined).
+// 500 from a social or partner flow halfway through because a provider
+// key was undefined).
 //
 // In production: throws on missing REQUIRED vars — better to crash on boot
 // than to limp along serving broken endpoints.
@@ -23,10 +23,17 @@ const REQUIRED_VARS = [
 const RECOMMENDED_VARS = [
   'REDIS_URL',
   'CORS_ORIGINS',
-  'STRIPE_SECRET_KEY',
   'STEAM_API_KEY',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'TELEGRAM_BOT_TOKEN',
+  'TELEGRAM_CHANNEL_CHAT_ID',
+  'DISCORD_CLIENT_ID',
+  'DISCORD_CLIENT_SECRET',
+  'DISCORD_BOT_TOKEN',
+  'DISCORD_GUILD_ID',
+  'DISCORD_INVITE_URL',
+  'PARTNER_ATTRIBUTION_SALT',
 ] as const
 
 // Catches a copy-paste of `.env.example` where placeholders weren't replaced.

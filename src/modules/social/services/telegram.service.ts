@@ -36,6 +36,7 @@ interface TelegramChatMember {
     | 'restricted'
     | 'left'
     | 'kicked'
+  is_member?: boolean
   user: {
     id: number
     is_bot: boolean
@@ -51,12 +52,87 @@ interface TelegramApiResponse<T> {
   error_code?: number
 }
 
+const isTelegramNotSubscribedDescription = (
+  description?: string,
+): boolean => {
+  if (!description) {
+    return false
+  }
+
+  return /user not found|member not found|participant|not a member/i.test(
+    description,
+  )
+}
+
+const getTelegramApiError = (
+  error: unknown,
+): { status?: number; description?: string } => {
+  if (!error || typeof error !== 'object' || !('response' in error)) {
+    return {}
+  }
+
+  const response = error.response
+  if (!response || typeof response !== 'object') {
+    return {}
+  }
+
+  const status =
+    'status' in response && typeof response.status === 'number'
+      ? response.status
+      : undefined
+  const data = 'data' in response ? response.data : undefined
+  const rawDescription =
+    data && typeof data === 'object' && 'description' in data
+      ? data.description
+      : undefined
+  const description =
+    typeof rawDescription === 'string' ? rawDescription : undefined
+
+  return { status, description }
+}
+
 // Tightened from the original 24h. The auth payload only needs to live
 // long enough for the user to receive it from the Login Widget / bot and
 // hand it off to our backend; anything longer just gives an attacker who
 // captures the hash a longer replay window. Industry guidance for
 // payment / gambling-adjacent sites is 5–10 min — 5 fits comfortably.
 const TELEGRAM_AUTH_MAX_AGE_SEC = 5 * 60
+const TELEGRAM_AUTH_FUTURE_SKEW_SEC = 60
+
+const isValidTelegramHash = (hash: unknown): hash is string =>
+  typeof hash === 'string' && /^[a-f0-9]{64}$/i.test(hash)
+
+const safeCompareHex = (left: unknown, right: unknown): boolean => {
+  if (!isValidTelegramHash(left) || !isValidTelegramHash(right)) {
+    return false
+  }
+
+  const leftBuffer = Buffer.from(left, 'hex')
+  const rightBuffer = Buffer.from(right, 'hex')
+
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    crypto.timingSafeEqual(leftBuffer, rightBuffer)
+  )
+}
+
+const assertFreshTelegramAuthDate = (
+  authDate: number,
+  expiredMessage: string,
+): void => {
+  if (!Number.isFinite(authDate) || authDate <= 0) {
+    throw new BadRequestException('Telegram authentication date is malformed')
+  }
+
+  const currentTime = Math.floor(Date.now() / 1000)
+  if (authDate - currentTime > TELEGRAM_AUTH_FUTURE_SKEW_SEC) {
+    throw new BadRequestException('Telegram authentication data is not valid yet')
+  }
+
+  if (currentTime - authDate > TELEGRAM_AUTH_MAX_AGE_SEC) {
+    throw new BadRequestException(expiredMessage)
+  }
+}
 
 /**
  * Service for working with Telegram Bot API
@@ -109,10 +185,15 @@ export class TelegramService {
             chat_id: this.channelChatId,
             user_id: telegramUserId,
           },
+          timeout: 8000,
         }),
       )
 
       if (!response.data.ok) {
+        if (isTelegramNotSubscribedDescription(response.data.description)) {
+          return false
+        }
+
         this.logger.error(
           `Telegram API error: ${response.data.description || 'Unknown error'}`,
         )
@@ -128,14 +209,18 @@ export class TelegramService {
         return false
       }
 
-      // User is considered subscribed if status is 'creator', 'administrator', or 'member'
+      // Restricted Telegram members are still inside a supergroup when
+      // `is_member` is true; count them as subscribed for this reward.
       const subscribedStatuses: TelegramChatMember['status'][] = [
         'creator',
         'administrator',
         'member',
       ]
 
-      return subscribedStatuses.includes(member.status)
+      return (
+        subscribedStatuses.includes(member.status) ||
+        (member.status === 'restricted' && member.is_member === true)
+      )
     } catch (error: unknown) {
       if (error instanceof BadRequestException) {
         throw error
@@ -147,15 +232,12 @@ export class TelegramService {
         }`,
       )
 
-      // If user is not found (404), they are not subscribed
+      // Telegram returns 400-style errors for "not a participant" cases.
+      // Treat only those as not subscribed; surface chat/bot config errors.
+      const telegramApiError = getTelegramApiError(error)
       if (
-        error &&
-        typeof error === 'object' &&
-        'response' in error &&
-        error.response &&
-        typeof error.response === 'object' &&
-        'status' in error.response &&
-        error.response.status === 400
+        telegramApiError.status === 400 &&
+        isTelegramNotSubscribedDescription(telegramApiError.description)
       ) {
         return false
       }
@@ -196,18 +278,17 @@ export class TelegramService {
       throw new BadRequestException('Telegram bot token is not configured')
     }
 
-    const currentTime = Math.floor(Date.now() / 1000)
-    if (currentTime - authData.auth_date > TELEGRAM_AUTH_MAX_AGE_SEC) {
-      throw new BadRequestException('Telegram authentication data has expired')
-    }
+    assertFreshTelegramAuthDate(
+      authData.auth_date,
+      'Telegram authentication data has expired',
+    )
 
     // HMAC verification.
     const { hash, ...dataWithoutHash } = authData
-    const dataCheckString = Object.keys(dataWithoutHash)
+    const dataCheckString = Object.entries(dataWithoutHash)
+      .filter(([, value]) => value !== undefined && value !== null)
       .sort()
-      .map(
-        key => `${key}=${dataWithoutHash[key as keyof typeof dataWithoutHash]}`,
-      )
+      .map(([key, value]) => `${key}=${value}`)
       .join('\n')
 
     const secretKey = crypto.createHash('sha256').update(this.botToken).digest()
@@ -216,7 +297,7 @@ export class TelegramService {
       .update(dataCheckString)
       .digest('hex')
 
-    if (calculatedHash !== hash) {
+    if (!safeCompareHex(calculatedHash, hash)) {
       throw new BadRequestException(
         'Invalid Telegram authentication data. Hash verification failed.',
       )
@@ -296,6 +377,9 @@ export class TelegramService {
 
     // 1. auth-window — same 5 min as the Login Widget.
     const currentTime = Math.floor(Date.now() / 1000)
+    if (authDate - currentTime > TELEGRAM_AUTH_FUTURE_SKEW_SEC) {
+      throw new UnauthorizedException('initData is not valid yet')
+    }
     if (currentTime - authDate > TELEGRAM_AUTH_MAX_AGE_SEC) {
       throw new UnauthorizedException('initData has expired')
     }
@@ -322,9 +406,7 @@ export class TelegramService {
       .digest('hex')
 
     // Constant-time compare to make hash-equality not depend on input.
-    const a = Buffer.from(calculatedHash, 'hex')
-    const b = Buffer.from(hash, 'hex')
-    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+    if (!safeCompareHex(calculatedHash, hash)) {
       throw new UnauthorizedException('initData hash verification failed')
     }
 

@@ -5,7 +5,7 @@ import {
 } from '@nestjs/common'
 import { InjectEntityManager } from '@nestjs/typeorm'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
-import { EntityManager } from 'typeorm'
+import { EntityManager, In } from 'typeorm'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { User } from '../users/user.entity'
 import { UPGRADE_LIMITS } from '../upgrade/upgrade.constants'
@@ -32,6 +32,12 @@ import {
   calculateFixedHouseEdgeVipEarning,
 } from '../vip/vip-earning.logic'
 import { VipService } from '../vip/vip.service'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type NormalizedPagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
 
 export interface PublicMinesSession {
   game_session_id: number
@@ -323,18 +329,27 @@ export class MinesService {
     return session ? this.toPublicSession(session) : null
   }
 
-  async getGameHistory(userId: number): Promise<PublicMinesSession[]> {
-    const sessions = await this.entityManager.find(MinesSession, {
-      where: { user_id: userId },
-      order: { created_at: 'DESC' },
-      take: 50,
-    })
+  async getGameHistory(
+    userId: number,
+    pagination: NormalizedPagination = normalizePagination(),
+  ): Promise<PaginatedResponse<PublicMinesSession>> {
+    const [sessions, total] = await this.entityManager.findAndCount(
+      MinesSession,
+      {
+        where: { user_id: userId, status: In(['cashed_out', 'lost']) },
+        order: { created_at: 'DESC' },
+        skip: pagination.skip,
+        take: pagination.limit,
+      },
+    )
 
-    return sessions.map(session =>
+    const items = sessions.map(session =>
       this.toPublicSession(session, {
         revealMines: session.status !== 'active',
       }),
     )
+
+    return buildPaginatedResponse(items, total, pagination)
   }
 
   async getTopWinners(): Promise<PublicMinesSession[]> {
@@ -364,7 +379,7 @@ export class MinesService {
     const user = await this.loadUserForLiveDrop(userId)
     const username = user?.display_name || `Player${userId}`
     const avatar = user?.avatar || null
-    const winAmount = session.status === 'lost' ? 0 : session.win_amount ?? 0
+    const winAmount = session.status === 'lost' ? 0 : (session.win_amount ?? 0)
     const multiplier =
       session.status === 'lost' ? 0 : Number(session.current_multiplier) || 0
     const sessionWithUser: PublicMinesSession = {
@@ -621,7 +636,7 @@ export class MinesService {
       })
     const safeReveals = this.countSafeReveals(session)
     const nextMultiplier =
-      session.status === 'active' ? multipliers[safeReveals] ?? null : null
+      session.status === 'active' ? (multipliers[safeReveals] ?? null) : null
     const currentMultiplier = Number(session.current_multiplier) || 1
     const potentialWin =
       session.status === 'active' && nextMultiplier

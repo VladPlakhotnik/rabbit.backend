@@ -69,6 +69,10 @@ export class NotificationService {
       throw new NotFoundException('Notification not found')
     }
 
+    if (notification.user_id !== null && notification.user_id !== userId) {
+      throw new NotFoundException('Notification not found')
+    }
+
     if (notification.is_viewed === true) {
       throw new BadRequestException('Notification already viewed')
     }

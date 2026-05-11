@@ -12,6 +12,8 @@ import { HttpModule } from '@nestjs/axios'
 import { SocialModule } from '../social/social.module'
 import { VipLedger } from '../vip/vip-ledger.entity'
 import { VipModule } from '../vip/vip.module'
+import { ThrottlerModule } from '@nestjs/throttler'
+import { RewardsCooldown } from '../rewards/entities/rewardsCooldown.entity'
 
 @Module({
   imports: [
@@ -23,10 +25,12 @@ import { VipModule } from '../vip/vip.module'
       SkinCase,
       Notification,
       VipLedger,
+      RewardsCooldown,
     ]),
     HttpModule,
     SocialModule,
     VipModule,
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
   ],
   providers: [UserService],
   controllers: [UserController],

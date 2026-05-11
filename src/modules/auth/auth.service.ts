@@ -280,6 +280,7 @@ export class AuthService {
       steam_id: user.steam_id ?? null,
       telegram_id: user.telegram_user_id ?? null,
       google_id: user.google_id ?? null,
+      discord_id: user.discord_user_id ?? null,
       type: 'access',
     }
 

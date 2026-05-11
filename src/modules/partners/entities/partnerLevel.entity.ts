@@ -63,9 +63,9 @@ export class PartnerLevelConfig {
   min_referrals_deposit!: number
 
   /**
-   * Percent of a referral's deposit credited to the partner's
-   * referral_balance. Stored as percent (0.20 = 0.20%). Read by the
-   * future deposit-accrual hook to know how much to credit.
+   * Partner RevShare percent. This must be applied to controlled NGR
+   * / eligible revenue, not to raw deposits, otherwise the program can
+   * become negative-margin on day one.
    */
   @Column({
     type: 'numeric',
@@ -89,6 +89,20 @@ export class PartnerLevelConfig {
     transformer: numericTransformer,
   })
   referral_percentage!: number
+
+  /**
+   * CPM rate in Rabbit balance units per 1,000 qualified unique visits.
+   * CPM is estimated/pending by default and should be approved before
+   * adding anything to referral_balance.
+   */
+  @Column({
+    type: 'numeric',
+    precision: 6,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
+  cpm_rate!: number
 
   @CreateDateColumn()
   created_at!: Date

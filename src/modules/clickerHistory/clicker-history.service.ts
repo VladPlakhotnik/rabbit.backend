@@ -6,6 +6,12 @@ import {
   type ClickerHistoryAction,
   type ClickerHistorySource,
 } from './entities/clicker_history.entity'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type NormalizedPagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
 
 interface RecordParams {
   user_id: number
@@ -73,6 +79,21 @@ export class ClickerHistoryService {
     }
   }
 
+  async getUserHistory(
+    userId: number,
+    pagination: NormalizedPagination = normalizePagination(),
+  ): Promise<PaginatedResponse<ClickerHistory>> {
+    const [items, total] = await this.repo
+      .createQueryBuilder('h')
+      .where('h.user_id = :userId', { userId })
+      .orderBy('h.ts', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(items, total, pagination)
+  }
+
   async findLatestUnexpiredActiveBoost(
     userId: number,
     nowMs: number,
@@ -104,18 +125,12 @@ export class ClickerHistoryService {
     }
   }
 
-  private stringField(
-    source: Record<string, unknown>,
-    key: string,
-  ): string {
+  private stringField(source: Record<string, unknown>, key: string): string {
     const value = source[key]
     return typeof value === 'string' ? value : ''
   }
 
-  private numberField(
-    source: Record<string, unknown>,
-    key: string,
-  ): number {
+  private numberField(source: Record<string, unknown>, key: string): number {
     const raw = source[key]
     const value = typeof raw === 'number' ? raw : Number(raw)
     return Number.isFinite(value) ? value : 0

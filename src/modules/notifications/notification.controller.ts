@@ -9,6 +9,7 @@ import {
   Param,
   Patch,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common'
 import { NotificationService } from './notification.service'
 import { AuthGuard } from '@nestjs/passport'
@@ -65,7 +66,7 @@ export class NotificationController {
   @ApiResponse({ status: 200, description: 'Notification marked as viewed' })
   @UseGuards(AuthGuard('jwt'))
   @Patch(':id/view')
-  async markAsViewed(@Param('id') id: number, @Req() req: Request) {
+  async markAsViewed(@Param('id', ParseIntPipe) id: number, @Req() req: Request) {
     const user = req.user as User
     return this.notificationService.markAsViewed(id, user.id)
   }
@@ -90,7 +91,7 @@ export class NotificationController {
   @UseGuards(AdminJwtGuard, AdminRolesGuard)
   @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Delete(':id')
-  async delete(@Param('id') id: number) {
+  async delete(@Param('id', ParseIntPipe) id: number) {
     await this.notificationService.delete(id)
     return { message: 'Notification successfully deleted' }
   }
@@ -102,7 +103,7 @@ export class NotificationController {
   @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN)
   @Patch(':id')
   async update(
-    @Param('id') id: number,
+    @Param('id', ParseIntPipe) id: number,
     @Body() body: UpdateNotificationBody,
   ) {
     // PATCH only forwards fields the admin actually sent — undefined

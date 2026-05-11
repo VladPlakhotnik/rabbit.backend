@@ -13,6 +13,7 @@ import { UserHistoryService } from './userHistory.service'
 import { Request } from 'express'
 import { UpgradeHistoryItemDto } from './dto/upgrade-history-item.dto'
 import { UpgradeHistoryDetailDto } from './dto/upgrade-history-detail.dto'
+import { normalizePagination } from '../../common/pagination'
 
 @ApiTags('history')
 @Controller('history')
@@ -44,9 +45,17 @@ export class UserHistoryController {
   // Отдельные ручки для каждой игры для текущего пользователя
   @UseGuards(AuthGuard('jwt'))
   @Get('me/cases')
-  async getMyCaseHistory(@Req() req: Request) {
-    // @ts-ignore
-    return this.userHistoryService.getCaseHistory(req.user.id)
+  async getMyCaseHistory(
+    @Req() req: Request,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = (req.user as { id: number }).id
+
+    return this.userHistoryService.getCaseHistory(
+      userId,
+      normalizePagination({ page, limit }),
+    )
   }
 
   @ApiOperation({ summary: 'Upgrade history for the current user' })
@@ -62,9 +71,15 @@ export class UserHistoryController {
   @Get('me/upgrades')
   async getMyUpgradeHistory(
     @Req() req: Request,
-  ): Promise<UpgradeHistoryItemDto[]> {
-    // @ts-ignore
-    return this.userHistoryService.getUpgradeHistory(req.user.id)
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const userId = (req.user as { id: number }).id
+
+    return this.userHistoryService.getUpgradeHistory(
+      userId,
+      normalizePagination({ page, limit }),
+    )
   }
 
   @ApiOperation({
