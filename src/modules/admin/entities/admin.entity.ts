@@ -61,7 +61,12 @@ export class Admin {
   @Column({ type: 'timestamptz', nullable: true, name: 'last_login_at' })
   last_login_at!: Date | null
 
-  @Column({ type: 'varchar', length: 45, nullable: true, name: 'last_login_ip' })
+  @Column({
+    type: 'varchar',
+    length: 45,
+    nullable: true,
+    name: 'last_login_ip',
+  })
   last_login_ip!: string | null
 
   // Who created this admin (NULL for the initial bootstrap super_admin).
@@ -91,7 +96,7 @@ export class Admin {
 
   // ─── Relations ─────────────────────────────────────────────────
 
-  @OneToMany(() => AdminRefreshToken, (token) => token.admin)
+  @OneToMany(() => AdminRefreshToken, token => token.admin)
   refresh_tokens!: AdminRefreshToken[]
 
   // Strip secrets before serialising to clients. Always use this in

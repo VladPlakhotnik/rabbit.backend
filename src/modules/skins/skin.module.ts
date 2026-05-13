@@ -16,6 +16,7 @@ import { RetryService } from './services/retry.service'
 import { SyncSchedulerService } from './scheduler/sync-scheduler.service'
 import { buildDMarketConfig } from './config/skin-sync.config'
 import { SkinPurchaseService } from './skin-purchase.service'
+import { AdminSkinsController } from './admin-skins.controller'
 
 // DI tokens for the per-game TM clients. Two instances of the same
 // class — one pointed at market.csgo.com, one at market.dota2.net.
@@ -74,7 +75,7 @@ export const TM_DOTA2_CLIENT = 'TM_DOTA2_CLIENT'
     // --- Cron scheduler (drives both games) ---
     SyncSchedulerService,
   ],
-  controllers: [SkinController],
+  controllers: [SkinController, AdminSkinsController],
   exports: [
     CsgoSkinService,
     DotaSkinService,

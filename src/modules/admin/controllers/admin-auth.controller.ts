@@ -6,10 +6,11 @@ import {
   Post,
   Req,
   Res,
+  UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common'
 import { ThrottlerGuard } from '@nestjs/throttler'
 import { Throttle } from '@nestjs/throttler'
-import { UseGuards } from '@nestjs/common'
 import { Request, Response } from 'express'
 import {
   COOKIE_NAME,
@@ -57,7 +58,11 @@ export class AdminAuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const result = await this.auth.login(dto, getClientIp(req), getUserAgent(req))
+    const result = await this.auth.login(
+      dto,
+      getClientIp(req),
+      getUserAgent(req),
+    )
     setRefreshCookie(res, result.refresh_token)
     return {
       access_token: result.access_token,
@@ -70,14 +75,21 @@ export class AdminAuthController {
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     const token = req.cookies?.[COOKIE_NAME] as string | undefined
     if (!token) {
       // Don't leak whether the cookie was missing vs invalid — both
       // get the same response.
-      throw new Error('No refresh token')
+      throw new UnauthorizedException('Invalid refresh token')
     }
-    const result = await this.auth.refresh(token, getClientIp(req), getUserAgent(req))
+    const result = await this.auth.refresh(
+      token,
+      getClientIp(req),
+      getUserAgent(req),
+    )
     setRefreshCookie(res, result.refresh_token)
     return {
       access_token: result.access_token,

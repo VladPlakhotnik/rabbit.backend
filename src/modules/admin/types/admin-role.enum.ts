@@ -8,4 +8,5 @@ export enum AdminRole {
   ADMIN = 'admin', // standard admin
   MANAGER = 'manager', // limited admin — content / users
   VIEWER = 'viewer', // read-only
+  INVESTOR = 'investor', // read-only investment analytics
 }

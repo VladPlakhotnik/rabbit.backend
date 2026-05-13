@@ -1,14 +1,6 @@
 // src/notifications/notification.entity.ts
 
-import {
-  Entity,
-  PrimaryGeneratedColumn,
-  Column,
-  ManyToOne,
-  JoinColumn,
-  Index,
-} from 'typeorm'
-import { User } from '../../users/user.entity'
+import { Column, Entity, Index, PrimaryGeneratedColumn } from 'typeorm'
 
 // Constrained shape for i18n params — keep the JSON payload to
 // primitives so admin tooling can render and edit them safely. Nested
@@ -57,8 +49,8 @@ export class Notification {
   viewed_at!: Date | null
 
   @Index()
-  @Column()
-  user_id!: number
+  @Column({ nullable: true, type: 'integer' })
+  user_id!: number | null
 
   // @ManyToOne(() => User, user => user.notifications, { nullable: true })
   // @JoinColumn({ name: 'user_id' })

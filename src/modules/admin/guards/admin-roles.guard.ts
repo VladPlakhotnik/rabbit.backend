@@ -1,4 +1,9 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common'
+import {
+  CanActivate,
+  ExecutionContext,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common'
 import { Reflector } from '@nestjs/core'
 import { ADMIN_ROLES_KEY } from '../decorators/admin-roles.decorator'
 import { Admin } from '../entities/admin.entity'
@@ -12,10 +17,10 @@ export class AdminRolesGuard implements CanActivate {
   constructor(private readonly reflector: Reflector) {}
 
   canActivate(ctx: ExecutionContext): boolean {
-    const required = this.reflector.getAllAndOverride<AdminRole[]>(ADMIN_ROLES_KEY, [
-      ctx.getHandler(),
-      ctx.getClass(),
-    ])
+    const required = this.reflector.getAllAndOverride<AdminRole[]>(
+      ADMIN_ROLES_KEY,
+      [ctx.getHandler(), ctx.getClass()],
+    )
     if (!required || required.length === 0) return true
 
     const req = ctx.switchToHttp().getRequest<{ user?: Admin }>()

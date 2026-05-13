@@ -20,6 +20,7 @@ The admin module provides staff authentication and protected admin APIs for the 
 | `POST`   | `/admin/auth/refresh` | refresh cookie     | Rotate refresh token and issue a new access token.                           |
 | `POST`   | `/admin/auth/logout`  | refresh cookie     | Revoke refresh token and clear the cookie.                                   |
 | `GET`    | `/me`                 | admin bearer token | Return the current admin profile.                                            |
+| `GET`    | `/admin/analytics/investor` | `super_admin`, `admin`, `manager`, `viewer`, `investor` | Return investment analytics summary. |
 | `POST`   | `/admin`              | `super_admin`      | Create a staff account.                                                      |
 | `GET`    | `/admin`              | `super_admin`      | List staff accounts.                                                         |
 | `GET`    | `/admin/:id`          | `super_admin`      | Read one staff account.                                                      |
@@ -73,6 +74,13 @@ Admin tables are created by:
 ```text
 src/migrations/1746100000-CreateAdminTables.sql
 src/migrations/1746100000-CreateAdminTables.ts
+```
+
+The `investor` admin role is added by:
+
+```text
+src/migrations/1748200000-AddInvestorAdminRole.sql
+src/migrations/1748200000-AddInvestorAdminRole.ts
 ```
 
 Apply the SQL migration manually when the deployment environment does not run TypeORM migrations automatically.

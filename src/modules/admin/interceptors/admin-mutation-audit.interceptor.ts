@@ -36,7 +36,7 @@ export class AdminMutationAuditInterceptor implements NestInterceptor {
     const req = context.switchToHttp().getRequest<RequestWithAdmin>()
     const admin = req.user
     return next.handle().pipe(
-      tap((result) => {
+      tap(result => {
         void this.auditService.record({
           adminId: admin?.id ?? null,
           adminEmail: admin?.email ?? null,

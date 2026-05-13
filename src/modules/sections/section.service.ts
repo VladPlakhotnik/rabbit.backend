@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Section } from './section.entity'
 import { Repository } from 'typeorm'
+import { CreateSectionDto, UpdateSectionDto } from './dto/section-admin.dto'
 
 @Injectable()
 export class SectionService {
@@ -86,8 +87,54 @@ export class SectionService {
     return section
   }
 
+  async findAllForAdmin(): Promise<Section[]> {
+    return this.sectionRepository.find({
+      relations: ['cases'],
+      order: {
+        id: 'ASC',
+        cases: {
+          id: 'ASC',
+        },
+      },
+    })
+  }
+
   async create(name: string): Promise<Section> {
-    const section = this.sectionRepository.create({ name })
+    const section = this.sectionRepository.create({ name, icon: '' })
+    return this.sectionRepository.save(section)
+  }
+
+  async createAdmin(dto: CreateSectionDto): Promise<Section> {
+    const name = dto.name.trim()
+    if (!name) {
+      throw new BadRequestException('Section name is required')
+    }
+
+    const section = this.sectionRepository.create({
+      name,
+      icon: dto.icon?.trim() ?? '',
+    })
+    return this.sectionRepository.save(section)
+  }
+
+  async updateAdmin(id: number, dto: UpdateSectionDto): Promise<Section> {
+    const section = await this.sectionRepository.findOne({ where: { id } })
+    if (!section) {
+      throw new NotFoundException('Section not found')
+    }
+
+    if (dto.name !== undefined) {
+      const name = dto.name.trim()
+      if (!name) {
+        throw new BadRequestException('Section name is required')
+      }
+      section.name = name
+    }
+
+    if (dto.icon !== undefined) {
+      section.icon = dto.icon.trim()
+    }
+
     return this.sectionRepository.save(section)
   }
 }

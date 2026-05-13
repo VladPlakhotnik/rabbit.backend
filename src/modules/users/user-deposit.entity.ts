@@ -3,10 +3,13 @@ import {
   CreateDateColumn,
   Entity,
   Index,
+  JoinColumn,
+  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm'
 import { numericTransformer } from '../../common/helpers/numericTransformer'
+import { User } from './user.entity'
 
 export enum UserDepositStatus {
   WAITING = 'waiting',
@@ -28,6 +31,10 @@ export class UserDeposit {
 
   @Column({ type: 'integer' })
   user_id!: number
+
+  @ManyToOne(() => User)
+  @JoinColumn({ name: 'user_id' })
+  user!: User
 
   @Column({
     type: 'numeric',

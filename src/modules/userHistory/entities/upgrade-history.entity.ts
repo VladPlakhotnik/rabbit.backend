@@ -3,8 +3,11 @@ import {
   PrimaryGeneratedColumn,
   Column,
   CreateDateColumn,
+  JoinColumn,
+  ManyToOne,
 } from 'typeorm'
 import { numericTransformer } from '../../../common/helpers/numericTransformer'
+import { User } from '../../users/user.entity'
 
 export type UpgradeMode = 'inventory' | 'balance'
 
@@ -32,6 +35,10 @@ export class UpgradeHistory {
 
   @Column({ type: 'integer' })
   user_id!: number
+
+  @ManyToOne(() => User, { nullable: false })
+  @JoinColumn({ name: 'user_id' })
+  user!: User
 
   @Column({ type: 'integer' })
   skin_id!: number

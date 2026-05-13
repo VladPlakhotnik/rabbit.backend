@@ -3,6 +3,8 @@ import { TypeOrmModule } from '@nestjs/typeorm'
 import { User } from './user.entity'
 import { UserService } from './users.service'
 import { UserController } from './users.controller'
+import { AdminUsersController } from './admin-users.controller'
+import { AdminDepositsController } from './admin-deposits.controller'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { Case } from '../cases/case.entity'
@@ -35,7 +37,7 @@ import { UserDeposit } from './user-deposit.entity'
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
   ],
   providers: [UserService],
-  controllers: [UserController],
+  controllers: [UserController, AdminUsersController, AdminDepositsController],
   exports: [UserService],
 })
 export class UserModule {}

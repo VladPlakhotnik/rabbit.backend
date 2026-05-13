@@ -6,6 +6,11 @@ import {
 } from '@nestjs/common'
 import { InjectEntityManager } from '@nestjs/typeorm'
 import { EntityManager } from 'typeorm'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
 import { User } from '../users/user.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UpgradeDto } from './dto/upgrade.dto'
@@ -33,6 +38,7 @@ import {
   estimateUpgradeHouseEdgeBps,
 } from '../vip/vip-earning.logic'
 import { VipService } from '../vip/vip.service'
+import type { AdminUpgradeListQueryDto } from './dto/admin-upgrade.dto'
 
 const RARITY_COLUMN_LIMIT = 50
 // Sentinels stored in `old_rarity` / `new_rarity` for cases where there is no
@@ -60,6 +66,67 @@ interface UpgradeMaterialContext {
   gameType: UpgradeGameType
 }
 
+export interface AdminUpgradeSettings extends UpgradeLimitsDto {
+  game_types: UpgradeGameType[]
+  modes: UpgradeMode[]
+}
+
+export interface AdminUpgradeUser {
+  avatar: string | null
+  display_name: string
+  id: number
+}
+
+export interface AdminUpgradeTarget {
+  id: number
+  image?: string | null
+  name: string
+  price: number
+  rarity: string
+}
+
+export interface AdminUpgradeMaterial {
+  game_type: UpgradeGameType
+  image?: string | null
+  name: string
+  price: number
+  rarity: string
+  skin_id: number
+}
+
+export interface AdminUpgradeAttempt {
+  chance: number
+  cost: number
+  created_at: Date
+  game_type: UpgradeGameType
+  id: number
+  mode: UpgradeMode
+  multiplier: number
+  payout: number
+  project_profit: number
+  success: boolean
+  target: AdminUpgradeTarget
+  user: AdminUpgradeUser
+}
+
+export interface AdminUpgradeDetail extends AdminUpgradeAttempt {
+  materials: AdminUpgradeMaterial[]
+}
+
+export interface AdminUpgradeOverview {
+  average_chance: number
+  failed_attempts: number
+  observed_rtp: number
+  settings: AdminUpgradeSettings
+  success_rate: number
+  successful_attempts: number
+  top_payout: number
+  total_attempts: number
+  total_payout: number
+  total_profit: number
+  total_wagered: number
+}
+
 @Injectable()
 export class UpgradeService {
   private readonly logger = new Logger(UpgradeService.name)
@@ -76,6 +143,184 @@ export class UpgradeService {
     private readonly clickerChallengesService: ClickerChallengesService,
     private readonly vipService: VipService,
   ) {}
+
+  getAdminSettings(): AdminUpgradeSettings {
+    return {
+      ...this.getLimits(),
+      game_types: ['csgo', 'dota'],
+      modes: ['balance', 'inventory'],
+    }
+  }
+
+  async getAdminOverview(): Promise<AdminUpgradeOverview> {
+    const raw = await this.entityManager
+      .createQueryBuilder(UpgradeHistory, 'upgrade')
+      .select('COUNT(*)', 'total_attempts')
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN COALESCE(upgrade.success, false) = true THEN 1 ELSE 0 END), 0)`,
+        'successful_attempts',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN COALESCE(upgrade.success, false) = false THEN 1 ELSE 0 END), 0)`,
+        'failed_attempts',
+      )
+      .addSelect('COALESCE(SUM(upgrade.cost), 0)', 'total_wagered')
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN COALESCE(upgrade.success, false) = true THEN COALESCE(upgrade.skin_price, 0) ELSE 0 END), 0)`,
+        'total_payout',
+      )
+      .addSelect(
+        `COALESCE(MAX(CASE WHEN COALESCE(upgrade.success, false) = true THEN COALESCE(upgrade.skin_price, 0) ELSE 0 END), 0)`,
+        'top_payout',
+      )
+      .addSelect('COALESCE(AVG(COALESCE(upgrade.chance, 0)), 0)', 'average_chance')
+      .getRawOne<{
+        average_chance: string | number | null
+        failed_attempts: string | number | null
+        successful_attempts: string | number | null
+        top_payout: string | number | null
+        total_attempts: string | number | null
+        total_payout: string | number | null
+        total_wagered: string | number | null
+      }>()
+
+    const totalAttempts = this.toNumber(raw?.total_attempts)
+    const successfulAttempts = this.toNumber(raw?.successful_attempts)
+    const totalWagered = this.toNumber(raw?.total_wagered)
+    const totalPayout = this.toNumber(raw?.total_payout)
+
+    return {
+      average_chance: this.roundMoney(this.toNumber(raw?.average_chance)),
+      failed_attempts: this.toNumber(raw?.failed_attempts),
+      observed_rtp:
+        totalWagered > 0 ? this.roundMoney((totalPayout / totalWagered) * 100) : 0,
+      settings: this.getAdminSettings(),
+      success_rate:
+        totalAttempts > 0
+          ? this.roundMoney((successfulAttempts / totalAttempts) * 100)
+          : 0,
+      successful_attempts: successfulAttempts,
+      top_payout: this.roundMoney(this.toNumber(raw?.top_payout)),
+      total_attempts: totalAttempts,
+      total_payout: this.roundMoney(totalPayout),
+      total_profit: this.roundMoney(totalWagered - totalPayout),
+      total_wagered: this.roundMoney(totalWagered),
+    }
+  }
+
+  async findAllForAdmin(
+    filters: AdminUpgradeListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminUpgradeAttempt>> {
+    const pagination = normalizePagination({
+      limit: filters.limit,
+      page: filters.page,
+    })
+    const queryBuilder = this.entityManager
+      .createQueryBuilder(UpgradeHistory, 'upgrade')
+      .leftJoinAndSelect('upgrade.user', 'user')
+    let hasWhere = false
+
+    const addWhere = (condition: string, parameters?: Record<string, unknown>) => {
+      if (!hasWhere) {
+        queryBuilder.where(condition, parameters)
+        hasWhere = true
+        return
+      }
+      queryBuilder.andWhere(condition, parameters)
+    }
+
+    if (filters.success !== undefined) {
+      addWhere('COALESCE(upgrade.success, false) = :success', {
+        success: filters.success,
+      })
+    }
+
+    if (filters.mode) {
+      addWhere('upgrade.mode = :mode', { mode: filters.mode })
+    }
+
+    if (filters.gameType) {
+      addWhere('upgrade.game_type = :gameType', { gameType: filters.gameType })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('upgrade.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (filters.minCost !== undefined) {
+      addWhere('upgrade.cost >= :minCost', { minCost: filters.minCost })
+    }
+
+    if (filters.maxCost !== undefined) {
+      addWhere('upgrade.cost <= :maxCost', { maxCost: filters.maxCost })
+    }
+
+    if (filters.minChance !== undefined) {
+      addWhere('COALESCE(upgrade.chance, 0) >= :minChance', {
+        minChance: filters.minChance,
+      })
+    }
+
+    if (filters.maxChance !== undefined) {
+      addWhere('COALESCE(upgrade.chance, 0) <= :maxChance', {
+        maxChance: filters.maxChance,
+      })
+    }
+
+    if (filters.minTargetPrice !== undefined) {
+      addWhere('COALESCE(upgrade.skin_price, 0) >= :minTargetPrice', {
+        minTargetPrice: filters.minTargetPrice,
+      })
+    }
+
+    if (filters.maxTargetPrice !== undefined) {
+      addWhere('COALESCE(upgrade.skin_price, 0) <= :maxTargetPrice', {
+        maxTargetPrice: filters.maxTargetPrice,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      addWhere(
+        `(CAST(upgrade.id AS TEXT) ILIKE :search OR CAST(upgrade.user_id AS TEXT) ILIKE :search OR COALESCE(upgrade.skin_name, '') ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [attempts, total] = await queryBuilder
+      .orderBy('upgrade.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(
+      attempts.map(attempt => this.toAdminAttempt(attempt)),
+      total,
+      pagination,
+    )
+  }
+
+  async findAdminById(id: number): Promise<AdminUpgradeDetail> {
+    const attempt = await this.entityManager
+      .createQueryBuilder(UpgradeHistory, 'upgrade')
+      .leftJoinAndSelect('upgrade.user', 'user')
+      .where('upgrade.id = :id', { id })
+      .getOne()
+
+    if (!attempt) {
+      throw new NotFoundException('Upgrade attempt not found')
+    }
+
+    const [targetImage, materials] = await Promise.all([
+      this.lookupAdminSkinImage(attempt.skin_id, attempt.game_type),
+      this.hydrateAdminMaterials(attempt.materials ?? [], attempt.game_type),
+    ])
+
+    return {
+      ...this.toAdminAttempt(attempt, { targetImage }),
+      materials,
+    }
+  }
 
   async performUpgrade(
     userId: number,
@@ -546,6 +791,93 @@ export class UpgradeService {
     await manager.save(userHistory)
 
     return savedUpgradeHistory.id
+  }
+
+  private toAdminAttempt(
+    attempt: UpgradeHistory,
+    options: { targetImage?: string | null } = {},
+  ): AdminUpgradeAttempt {
+    const cost = Number(attempt.cost)
+    const targetPrice =
+      attempt.skin_price !== null ? Number(attempt.skin_price) : 0
+    const success = attempt.success ?? false
+    const payout = success ? targetPrice : 0
+
+    return {
+      chance: attempt.chance !== null ? Number(attempt.chance) : 0,
+      cost,
+      created_at: attempt.created_at,
+      game_type: attempt.game_type,
+      id: attempt.id,
+      mode: attempt.mode ?? 'inventory',
+      multiplier: cost > 0 ? this.roundMoney(targetPrice / cost) : 0,
+      payout,
+      project_profit: this.roundMoney(cost - payout),
+      success,
+      target: {
+        id: attempt.skin_id,
+        image: options.targetImage,
+        name: attempt.skin_name,
+        price: targetPrice,
+        rarity: attempt.new_rarity,
+      },
+      user: {
+        avatar: attempt.user?.avatar ?? null,
+        display_name: attempt.user?.display_name ?? `User #${attempt.user_id}`,
+        id: attempt.user_id,
+      },
+    }
+  }
+
+  private async lookupAdminSkinImage(
+    skinId: number,
+    gameType: UpgradeGameType | null | undefined,
+  ): Promise<string | null> {
+    if (gameType === 'dota') {
+      const skin = await this.entityManager.findOne(DotaSkin, {
+        where: { id: skinId },
+        select: ['id', 'image'],
+      })
+
+      return skin?.image ?? null
+    }
+
+    const skin = await this.entityManager.findOne(CsgoSkin, {
+      where: { id: skinId },
+      select: ['id', 'image'],
+    })
+
+    return skin?.image ?? null
+  }
+
+  private async hydrateAdminMaterials(
+    materials: readonly UpgradeHistoryMaterial[],
+    fallbackGameType: UpgradeGameType,
+  ): Promise<AdminUpgradeMaterial[]> {
+    return Promise.all(
+      materials.map(async material => {
+        const gameType = material.game_type ?? fallbackGameType
+
+        return {
+          game_type: gameType,
+          image: await this.lookupAdminSkinImage(material.skin_id, gameType),
+          name: material.name,
+          price: Number(material.price),
+          rarity: material.rarity,
+          skin_id: material.skin_id,
+        }
+      }),
+    )
+  }
+
+  private roundMoney(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100
+  }
+
+  private toNumber(value: string | number | null | undefined): number {
+    const parsed = Number(value)
+
+    return Number.isFinite(parsed) ? parsed : 0
   }
 
   private buildUpgradeResultDto(

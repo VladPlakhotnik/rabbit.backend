@@ -4,6 +4,7 @@ import { Withdrawal } from './withdrawal.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { WithdrawService } from './withdraw.service'
 import { WithdrawController } from './withdraw.controller'
+import { AdminWithdrawalsController } from './admin-withdrawals.controller'
 import { SkinModule } from '../skins/skin.module'
 import { NotificationModule } from '../notifications/notification.module'
 
@@ -18,7 +19,7 @@ import { NotificationModule } from '../notifications/notification.module'
     SkinModule,
     NotificationModule,
   ],
-  controllers: [WithdrawController],
+  controllers: [WithdrawController, AdminWithdrawalsController],
   providers: [WithdrawService],
   exports: [WithdrawService],
 })

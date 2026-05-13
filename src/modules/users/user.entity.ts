@@ -61,9 +61,6 @@ export class User {
   @Column({ type: 'int', default: 0 })
   withdrawal_amount!: number
 
-  @Column({ type: 'varchar', length: 50 })
-  rank!: string
-
   @Column({
     type: 'numeric',
     precision: 12,

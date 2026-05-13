@@ -7,7 +7,7 @@ import {
 } from 'typeorm'
 
 export interface NewsContentBlock {
-  type: 'text' | 'image' | 'video' | 'link' | 'list'
+  type: 'title' | 'text' | 'image' | 'video' | 'link' | 'list'
   content?: string
   url?: string
   alt?: string

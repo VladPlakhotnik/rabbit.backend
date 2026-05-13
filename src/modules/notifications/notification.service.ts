@@ -6,9 +6,13 @@ import {
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Notification } from './entities/notification.entity'
-import { IsNull, Repository } from 'typeorm'
+import { IsNull, Repository, SelectQueryBuilder } from 'typeorm'
 import { User } from '../users/user.entity'
 import { NotificationView } from './entities/notificationView.entity'
+import type {
+  AdminNotificationListQueryDto,
+  AdminNotificationTargetFilter,
+} from './dto/admin-notification.dto'
 
 // Gateway subscribes via `onNotification` to push freshly-created
 // notifications to the right user's socket. Kept inside the service so
@@ -34,7 +38,94 @@ export class NotificationService {
   ) {}
 
   async findAll(): Promise<Notification[]> {
-    return this.notificationRepository.find({ relations: ['user'] })
+    return this.notificationRepository.find({ order: { created_at: 'DESC' } })
+  }
+
+  async findAllForAdmin(filters: AdminNotificationListQueryDto = {}): Promise<{
+    filters: {
+      i18nKey: string | null
+      important: boolean | null
+      search: string | null
+      target: AdminNotificationTargetFilter
+      userId: number | null
+      viewed: boolean | null
+    }
+    hasMore: boolean
+    items: Notification[]
+    limit: number
+    page: number
+    total: number
+  }> {
+    const page = filters.page ?? 1
+    const limit = Math.min(filters.limit ?? 20, 100)
+    const target = filters.target ?? 'all'
+    const search = filters.search?.trim() || null
+    const i18nKey = filters.i18nKey?.trim() || null
+
+    const qb = this.notificationRepository.createQueryBuilder('notification')
+    const addWhere = this.createWhereAppender(qb)
+
+    if (target === 'global') {
+      addWhere('notification.user_id IS NULL')
+    } else if (target === 'user') {
+      addWhere('notification.user_id IS NOT NULL')
+    }
+
+    if (typeof filters.important === 'boolean') {
+      addWhere('notification.is_important = :important', {
+        important: filters.important,
+      })
+    }
+
+    if (typeof filters.viewed === 'boolean') {
+      addWhere('notification.is_viewed = :viewed', { viewed: filters.viewed })
+    }
+
+    if (i18nKey) {
+      addWhere('notification.i18n_key = :i18nKey', { i18nKey })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('notification.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (search) {
+      addWhere(
+        `(CAST(notification.id AS TEXT) ILIKE :search OR CAST(notification.user_id AS TEXT) ILIKE :search OR COALESCE(notification.title, '') ILIKE :search OR COALESCE(notification.message, '') ILIKE :search OR COALESCE(notification.i18n_key, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [items, total] = await qb
+      .orderBy('notification.created_at', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount()
+
+    return {
+      filters: {
+        i18nKey,
+        important:
+          typeof filters.important === 'boolean' ? filters.important : null,
+        search,
+        target,
+        userId: filters.userId ?? null,
+        viewed: typeof filters.viewed === 'boolean' ? filters.viewed : null,
+      },
+      hasMore: page * limit < total,
+      items,
+      limit,
+      page,
+      total,
+    }
+  }
+
+  async findAdminById(id: number): Promise<Notification> {
+    const notification = await this.notificationRepository.findOneBy({ id })
+    if (!notification) {
+      throw new NotFoundException('Notification not found')
+    }
+    return notification
   }
 
   async findAllForUser(userId: number): Promise<Notification[]> {
@@ -105,11 +196,11 @@ export class NotificationService {
 
   async create(
     notificationData: Partial<Notification>,
-    userId?: number,
+    userId?: number | null,
   ): Promise<Notification> {
     let user: User | null = null
 
-    if (userId) {
+    if (userId !== undefined && userId !== null) {
       user = await this.userRepository.findOneBy({ id: userId })
       if (!user) {
         throw new NotFoundException('User not found')
@@ -118,9 +209,10 @@ export class NotificationService {
 
     const newNotification = this.notificationRepository.create({
       ...notificationData,
-      user_id: userId,
+      user_id: userId ?? null,
       created_at: new Date(),
     })
+    this.ensureContent(newNotification)
 
     const saved = await this.notificationRepository.save(newNotification)
     await this.fanout(saved)
@@ -280,7 +372,7 @@ export class NotificationService {
   async update(
     id: number,
     updateData: Partial<Notification>,
-    userId?: number,
+    userId?: number | null,
   ): Promise<Notification> {
     const notification = await this.notificationRepository.findOneBy({ id })
     if (!notification) {
@@ -288,7 +380,7 @@ export class NotificationService {
     }
 
     let user: User | null = null
-    if (userId) {
+    if (userId !== undefined && userId !== null) {
       user = await this.userRepository.findOneBy({ id: userId })
       if (!user) {
         throw new NotFoundException('User not found')
@@ -299,7 +391,33 @@ export class NotificationService {
     if (userId !== undefined) {
       notification.user_id = userId
     }
+    this.ensureContent(notification)
 
     return this.notificationRepository.save(notification)
+  }
+
+  private createWhereAppender(qb: SelectQueryBuilder<Notification>) {
+    let hasWhere = false
+    return (condition: string, parameters?: Record<string, unknown>) => {
+      if (hasWhere) {
+        qb.andWhere(condition, parameters)
+      } else {
+        qb.where(condition, parameters)
+        hasWhere = true
+      }
+    }
+  }
+
+  private ensureContent(
+    notification: Pick<Notification, 'i18n_key' | 'message' | 'title'>,
+  ): void {
+    if (
+      !notification.i18n_key &&
+      (!notification.title || !notification.message)
+    ) {
+      throw new BadRequestException(
+        'Provide either i18n_key or both title and message.',
+      )
+    }
   }
 }

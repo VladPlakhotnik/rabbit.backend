@@ -30,7 +30,7 @@ export class Reward {
   name!: string
 
   @Column({ type: 'text', nullable: true })
-  description?: string
+  description!: string | null
 
   @Column({
     type: 'numeric',

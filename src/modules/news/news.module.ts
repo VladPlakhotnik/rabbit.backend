@@ -3,10 +3,11 @@ import { TypeOrmModule } from '@nestjs/typeorm'
 import { News } from './entities/news.entity'
 import { NewsService } from './news.service'
 import { NewsController } from './news.controller'
+import { AdminNewsController } from './admin-news.controller'
 
 @Module({
   imports: [TypeOrmModule.forFeature([News])],
-  controllers: [NewsController],
+  controllers: [NewsController, AdminNewsController],
   providers: [NewsService],
   exports: [NewsService],
 })

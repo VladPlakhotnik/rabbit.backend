@@ -4,6 +4,7 @@ import { ThrottlerModule } from '@nestjs/throttler'
 import { Case } from './case.entity'
 import { CaseService } from './case.service'
 import { CaseController } from './case.controller'
+import { AdminCasesController } from './admin-cases.controller'
 import { Section } from '../sections/section.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
@@ -32,11 +33,9 @@ import { ClickerChallengesModule } from '../clickerChallenges/clicker-challenges
     // Per-IP rate limit, applied to the controller via @UseGuards.
     // Default is generous (60/min covers normal browsing); openCase
     // tightens this further with a per-method @Throttle override.
-    ThrottlerModule.forRoot([
-      { ttl: 60_000, limit: 60 },
-    ]),
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
   ],
-  controllers: [CaseController],
+  controllers: [CaseController, AdminCasesController],
   providers: [CaseService],
   exports: [CaseService],
 })

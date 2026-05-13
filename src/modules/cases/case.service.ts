@@ -1,13 +1,14 @@
 import * as crypto from 'crypto'
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Case } from './case.entity'
-import { Repository, In } from 'typeorm'
+import { Brackets, In, Repository } from 'typeorm'
 import { Section } from '../sections/section.entity'
 import { SkinCase } from '../skinCase/skinCase.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
@@ -26,6 +27,13 @@ import {
   calculateVipEarning,
   estimateCaseHouseEdgeBps,
 } from '../vip/vip-earning.logic'
+import {
+  AdminCaseListQueryDto,
+  CreateCaseDto,
+  CreateCaseSkinDto,
+  UpdateCaseDto,
+  UpdateCaseSkinDto,
+} from './dto/case-admin.dto'
 
 // Delay between the openCase response and the LiveDrop fan-out. Matches
 // the frontend `CASE_OPEN_TOTAL_DURATION_MS` (4.5 spin + 3.0 landing +
@@ -74,6 +82,12 @@ const sortSkinCasesForLottery = (skinCases: SkinCase[]): void => {
     return a.id - b.id
   })
 }
+
+const hasPostgresCode = (error: unknown, code: string): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  'code' in error &&
+  (error as { code?: string }).code === code
 
 @Injectable()
 export class CaseService {
@@ -131,9 +145,7 @@ export class CaseService {
     const dotaSkins = await this.dotaSkinRepository.find({
       where: { market_hash_name: In(missingHashNames) },
     })
-    const byHashName = new Map(
-      dotaSkins.map(s => [s.market_hash_name, s]),
-    )
+    const byHashName = new Map(dotaSkins.map(s => [s.market_hash_name, s]))
 
     for (const sc of caseEntity.skinCases) {
       if (!sc.skin && sc.skin_hash_name) {
@@ -179,6 +191,30 @@ export class CaseService {
         `These hash_names are not present in csgo_skins/dota_skins — ` +
         `either fix the seed or wait for market sync.`,
     )
+  }
+
+  private async prepareCaseForRead(caseEntity: Case): Promise<Case> {
+    await this.hydrateDotaSkins(caseEntity)
+    this.dropOrphanSkinCases(caseEntity)
+    if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
+    return caseEntity
+  }
+
+  private async ensureSlugFree(slug: string, ignoreId?: number): Promise<void> {
+    const existing = await this.caseRepository.findOne({ where: { slug } })
+    if (existing && existing.id !== ignoreId) {
+      throw new ConflictException('Case slug already exists')
+    }
+  }
+
+  private async loadSection(sectionId: number): Promise<Section> {
+    const section = await this.sectionRepository.findOne({
+      where: { id: sectionId },
+    })
+    if (!section) {
+      throw new NotFoundException('Section not found')
+    }
+    return section
   }
 
   /**
@@ -263,12 +299,76 @@ export class CaseService {
     })
     // Patch Dota skin_case rows whose ManyToOne to CsgoSkin came back
     // null (because skin_hash_name lives in dota_skins, not csgo_skins).
-    await Promise.all(cases.map(c => this.hydrateDotaSkins(c)))
-    for (const c of cases) {
-      this.dropOrphanSkinCases(c)
-      if (c.skinCases) this.assignTicketRanges(c.skinCases)
-    }
+    await Promise.all(cases.map(c => this.prepareCaseForRead(c)))
     return cases
+  }
+
+  async findAllForAdmin(filters: AdminCaseListQueryDto = {}): Promise<Case[]> {
+    const qb = this.caseRepository
+      .createQueryBuilder('caseEntity')
+      .leftJoinAndSelect('caseEntity.section', 'section')
+      .leftJoinAndSelect('caseEntity.skinCases', 'skinCase')
+      .leftJoinAndSelect('skinCase.skin', 'skin')
+
+    if (filters.status === 'active') {
+      qb.andWhere('caseEntity.is_available = :isAvailable', {
+        isAvailable: true,
+      })
+    }
+    if (filters.status === 'disabled') {
+      qb.andWhere('caseEntity.is_available = :isAvailable', {
+        isAvailable: false,
+      })
+    }
+    if (filters.game_type === 'csgo' || filters.game_type === 'dota') {
+      qb.andWhere('caseEntity.game_type = :gameType', {
+        gameType: filters.game_type,
+      })
+    }
+    if (filters.section_id !== undefined) {
+      qb.andWhere('section.id = :sectionId', {
+        sectionId: filters.section_id,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      qb.andWhere(
+        new Brackets(searchQb => {
+          searchQb
+            .where('caseEntity.name ILIKE :search', { search: `%${search}%` })
+            .orWhere('caseEntity.slug ILIKE :search', { search: `%${search}%` })
+            .orWhere('section.name ILIKE :search', { search: `%${search}%` })
+            .orWhere('CAST(caseEntity.id AS TEXT) = :exactId', {
+              exactId: search,
+            })
+        }),
+      )
+    }
+
+    qb.orderBy('caseEntity.id', 'ASC').addOrderBy('skin.market_price', 'DESC')
+
+    const cases = await qb.getMany()
+    await Promise.all(cases.map(c => this.prepareCaseForRead(c)))
+    return cases
+  }
+
+  async findAdminById(id: number): Promise<Case> {
+    const caseEntity = await this.caseRepository.findOne({
+      where: { id },
+      relations: ['section', 'skinCases', 'skinCases.skin'],
+      order: {
+        skinCases: {
+          skin: {
+            market_price: 'DESC',
+          },
+        },
+      },
+    })
+    if (!caseEntity) {
+      throw new NotFoundException('Case not found')
+    }
+    return this.prepareCaseForRead(caseEntity)
   }
 
   async findById(id: number): Promise<Case> {
@@ -289,10 +389,7 @@ export class CaseService {
     if (!caseEntity || !caseEntity.is_available) {
       throw new NotFoundException('Case not found')
     }
-    await this.hydrateDotaSkins(caseEntity)
-    this.dropOrphanSkinCases(caseEntity)
-    if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
-    return caseEntity
+    return this.prepareCaseForRead(caseEntity)
   }
 
   async findBySlug(slug: string): Promise<Case> {
@@ -310,21 +407,193 @@ export class CaseService {
     if (!caseEntity || !caseEntity.is_available) {
       throw new NotFoundException('Case not found')
     }
-    await this.hydrateDotaSkins(caseEntity)
-    this.dropOrphanSkinCases(caseEntity)
-    if (caseEntity.skinCases) this.assignTicketRanges(caseEntity.skinCases)
-    return caseEntity
+    return this.prepareCaseForRead(caseEntity)
   }
 
   async create(caseData: Partial<Case>, sectionId: number): Promise<Case> {
-    const section = await this.sectionRepository.findOne({
-      where: { id: sectionId },
-    })
-    if (!section) {
-      throw new NotFoundException('Section not found')
-    }
+    const section = await this.loadSection(sectionId)
     const newCase = this.caseRepository.create({ ...caseData, section })
     return this.caseRepository.save(newCase)
+  }
+
+  async createAdmin(dto: CreateCaseDto): Promise<Case> {
+    await this.ensureSlugFree(dto.slug)
+    const section = await this.loadSection(dto.section_id)
+    const newCase = this.caseRepository.create({
+      slug: dto.slug,
+      name: dto.name,
+      img_url: dto.img_url,
+      game_type: dto.game_type,
+      case_price: dto.case_price,
+      remaining_count: dto.remaining_count,
+      max_count: dto.max_count,
+      is_popular: dto.is_popular,
+      is_limited: dto.is_limited,
+      is_available: dto.is_available,
+      section,
+    })
+    const saved = await this.caseRepository.save(newCase)
+    return this.findAdminById(saved.id)
+  }
+
+  async updateAdmin(id: number, dto: UpdateCaseDto): Promise<Case> {
+    const caseEntity = await this.caseRepository.findOne({
+      where: { id },
+      relations: ['section', 'skinCases'],
+    })
+    if (!caseEntity) {
+      throw new NotFoundException('Case not found')
+    }
+
+    if (dto.slug !== undefined) {
+      await this.ensureSlugFree(dto.slug, id)
+      caseEntity.slug = dto.slug
+    }
+    if (dto.name !== undefined) caseEntity.name = dto.name
+    if (dto.img_url !== undefined) caseEntity.img_url = dto.img_url
+    if (dto.game_type !== undefined && dto.game_type !== caseEntity.game_type) {
+      if (caseEntity.skinCases?.length) {
+        throw new BadRequestException(
+          'Remove case skins before changing the game type.',
+        )
+      }
+      caseEntity.game_type = dto.game_type
+    }
+    if (dto.case_price !== undefined) caseEntity.case_price = dto.case_price
+    if (dto.remaining_count !== undefined) {
+      caseEntity.remaining_count = dto.remaining_count
+    }
+    if (dto.max_count !== undefined) caseEntity.max_count = dto.max_count
+    if (dto.is_popular !== undefined) caseEntity.is_popular = dto.is_popular
+    if (dto.is_limited !== undefined) caseEntity.is_limited = dto.is_limited
+    if (dto.is_available !== undefined) {
+      caseEntity.is_available = dto.is_available
+    }
+    if (dto.section_id !== undefined) {
+      caseEntity.section = await this.loadSection(dto.section_id)
+    }
+
+    const saved = await this.caseRepository.save(caseEntity)
+    return this.findAdminById(saved.id)
+  }
+
+  async removeAdmin(id: number): Promise<void> {
+    const caseEntity = await this.caseRepository.findOne({ where: { id } })
+    if (!caseEntity) {
+      throw new NotFoundException('Case not found')
+    }
+
+    try {
+      await this.caseRepository.remove(caseEntity)
+    } catch (error) {
+      if (hasPostgresCode(error, '23503')) {
+        throw new BadRequestException(
+          'Case is referenced by skins, inventory, or history. Disable it instead.',
+        )
+      }
+      throw error
+    }
+  }
+
+  private validateSkinCaseConfig(chance: number, isDropOut: boolean): void {
+    if (!Number.isFinite(chance) || chance < 0) {
+      throw new BadRequestException('Skin chance must be a non-negative number')
+    }
+    if (isDropOut && chance <= 0) {
+      throw new BadRequestException('Drop skins must have a positive chance')
+    }
+  }
+
+  private async ensureSkinExistsForGame(
+    gameType: 'csgo' | 'dota',
+    marketHashName: string,
+  ): Promise<void> {
+    const repo =
+      gameType === 'dota' ? this.dotaSkinRepository : this.csgoSkinRepository
+    const skin = await repo.findOne({
+      where: { market_hash_name: marketHashName },
+    })
+    if (!skin) {
+      throw new NotFoundException('Skin not found in the selected game catalog')
+    }
+  }
+
+  async addSkinToCase(id: number, dto: CreateCaseSkinDto): Promise<Case> {
+    const caseEntity = await this.caseRepository.findOne({
+      where: { id },
+      relations: ['skinCases'],
+    })
+    if (!caseEntity) {
+      throw new NotFoundException('Case not found')
+    }
+
+    const marketHashName = dto.market_hash_name.trim()
+    if (!marketHashName) {
+      throw new BadRequestException('Skin market_hash_name is required')
+    }
+
+    await this.ensureSkinExistsForGame(caseEntity.game_type, marketHashName)
+
+    const existing = await this.skinCaseRepository.findOne({
+      where: {
+        case: { id },
+        skin_hash_name: marketHashName,
+      },
+    })
+    if (existing) {
+      throw new ConflictException('Skin is already attached to this case')
+    }
+
+    const isDropOut = dto.is_drop_out ?? true
+    this.validateSkinCaseConfig(dto.chance, isDropOut)
+
+    const skinCase = this.skinCaseRepository.create({
+      case: caseEntity,
+      skin_hash_name: marketHashName,
+      game_type: caseEntity.game_type,
+      chance: dto.chance,
+      is_drop_out: isDropOut,
+    })
+    await this.skinCaseRepository.save(skinCase)
+
+    return this.findAdminById(id)
+  }
+
+  async updateCaseSkin(
+    id: number,
+    skinCaseId: number,
+    dto: UpdateCaseSkinDto,
+  ): Promise<Case> {
+    const skinCase = await this.skinCaseRepository.findOne({
+      where: { id: skinCaseId, case: { id } },
+      relations: ['case'],
+    })
+    if (!skinCase) {
+      throw new NotFoundException('Case skin not found')
+    }
+
+    const nextChance = dto.chance ?? skinCase.chance
+    const nextIsDropOut = dto.is_drop_out ?? skinCase.is_drop_out
+    this.validateSkinCaseConfig(nextChance, nextIsDropOut)
+
+    skinCase.chance = nextChance
+    skinCase.is_drop_out = nextIsDropOut
+    await this.skinCaseRepository.save(skinCase)
+
+    return this.findAdminById(id)
+  }
+
+  async removeCaseSkin(id: number, skinCaseId: number): Promise<Case> {
+    const skinCase = await this.skinCaseRepository.findOne({
+      where: { id: skinCaseId, case: { id } },
+      relations: ['case'],
+    })
+    if (!skinCase) {
+      throw new NotFoundException('Case skin not found')
+    }
+
+    await this.skinCaseRepository.remove(skinCase)
+    return this.findAdminById(id)
   }
 
   // Вынесенная логика проверки существования кейса.
@@ -422,9 +691,7 @@ export class CaseService {
   // Filters out rows whose skin couldn't be resolved at all — those
   // would be orphaned skin_case rows (deleted skin in the source
   // table) and shouldn't participate in the lottery.
-  private async getAvailableSkins(
-    caseEntity: Case,
-  ): Promise<SkinCase[]> {
+  private async getAvailableSkins(caseEntity: Case): Promise<SkinCase[]> {
     const skinCases = await this.skinCaseRepository.find({
       where: { case: { id: caseEntity.id }, is_drop_out: true },
       relations: ['skin'],
@@ -443,9 +710,7 @@ export class CaseService {
         const dotaSkins = await this.dotaSkinRepository.find({
           where: { market_hash_name: In(missing) },
         })
-        const byHashName = new Map(
-          dotaSkins.map(s => [s.market_hash_name, s]),
-        )
+        const byHashName = new Map(dotaSkins.map(s => [s.market_hash_name, s]))
         for (const sc of skinCases) {
           if (!sc.skin && sc.skin_hash_name) {
             const dotaSkin = byHashName.get(sc.skin_hash_name)
@@ -487,7 +752,11 @@ export class CaseService {
     caseId: number,
     count: number,
   ): Promise<void> {
-    await this.caseRepository.increment({ id: caseId }, 'remaining_count', count)
+    await this.caseRepository.increment(
+      { id: caseId },
+      'remaining_count',
+      count,
+    )
   }
 
   async openDemoCase(
@@ -731,8 +1000,7 @@ export class CaseService {
     // set) if the loss rate ever becomes user-visible.
     const user = await userPromise
     results.forEach((result, i) => {
-      const delay =
-        LIVEDROP_REVEAL_DELAY_MS + i * LIVEDROP_REVEAL_STAGGER_MS
+      const delay = LIVEDROP_REVEAL_DELAY_MS + i * LIVEDROP_REVEAL_STAGGER_MS
       setTimeout(() => {
         void this.publishLiveDrop(result.winner, caseEntity, userId, user)
       }, delay)

@@ -30,6 +30,14 @@ import {
   calculateFixedHouseEdgeVipEarning,
 } from '../vip/vip-earning.logic'
 import { VipService } from '../vip/vip.service'
+import { CrashLiveService } from '../crashLive/crash-live.service'
+import type { CrashLiveSnapshot } from '../crashLive/crash-live.types'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
+import type { AdminCrashListQueryDto } from './dto/admin-crash.dto'
 
 export interface PublicCrashSession {
   game_session_id: number
@@ -63,13 +71,260 @@ export interface SettleCrashSessionResult {
   session: PublicCrashSession
 }
 
+export interface AdminCrashSettings {
+  algorithm: string
+  house_edge_bps: number
+  max_bet_amount: number
+  max_bet_count: number
+  max_inventory_items: number
+  min_bet_amount: number
+  min_inventory_items: number
+  stake_modes: CrashStakeMode[]
+}
+
+export interface AdminCrashUser {
+  avatar: string | null
+  display_name: string
+  id: number
+}
+
+export interface AdminCrashSession extends PublicCrashSession {
+  mfr_algorithm: string
+  mfr_seed_hash: string
+  profit: number
+  user: AdminCrashUser
+}
+
+export interface AdminCrashOverview {
+  active_sessions: number
+  active_stake: number
+  average_cashout_multiplier: number
+  cashed_out_sessions: number
+  crashed_sessions: number
+  live: CrashLiveSnapshot
+  observed_rtp: number
+  project_profit: number
+  settings: AdminCrashSettings
+  stale_active_sessions: number
+  total_paid: number
+  total_sessions: number
+  total_wagered: number
+  top_win: number
+}
+
 @Injectable()
 export class CrashService {
   constructor(
     @InjectEntityManager()
     private readonly entityManager: EntityManager,
     private readonly vipService: VipService,
+    private readonly crashLiveService: CrashLiveService,
   ) {}
+
+  getAdminSettings(): AdminCrashSettings {
+    return {
+      algorithm: 'MFR_MATH_RANDOM',
+      house_edge_bps: CRASH_PRODUCT_HOUSE_EDGE_BPS,
+      max_bet_amount: UPGRADE_LIMITS.MAX_AMOUNT,
+      max_bet_count: 2,
+      max_inventory_items: UPGRADE_LIMITS.MAX_MATERIALS,
+      min_bet_amount: UPGRADE_LIMITS.MIN_AMOUNT,
+      min_inventory_items: UPGRADE_LIMITS.MIN_MATERIALS,
+      stake_modes: ['balance', 'inventory'],
+    }
+  }
+
+  getAdminLiveSnapshot(): CrashLiveSnapshot {
+    return this.crashLiveService.getSnapshot()
+  }
+
+  async getAdminOverview(): Promise<AdminCrashOverview> {
+    const aggregateQuery = this.entityManager
+      .createQueryBuilder(CrashSession, 'session')
+      .select(
+        `COALESCE(SUM(CASE WHEN session.status <> 'active' THEN session.stake_amount ELSE 0 END), 0)`,
+        'total_wagered',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN session.status = 'cashed_out' THEN session.win_amount ELSE 0 END), 0)`,
+        'total_paid',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN session.status = 'active' THEN session.stake_amount ELSE 0 END), 0)`,
+        'active_stake',
+      )
+      .addSelect(
+        `COALESCE(MAX(CASE WHEN session.status = 'cashed_out' THEN session.win_amount ELSE 0 END), 0)`,
+        'top_win',
+      )
+      .addSelect(
+        `COALESCE(AVG(CASE WHEN session.status = 'cashed_out' THEN session.cashout_multiplier ELSE NULL END), 0)`,
+        'average_cashout_multiplier',
+      )
+
+    const [
+      totalSessions,
+      activeSessions,
+      cashedOutSessions,
+      crashedSessions,
+      staleActiveSessions,
+      aggregate,
+    ] = await Promise.all([
+      this.entityManager.count(CrashSession),
+      this.entityManager.count(CrashSession, { where: { status: 'active' } }),
+      this.entityManager.count(CrashSession, {
+        where: { status: 'cashed_out' },
+      }),
+      this.entityManager.count(CrashSession, { where: { status: 'crashed' } }),
+      this.entityManager
+        .createQueryBuilder(CrashSession, 'session')
+        .where('session.status = :status', { status: 'active' })
+        .andWhere("session.created_at < NOW() - INTERVAL '30 minutes'")
+        .getCount(),
+      aggregateQuery.getRawOne<{
+        active_stake: string | number | null
+        average_cashout_multiplier: string | number | null
+        top_win: string | number | null
+        total_paid: string | number | null
+        total_wagered: string | number | null
+      }>(),
+    ])
+
+    const totalWagered = this.toNumber(aggregate?.total_wagered)
+    const totalPaid = this.toNumber(aggregate?.total_paid)
+    const projectProfit = roundCrashMoney(totalWagered - totalPaid)
+
+    return {
+      active_sessions: activeSessions,
+      active_stake: roundCrashMoney(this.toNumber(aggregate?.active_stake)),
+      average_cashout_multiplier: roundCrashMoney(
+        this.toNumber(aggregate?.average_cashout_multiplier),
+      ),
+      cashed_out_sessions: cashedOutSessions,
+      crashed_sessions: crashedSessions,
+      live: this.getAdminLiveSnapshot(),
+      observed_rtp:
+        totalWagered > 0
+          ? roundCrashMoney((totalPaid / totalWagered) * 100)
+          : 0,
+      project_profit: projectProfit,
+      settings: this.getAdminSettings(),
+      stale_active_sessions: staleActiveSessions,
+      total_paid: roundCrashMoney(totalPaid),
+      total_sessions: totalSessions,
+      total_wagered: roundCrashMoney(totalWagered),
+      top_win: roundCrashMoney(this.toNumber(aggregate?.top_win)),
+    }
+  }
+
+  async findAllForAdmin(
+    filters: AdminCrashListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminCrashSession>> {
+    const pagination = normalizePagination({
+      limit: filters.limit,
+      page: filters.page,
+    })
+    const queryBuilder = this.entityManager
+      .createQueryBuilder(CrashSession, 'session')
+      .leftJoinAndSelect('session.user', 'user')
+    let hasWhere = false
+
+    const addWhere = (
+      condition: string,
+      parameters?: Record<string, unknown>,
+    ) => {
+      if (!hasWhere) {
+        queryBuilder.where(condition, parameters)
+        hasWhere = true
+        return
+      }
+      queryBuilder.andWhere(condition, parameters)
+    }
+
+    if (filters.status) {
+      addWhere('session.status = :status', { status: filters.status })
+    }
+
+    if (filters.stakeMode) {
+      addWhere('session.stake_mode = :stakeMode', {
+        stakeMode: filters.stakeMode,
+      })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('session.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (filters.minStake !== undefined) {
+      addWhere('session.stake_amount >= :minStake', {
+        minStake: filters.minStake,
+      })
+    }
+
+    if (filters.maxStake !== undefined) {
+      addWhere('session.stake_amount <= :maxStake', {
+        maxStake: filters.maxStake,
+      })
+    }
+
+    if (filters.minWin !== undefined) {
+      addWhere('COALESCE(session.win_amount, 0) >= :minWin', {
+        minWin: filters.minWin,
+      })
+    }
+
+    if (filters.maxWin !== undefined) {
+      addWhere('COALESCE(session.win_amount, 0) <= :maxWin', {
+        maxWin: filters.maxWin,
+      })
+    }
+
+    if (filters.minMultiplier !== undefined) {
+      addWhere('COALESCE(session.cashout_multiplier, 0) >= :minMultiplier', {
+        minMultiplier: filters.minMultiplier,
+      })
+    }
+
+    if (filters.maxMultiplier !== undefined) {
+      addWhere('COALESCE(session.cashout_multiplier, 0) <= :maxMultiplier', {
+        maxMultiplier: filters.maxMultiplier,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      addWhere(
+        `(CAST(session.id AS TEXT) ILIKE :search OR CAST(session.user_id AS TEXT) ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search OR COALESCE(session.mfr_seed_hash, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [sessions, total] = await queryBuilder
+      .orderBy('session.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(
+      sessions.map(session => this.toAdminSession(session)),
+      total,
+      pagination,
+    )
+  }
+
+  async findAdminById(id: number): Promise<AdminCrashSession> {
+    const session = await this.entityManager
+      .createQueryBuilder(CrashSession, 'session')
+      .leftJoinAndSelect('session.user', 'user')
+      .where('session.id = :id', { id })
+      .getOne()
+
+    if (!session) {
+      throw new NotFoundException('Crash session not found')
+    }
+
+    return this.toAdminSession(session)
+  }
 
   async startGame(
     userId: number,
@@ -105,8 +360,8 @@ export class CrashService {
         const totalInventoryStake = roundCrashMoney(
           stakeItems.reduce((sum, item) => sum + item.price, 0),
         )
-        stakeAmounts = splitCrashStake(totalInventoryStake, betCount).map(amount =>
-          this.assertStakeAmount(amount),
+        stakeAmounts = splitCrashStake(totalInventoryStake, betCount).map(
+          amount => this.assertStakeAmount(amount),
         )
 
         inventoryItems.forEach(item => {
@@ -407,10 +662,42 @@ export class CrashService {
           ? null
           : Number(session.cashout_multiplier),
       win_amount:
-        session.win_amount === null ? null : roundCrashMoney(Number(session.win_amount)),
+        session.win_amount === null
+          ? null
+          : roundCrashMoney(Number(session.win_amount)),
       stake_items: session.stake_items ?? [],
       created_at: session.created_at,
       updated_at: session.updated_at,
     }
+  }
+
+  private toAdminSession(session: CrashSession): AdminCrashSession {
+    const publicSession = this.toPublicSession(session)
+    const winAmount =
+      session.win_amount === null
+        ? 0
+        : roundCrashMoney(Number(session.win_amount))
+    const profit =
+      session.status === 'active'
+        ? 0
+        : roundCrashMoney(winAmount - Number(session.stake_amount))
+
+    return {
+      ...publicSession,
+      mfr_algorithm: session.mfr_algorithm,
+      mfr_seed_hash: session.mfr_seed_hash,
+      profit,
+      user: {
+        avatar: session.user?.avatar ?? null,
+        display_name: session.user?.display_name ?? `User #${session.user_id}`,
+        id: session.user_id,
+      },
+    }
+  }
+
+  private toNumber(value: string | number | null | undefined): number {
+    const parsed = Number(value)
+
+    return Number.isFinite(parsed) ? parsed : 0
   }
 }

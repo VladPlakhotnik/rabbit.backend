@@ -9,7 +9,11 @@ import {
 import { InjectRepository } from '@nestjs/typeorm'
 import { Cron } from '@nestjs/schedule'
 import { In, Repository } from 'typeorm'
-import { Withdrawal, WithdrawalStatus } from './withdrawal.entity'
+import {
+  Withdrawal,
+  WithdrawalGameType,
+  WithdrawalStatus,
+} from './withdrawal.entity'
 import { parseTradeUrl } from './trade-url.parser'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import {
@@ -19,6 +23,12 @@ import {
   TmOrder,
 } from '../skins/shared/market-tm.client'
 import { NotificationService } from '../notifications/notification.service'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
+import type { AdminWithdrawalListQueryDto } from './dto/admin-withdrawal.dto'
 
 // Injection tokens for the per-game TM clients. Same literals as in
 // `skin.module.ts` — keep them here as constants to avoid a circular
@@ -43,6 +53,55 @@ interface WithdrawalRequestResult {
     status: WithdrawalStatus
     failure_reason: string | null
   }>
+}
+
+export interface AdminWithdrawalItem {
+  actual_price: number | null
+  completed_at: Date | null
+  created_at: Date
+  custom_id: string
+  failure_reason: string | null
+  game_type: WithdrawalGameType
+  id: number
+  inventory_item_id: number
+  skin: {
+    game_type: WithdrawalGameType
+    id: number
+    image: string | null
+    name: string
+    price: number | null
+    rarity: string | null
+    raw_market_price: number | null
+  } | null
+  status: WithdrawalStatus
+  target_price: number
+  tm_order_id: string | null
+  trade_url: string
+  updated_at: Date
+  user: {
+    avatar: string | null
+    display_name: string
+    id: number
+  } | null
+  user_id: number
+}
+
+export interface AdminWithdrawalOverview {
+  amount: {
+    actual: number
+    target: number
+  }
+  byGame: {
+    csgo: number
+    dota: number
+  }
+  completed: number
+  delivering: number
+  failed: number
+  inFlight: number
+  pending: number
+  purchasing: number
+  total: number
 }
 
 @Injectable()
@@ -440,6 +499,182 @@ export class WithdrawService {
     })
   }
 
+  async getAdminOverview(): Promise<AdminWithdrawalOverview> {
+    const raw = await this.withdrawalRepo
+      .createQueryBuilder('withdrawal')
+      .select('COUNT(*)', 'total_count')
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.status = 'pending' THEN 1 ELSE 0 END), 0)`,
+        'pending_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.status = 'purchasing' THEN 1 ELSE 0 END), 0)`,
+        'purchasing_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.status = 'delivering' THEN 1 ELSE 0 END), 0)`,
+        'delivering_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.status = 'completed' THEN 1 ELSE 0 END), 0)`,
+        'completed_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.status = 'failed' THEN 1 ELSE 0 END), 0)`,
+        'failed_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.game_type = 'csgo' THEN 1 ELSE 0 END), 0)`,
+        'csgo_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN withdrawal.game_type = 'dota' THEN 1 ELSE 0 END), 0)`,
+        'dota_count',
+      )
+      .addSelect('COALESCE(SUM(withdrawal.target_price), 0)', 'total_target_price')
+      .addSelect('COALESCE(SUM(withdrawal.actual_price), 0)', 'total_actual_price')
+      .getRawOne<{
+        completed_count?: number | string | null
+        csgo_count?: number | string | null
+        delivering_count?: number | string | null
+        dota_count?: number | string | null
+        failed_count?: number | string | null
+        pending_count?: number | string | null
+        purchasing_count?: number | string | null
+        total_actual_price?: number | string | null
+        total_count?: number | string | null
+        total_target_price?: number | string | null
+      }>()
+
+    const pending = this.toNumber(raw?.pending_count)
+    const purchasing = this.toNumber(raw?.purchasing_count)
+    const delivering = this.toNumber(raw?.delivering_count)
+
+    return {
+      amount: {
+        actual: this.toNumber(raw?.total_actual_price),
+        target: this.toNumber(raw?.total_target_price),
+      },
+      byGame: {
+        csgo: this.toNumber(raw?.csgo_count),
+        dota: this.toNumber(raw?.dota_count),
+      },
+      completed: this.toNumber(raw?.completed_count),
+      delivering,
+      failed: this.toNumber(raw?.failed_count),
+      inFlight: pending + purchasing + delivering,
+      pending,
+      purchasing,
+      total: this.toNumber(raw?.total_count),
+    }
+  }
+
+  async findAllForAdmin(
+    filters: AdminWithdrawalListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminWithdrawalItem>> {
+    const pagination = normalizePagination({
+      limit: filters.limit,
+      page: filters.page,
+    })
+    const queryBuilder = this.withdrawalRepo
+      .createQueryBuilder('withdrawal')
+      .leftJoinAndSelect('withdrawal.user', 'user')
+      .leftJoinAndSelect('withdrawal.inventoryItem', 'inventoryItem')
+      .leftJoinAndSelect('inventoryItem.csgoSkin', 'csgoSkin')
+      .leftJoinAndSelect('inventoryItem.dotaSkin', 'dotaSkin')
+    let hasWhere = false
+
+    const addWhere = (condition: string, parameters?: Record<string, unknown>) => {
+      if (!hasWhere) {
+        queryBuilder.where(condition, parameters)
+        hasWhere = true
+        return
+      }
+      queryBuilder.andWhere(condition, parameters)
+    }
+
+    if (filters.status) {
+      addWhere('withdrawal.status = :status', { status: filters.status })
+    }
+
+    if (filters.gameType) {
+      addWhere('withdrawal.game_type = :gameType', {
+        gameType: filters.gameType,
+      })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('withdrawal.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (filters.inventoryItemId !== undefined) {
+      addWhere('withdrawal.inventory_item_id = :inventoryItemId', {
+        inventoryItemId: filters.inventoryItemId,
+      })
+    }
+
+    if (filters.minTargetPrice !== undefined) {
+      addWhere('withdrawal.target_price >= :minTargetPrice', {
+        minTargetPrice: filters.minTargetPrice,
+      })
+    }
+
+    if (filters.maxTargetPrice !== undefined) {
+      addWhere('withdrawal.target_price <= :maxTargetPrice', {
+        maxTargetPrice: filters.maxTargetPrice,
+      })
+    }
+
+    if (filters.minActualPrice !== undefined) {
+      addWhere('COALESCE(withdrawal.actual_price, 0) >= :minActualPrice', {
+        minActualPrice: filters.minActualPrice,
+      })
+    }
+
+    if (filters.maxActualPrice !== undefined) {
+      addWhere('COALESCE(withdrawal.actual_price, 0) <= :maxActualPrice', {
+        maxActualPrice: filters.maxActualPrice,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      addWhere(
+        `(CAST(withdrawal.id AS TEXT) ILIKE :search OR CAST(withdrawal.user_id AS TEXT) ILIKE :search OR CAST(withdrawal.inventory_item_id AS TEXT) ILIKE :search OR COALESCE(withdrawal.custom_id, '') ILIKE :search OR COALESCE(withdrawal.tm_order_id, '') ILIKE :search OR COALESCE(withdrawal.failure_reason, '') ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search OR COALESCE(csgoSkin.market_hash_name, '') ILIKE :search OR COALESCE(dotaSkin.market_hash_name, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [withdrawals, total] = await queryBuilder
+      .orderBy('withdrawal.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(
+      withdrawals.map(withdrawal => this.toAdminWithdrawal(withdrawal)),
+      total,
+      pagination,
+    )
+  }
+
+  async findAdminById(id: number): Promise<AdminWithdrawalItem> {
+    const withdrawal = await this.withdrawalRepo
+      .createQueryBuilder('withdrawal')
+      .leftJoinAndSelect('withdrawal.user', 'user')
+      .leftJoinAndSelect('withdrawal.inventoryItem', 'inventoryItem')
+      .leftJoinAndSelect('inventoryItem.csgoSkin', 'csgoSkin')
+      .leftJoinAndSelect('inventoryItem.dotaSkin', 'dotaSkin')
+      .where('withdrawal.id = :id', { id })
+      .getOne()
+
+    if (!withdrawal) {
+      throw new NotFoundException('Withdrawal not found')
+    }
+
+    return this.toAdminWithdrawal(withdrawal)
+  }
+
   // ---- Polling --------------------------------------------------------
   //
   // Cron runs every 30s. For each in-flight withdrawal it:
@@ -591,5 +826,59 @@ export class WithdrawService {
           ? WithdrawalStatus.Delivering
           : WithdrawalStatus.Purchasing,
     })
+  }
+
+  private toAdminWithdrawal(withdrawal: Withdrawal): AdminWithdrawalItem {
+    const inventory = withdrawal.inventoryItem
+    const skin = inventory?.game_type === 'dota'
+      ? inventory.dotaSkin
+      : inventory?.csgoSkin
+    const skinName = skin?.market_hash_name ?? skin?.name ?? null
+
+    return {
+      actual_price: withdrawal.actual_price,
+      completed_at: withdrawal.completed_at,
+      created_at: withdrawal.created_at,
+      custom_id: withdrawal.custom_id,
+      failure_reason: withdrawal.failure_reason,
+      game_type: withdrawal.game_type,
+      id: withdrawal.id,
+      inventory_item_id: withdrawal.inventory_item_id,
+      skin:
+        skin && skinName
+          ? {
+              game_type: withdrawal.game_type,
+              id: skin.id,
+              image: skin.image ?? null,
+              name: skinName,
+              price: skin.market_price == null ? null : Number(skin.market_price),
+              rarity: skin.quality ?? skin.rarity ?? null,
+              raw_market_price:
+                skin.raw_market_price == null
+                  ? null
+                  : Number(skin.raw_market_price),
+            }
+          : null,
+      status: withdrawal.status,
+      target_price: withdrawal.target_price,
+      tm_order_id: withdrawal.tm_order_id,
+      trade_url: withdrawal.trade_url,
+      updated_at: withdrawal.updated_at,
+      user:
+        withdrawal.user != null
+          ? {
+              avatar: withdrawal.user.avatar ?? null,
+              display_name: withdrawal.user.display_name,
+              id: withdrawal.user.id,
+            }
+          : null,
+      user_id: withdrawal.user_id,
+    }
+  }
+
+  private toNumber(value: string | number | null | undefined): number {
+    const parsed = Number(value)
+
+    return Number.isFinite(parsed) ? parsed : 0
   }
 }

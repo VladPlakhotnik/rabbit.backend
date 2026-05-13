@@ -7,7 +7,12 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler'
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger'
 import { CurrentAdmin } from '../decorators/current-admin.decorator'
 import { TotpCodeDto } from '../dto/totp.dto'
 import { Admin } from '../entities/admin.entity'
@@ -37,7 +42,9 @@ export class AdminTotpController {
   @Post('setup')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Begin TOTP enrollment, returns secret + otpauth URI' })
+  @ApiOperation({
+    summary: 'Begin TOTP enrollment, returns secret + otpauth URI',
+  })
   @ApiResponse({ status: 200, description: '{ secret, otpauth_uri }' })
   @ApiResponse({ status: 400, description: 'TOTP is already enabled' })
   async setup(@CurrentAdmin() admin: Admin) {
@@ -52,7 +59,10 @@ export class AdminTotpController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Confirm TOTP enrollment with first code' })
   @ApiResponse({ status: 204, description: 'Enabled' })
-  @ApiResponse({ status: 401, description: 'Invalid code — restart enrollment' })
+  @ApiResponse({
+    status: 401,
+    description: 'Invalid code — restart enrollment',
+  })
   async verify(@CurrentAdmin() admin: Admin, @Body() dto: TotpCodeDto) {
     await this.totp.confirmSetup(admin.id, dto.code)
   }

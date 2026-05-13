@@ -18,6 +18,8 @@ import {
 } from './entities/mines-session.entity'
 import {
   MINES_BOARD_SIZE,
+  MINES_GRID_SIZE,
+  MINES_HOUSE_RETURN,
   buildMinesMultiplierPath,
   calculateProjectedWin,
   countSafeMinesReveals,
@@ -38,6 +40,8 @@ import {
   type NormalizedPagination,
   type PaginatedResponse,
 } from '../../common/pagination'
+import { MAX_MINES, MIN_MINES } from './mines.constants'
+import type { AdminMinesListQueryDto } from './dto/admin-mines.dto'
 
 export interface PublicMinesSession {
   game_session_id: number
@@ -62,6 +66,48 @@ export interface PublicMinesSession {
     display_name: string
     avatar: string | null
   }
+}
+
+export interface AdminMinesSettings {
+  algorithm: string
+  board_size: number
+  grid_size: number
+  house_edge_bps: number
+  house_return: number
+  max_bet_amount: number
+  max_inventory_items: number
+  max_mines: number
+  min_bet_amount: number
+  min_inventory_items: number
+  min_mines: number
+  stake_modes: MinesStakeMode[]
+}
+
+export interface AdminMinesSession extends PublicMinesSession {
+  mfr_algorithm: string
+  mfr_seed_hash: string
+  profit: number
+  safe_reveals: number
+  user: {
+    id: number
+    display_name: string
+    avatar: string | null
+  }
+}
+
+export interface AdminMinesOverview {
+  active_sessions: number
+  average_bet: number
+  completed_sessions: number
+  lost_sessions: number
+  observed_rtp: number
+  settings: AdminMinesSettings
+  stale_active_sessions: number
+  total_paid: number
+  total_sessions: number
+  total_wagered: number
+  top_win: number
+  won_sessions: number
 }
 
 export interface MoveResult {
@@ -89,6 +135,192 @@ export class MinesService {
     private readonly minesLiveService: MinesLiveService,
     private readonly vipService: VipService,
   ) {}
+
+  getAdminSettings(): AdminMinesSettings {
+    return {
+      algorithm: 'MFR_CRYPTO_RANDOM_INT',
+      board_size: MINES_BOARD_SIZE,
+      grid_size: MINES_GRID_SIZE,
+      house_edge_bps: MINES_PRODUCT_HOUSE_EDGE_BPS,
+      house_return: MINES_HOUSE_RETURN,
+      max_bet_amount: UPGRADE_LIMITS.MAX_AMOUNT,
+      max_inventory_items: UPGRADE_LIMITS.MAX_MATERIALS,
+      max_mines: MAX_MINES,
+      min_bet_amount: UPGRADE_LIMITS.MIN_AMOUNT,
+      min_inventory_items: UPGRADE_LIMITS.MIN_MATERIALS,
+      min_mines: MIN_MINES,
+      stake_modes: ['balance', 'inventory'],
+    }
+  }
+
+  async getAdminOverview(): Promise<AdminMinesOverview> {
+    const aggregateQuery = this.entityManager
+      .createQueryBuilder(MinesSession, 'session')
+      .select(
+        `COALESCE(SUM(CASE WHEN session.status <> 'active' THEN session.bet_amount ELSE 0 END), 0)`,
+        'total_wagered',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN session.status = 'cashed_out' THEN session.win_amount ELSE 0 END), 0)`,
+        'total_paid',
+      )
+      .addSelect(
+        `COALESCE(MAX(CASE WHEN session.status = 'cashed_out' THEN session.win_amount ELSE 0 END), 0)`,
+        'top_win',
+      )
+      .addSelect(
+        `COALESCE(AVG(CASE WHEN session.status <> 'active' THEN session.bet_amount ELSE NULL END), 0)`,
+        'average_bet',
+      )
+
+    const [
+      totalSessions,
+      activeSessions,
+      wonSessions,
+      lostSessions,
+      staleActiveSessions,
+      aggregate,
+    ] = await Promise.all([
+      this.entityManager.count(MinesSession),
+      this.entityManager.count(MinesSession, { where: { status: 'active' } }),
+      this.entityManager.count(MinesSession, {
+        where: { status: 'cashed_out' },
+      }),
+      this.entityManager.count(MinesSession, { where: { status: 'lost' } }),
+      this.entityManager
+        .createQueryBuilder(MinesSession, 'session')
+        .where('session.status = :status', { status: 'active' })
+        .andWhere("session.created_at < NOW() - INTERVAL '30 minutes'")
+        .getCount(),
+      aggregateQuery.getRawOne<{
+        average_bet: string | number | null
+        top_win: string | number | null
+        total_paid: string | number | null
+        total_wagered: string | number | null
+      }>(),
+    ])
+
+    const totalWagered = this.toNumber(aggregate?.total_wagered)
+    const totalPaid = this.toNumber(aggregate?.total_paid)
+
+    return {
+      active_sessions: activeSessions,
+      average_bet: roundMoney(this.toNumber(aggregate?.average_bet)),
+      completed_sessions: wonSessions + lostSessions,
+      lost_sessions: lostSessions,
+      observed_rtp:
+        totalWagered > 0 ? roundMoney((totalPaid / totalWagered) * 100) : 0,
+      settings: this.getAdminSettings(),
+      stale_active_sessions: staleActiveSessions,
+      total_paid: roundMoney(totalPaid),
+      total_sessions: totalSessions,
+      total_wagered: roundMoney(totalWagered),
+      top_win: roundMoney(this.toNumber(aggregate?.top_win)),
+      won_sessions: wonSessions,
+    }
+  }
+
+  async findAllForAdmin(
+    filters: AdminMinesListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminMinesSession>> {
+    const pagination = normalizePagination({
+      limit: filters.limit,
+      page: filters.page,
+    })
+    const queryBuilder = this.entityManager
+      .createQueryBuilder(MinesSession, 'session')
+      .leftJoinAndSelect('session.user', 'user')
+    let hasWhere = false
+
+    const addWhere = (condition: string, parameters?: Record<string, unknown>) => {
+      if (!hasWhere) {
+        queryBuilder.where(condition, parameters)
+        hasWhere = true
+        return
+      }
+      queryBuilder.andWhere(condition, parameters)
+    }
+
+    if (filters.status) {
+      addWhere('session.status = :status', { status: filters.status })
+    }
+
+    if (filters.stakeMode) {
+      addWhere('session.stake_mode = :stakeMode', {
+        stakeMode: filters.stakeMode,
+      })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('session.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (filters.minBet !== undefined) {
+      addWhere('session.bet_amount >= :minBet', { minBet: filters.minBet })
+    }
+
+    if (filters.maxBet !== undefined) {
+      addWhere('session.bet_amount <= :maxBet', { maxBet: filters.maxBet })
+    }
+
+    if (filters.minWin !== undefined) {
+      addWhere('COALESCE(session.win_amount, 0) >= :minWin', {
+        minWin: filters.minWin,
+      })
+    }
+
+    if (filters.maxWin !== undefined) {
+      addWhere('COALESCE(session.win_amount, 0) <= :maxWin', {
+        maxWin: filters.maxWin,
+      })
+    }
+
+    if (filters.minMines !== undefined) {
+      addWhere('session.mines_count >= :minMines', {
+        minMines: filters.minMines,
+      })
+    }
+
+    if (filters.maxMines !== undefined) {
+      addWhere('session.mines_count <= :maxMines', {
+        maxMines: filters.maxMines,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      addWhere(
+        `(CAST(session.id AS TEXT) ILIKE :search OR CAST(session.user_id AS TEXT) ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [sessions, total] = await queryBuilder
+      .orderBy('session.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(
+      sessions.map(session => this.toAdminSession(session)),
+      total,
+      pagination,
+    )
+  }
+
+  async findAdminById(id: number): Promise<AdminMinesSession> {
+    const session = await this.entityManager
+      .createQueryBuilder(MinesSession, 'session')
+      .leftJoinAndSelect('session.user', 'user')
+      .where('session.id = :id', { id })
+      .getOne()
+
+    if (!session) {
+      throw new NotFoundException('Mines session not found')
+    }
+
+    return this.toAdminSession(session)
+  }
 
   async startGame(
     userId: number,
@@ -673,6 +905,38 @@ export class MinesService {
             }
           : undefined,
     }
+  }
+
+  private toAdminSession(session: MinesSession): AdminMinesSession {
+    const publicSession = this.toPublicSession(session, {
+      includeUser: true,
+      revealMines: session.status !== 'active',
+    })
+    const winAmount =
+      session.win_amount === null ? 0 : roundMoney(Number(session.win_amount))
+    const profit =
+      session.status === 'active'
+        ? 0
+        : roundMoney(winAmount - Number(session.bet_amount))
+
+    return {
+      ...publicSession,
+      mfr_algorithm: session.mfr_algorithm,
+      mfr_seed_hash: session.mfr_seed_hash,
+      profit,
+      safe_reveals: this.countSafeReveals(session),
+      user: publicSession.user ?? {
+        avatar: session.user?.avatar ?? null,
+        display_name: session.user?.display_name ?? `User #${session.user_id}`,
+        id: session.user_id,
+      },
+    }
+  }
+
+  private toNumber(value: string | number | null | undefined): number {
+    const parsed = Number(value)
+
+    return Number.isFinite(parsed) ? parsed : 0
   }
 
   private countSafeReveals(session: MinesSession): number {

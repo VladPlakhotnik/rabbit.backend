@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { ThrottlerModule } from '@nestjs/throttler'
+import { AdminUpgradeController } from './admin-upgrade.controller'
 import { UpgradeController } from './upgrade.controller'
 import { UpgradeService } from './upgrade.service'
 import { User } from '../users/user.entity'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
+import { DotaSkin } from '../skins/dota-skin.entity'
 import { UserInventory } from '../userInventory/userInventory.entity'
 import { UserHistory } from '../userHistory/userHistory.entity'
 import { UpgradeHistory } from '../userHistory/entities/upgrade-history.entity'
@@ -16,6 +18,7 @@ import { VipModule } from '../vip/vip.module'
     TypeOrmModule.forFeature([
       User,
       CsgoSkin,
+      DotaSkin,
       UserInventory,
       UserHistory,
       UpgradeHistory,
@@ -32,7 +35,7 @@ import { VipModule } from '../vip/vip.module'
     ClickerChallengesModule,
     VipModule,
   ],
-  controllers: [UpgradeController],
+  controllers: [UpgradeController, AdminUpgradeController],
   providers: [UpgradeService],
   exports: [UpgradeService],
 })

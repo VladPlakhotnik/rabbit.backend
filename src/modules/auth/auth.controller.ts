@@ -572,7 +572,6 @@ export class AuthController {
       vip_xp: 0,
       vip_theoretical_rake: 0,
       withdrawal_amount: 0,
-      rank: 'initiate_1',
       created_at: new Date(),
     }
   }

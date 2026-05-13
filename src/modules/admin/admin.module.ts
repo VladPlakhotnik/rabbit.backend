@@ -4,6 +4,7 @@ import { PassportModule } from '@nestjs/passport'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { AdminAuthController } from './controllers/admin-auth.controller'
+import { AdminAnalyticsController } from './controllers/admin-analytics.controller'
 import { AdminController } from './controllers/admin.controller'
 import { AdminSessionsController } from './controllers/admin-sessions.controller'
 import { AdminTotpController } from './controllers/admin-totp.controller'
@@ -11,6 +12,7 @@ import { MeController } from './controllers/me.controller'
 import { AdminRefreshToken } from './entities/admin-refresh-token.entity'
 import { Admin } from './entities/admin.entity'
 import { AdminAuthService } from './services/admin-auth.service'
+import { AdminAnalyticsService } from './services/admin-analytics.service'
 import { AdminService } from './services/admin.service'
 import { AdminTotpService } from './services/admin-totp.service'
 import { AdminJwtStrategy } from './strategies/admin-jwt.strategy'
@@ -38,12 +40,19 @@ import { AdminJwtStrategy } from './strategies/admin-jwt.strategy'
   ],
   controllers: [
     AdminAuthController,
+    AdminAnalyticsController,
     AdminTotpController,
     AdminSessionsController,
     AdminController,
     MeController,
   ],
-  providers: [AdminAuthService, AdminService, AdminTotpService, AdminJwtStrategy],
+  providers: [
+    AdminAuthService,
+    AdminAnalyticsService,
+    AdminService,
+    AdminTotpService,
+    AdminJwtStrategy,
+  ],
   exports: [AdminAuthService],
 })
 export class AdminModule {}

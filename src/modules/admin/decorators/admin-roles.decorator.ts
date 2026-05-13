@@ -9,4 +9,5 @@ export const ADMIN_ROLES_KEY = 'admin_roles'
 //
 // Pair with AdminRolesGuard. AdminJwtGuard must run first (decoded
 // admin must be on req.user before role check makes sense).
-export const AdminRoles = (...roles: AdminRole[]) => SetMetadata(ADMIN_ROLES_KEY, roles)
+export const AdminRoles = (...roles: AdminRole[]) =>
+  SetMetadata(ADMIN_ROLES_KEY, roles)

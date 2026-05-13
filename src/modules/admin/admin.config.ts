@@ -43,8 +43,10 @@ export const isProduction = (): boolean => process.env.NODE_ENV === 'production'
 
 // JWT secrets — separate access + refresh secrets so a leak of one
 // doesn't compromise the other family. Throws at first use if unset.
-export const getJwtAccessSecret = (): string => requireEnv('ADMIN_JWT_ACCESS_SECRET')
-export const getJwtRefreshSecret = (): string => requireEnv('ADMIN_JWT_REFRESH_SECRET')
+export const getJwtAccessSecret = (): string =>
+  requireEnv('ADMIN_JWT_ACCESS_SECRET')
+export const getJwtRefreshSecret = (): string =>
+  requireEnv('ADMIN_JWT_REFRESH_SECRET')
 
 // Optional bootstrap — set both when seeding the very first super_admin
 // on a fresh DB. After the first successful boot, remove these env vars

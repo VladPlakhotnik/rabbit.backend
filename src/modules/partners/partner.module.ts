@@ -13,6 +13,7 @@ import { PromoCode } from '../promoCodes/entities/promoCode.entity'
 import { User } from '../users/user.entity'
 import { PartnerService } from './partner.service'
 import { PartnerController } from './partner.controller'
+import { AdminPartnersController } from './admin-partners.controller'
 
 @Module({
   imports: [
@@ -30,7 +31,7 @@ import { PartnerController } from './partner.controller'
       User,
     ]),
   ],
-  controllers: [PartnerController],
+  controllers: [PartnerController, AdminPartnersController],
   providers: [PartnerService],
   exports: [PartnerService],
 })

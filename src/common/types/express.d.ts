@@ -4,27 +4,26 @@ declare global {
   namespace Express {
     interface User {
       id: number
-      steam_id: number // Поле 'steam_id' (обязательно)
-      display_name: string // Поле 'display_name'
-      avatar: string // Поле 'avatar'
-      profile_url: string // Поле 'profile_url'
-      role: string // Поле 'role'
-      balance: number // Поле 'balance'
-      trade_link: string | null // Поле 'trade_link'
-      referral_parent_id: number | null // Поле 'referral_parent_id'
-      created_at: Date // Поле 'created_at'
-      opened_cases: number // Поле 'opened_cases'
-      upgraded_skins: number // Поле 'upgraded_skins'
-      deposit_amount: number // Поле 'deposit_amount'
-      vip_qualifying_volume: number // VIP qualifying case turnover
-      vip_xp: number // VIP XP normalized by expected site margin
-      vip_theoretical_rake: number // Expected margin used for VIP budgets
-      withdrawal_amount: number // Поле 'withdrawal_amount'
-      rank: string // Поле 'rank'
+      steam_id: number | null
+      display_name: string
+      avatar: string
+      profile_url: string
+      role: string
+      balance: number
+      trade_link: string | null
+      referral_parent_id: number | null
+      created_at: Date
+      opened_cases: number
+      upgraded_skins: number
+      deposit_amount: number
+      vip_qualifying_volume: number
+      vip_xp: number
+      vip_theoretical_rake: number
+      withdrawal_amount: number
     }
 
     interface Request {
-      user?: User // Используем интерфейс User
+      user?: User
     }
   }
 }

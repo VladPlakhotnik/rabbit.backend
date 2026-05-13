@@ -12,7 +12,12 @@ import {
 } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler'
-import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger'
 import { Request } from 'express'
 import { COOKIE_NAME, getJwtRefreshSecret } from '../admin.config'
 import { CurrentAdmin } from '../decorators/current-admin.decorator'
@@ -43,7 +48,10 @@ export class AdminSessionsController {
   @Get()
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @ApiOperation({ summary: 'List active sessions for the current admin' })
-  @ApiResponse({ status: 200, description: 'Array of session rows (no secrets)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Array of session rows (no secrets)',
+  })
   async list(@CurrentAdmin() admin: Admin) {
     return this.auth.listActiveSessions(admin.id)
   }
@@ -54,7 +62,10 @@ export class AdminSessionsController {
   @ApiOperation({ summary: 'Revoke one session by id' })
   @ApiResponse({ status: 204, description: 'Revoked' })
   @ApiResponse({ status: 401, description: 'Session not found or not yours' })
-  async revoke(@CurrentAdmin() admin: Admin, @Param('id', new ParseUUIDPipe()) id: string) {
+  async revoke(
+    @CurrentAdmin() admin: Admin,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
     await this.auth.revokeSession(admin.id, id)
   }
 
@@ -72,13 +83,18 @@ export class AdminSessionsController {
     // jti matches. If the cookie is missing (the admin somehow has a
     // valid access token but no refresh) we revoke all rows including
     // the present access — they'll get logged out on next 401.
-    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[COOKIE_NAME]
+    const refreshToken = (req.cookies as Record<string, string> | undefined)?.[
+      COOKIE_NAME
+    ]
     let currentJti = ''
     if (refreshToken) {
       try {
-        const payload = await this.jwt.verifyAsync<RefreshTokenPayload>(refreshToken, {
-          secret: getJwtRefreshSecret(),
-        })
+        const payload = await this.jwt.verifyAsync<RefreshTokenPayload>(
+          refreshToken,
+          {
+            secret: getJwtRefreshSecret(),
+          },
+        )
         if (payload.type === 'refresh') currentJti = payload.jti
       } catch {
         // bad cookie — fall through to revoke-all behaviour

@@ -8,7 +8,7 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import type { Cache } from 'cache-manager'
 import { InjectRepository } from '@nestjs/typeorm'
-import { EntityManager, Repository } from 'typeorm'
+import { Brackets, EntityManager, Repository } from 'typeorm'
 import { User } from './user.entity'
 import { UserDeposit } from './user-deposit.entity'
 import { HttpService } from '@nestjs/axios'
@@ -18,6 +18,17 @@ import type { VipEarning } from '../vip/vip-earning.logic'
 import { VipService } from '../vip/vip.service'
 import type { DiscordUserProfile } from '../social/services/discord.service'
 import { RewardsCooldown } from '../rewards/entities/rewardsCooldown.entity'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
+import type { AdminDepositListQueryDto } from './dto/admin-deposit.dto'
+import {
+  AdminUpdateUserDto,
+  AdminUserListQueryDto,
+} from './dto/admin-user.dto'
+import { isPlayerRole } from './player-role.enum'
 
 interface BalanceDeductionOptions {
   vipEarning?: VipEarning & {
@@ -37,6 +48,31 @@ export interface UserDepositHistoryItem {
   updated_at: Date
   external_id: string | null
   failure_reason: string | null
+}
+
+export interface AdminDepositItem extends UserDepositHistoryItem {
+  method: string
+  user: {
+    avatar: string | null
+    display_name: string
+    id: number
+  } | null
+}
+
+export interface AdminDepositsOverview {
+  amount: {
+    success: number
+    total: number
+    waiting: number
+  }
+  bonus: {
+    success: number
+  }
+  cancelled: number
+  error: number
+  success: number
+  total: number
+  waiting: number
 }
 
 /**
@@ -88,6 +124,135 @@ export class UserService {
     return this.userRepository.find()
   }
 
+  async findAllForAdmin(filters: AdminUserListQueryDto = {}) {
+    const page = Math.max(1, filters.page ?? 1)
+    const limit = Math.min(100, Math.max(1, filters.limit ?? 25))
+    const query = this.userRepository.createQueryBuilder('user')
+    const search = filters.search?.trim()
+
+    if (search) {
+      query.andWhere(
+        new Brackets(qb => {
+          qb.where('LOWER(user.display_name) LIKE LOWER(:search)', {
+            search: `%${search}%`,
+          })
+            .orWhere('CAST(user.id AS TEXT) LIKE :search', {
+              search: `%${search}%`,
+            })
+            .orWhere('CAST(user.steam_id AS TEXT) LIKE :search', {
+              search: `%${search}%`,
+            })
+            .orWhere('CAST(user.telegram_user_id AS TEXT) LIKE :search', {
+              search: `%${search}%`,
+            })
+            .orWhere('LOWER(user.discord_username) LIKE LOWER(:search)', {
+              search: `%${search}%`,
+            })
+            .orWhere('LOWER(user.discord_user_id) LIKE LOWER(:search)', {
+              search: `%${search}%`,
+            })
+            .orWhere('LOWER(user.google_id) LIKE LOWER(:search)', {
+              search: `%${search}%`,
+            })
+        }),
+      )
+    }
+
+    if (filters.role?.trim()) {
+      query.andWhere('user.role = :role', { role: filters.role.trim() })
+    }
+
+    if (filters.minBalance !== undefined) {
+      query.andWhere('user.balance >= :minBalance', {
+        minBalance: filters.minBalance,
+      })
+    }
+
+    if (filters.maxBalance !== undefined) {
+      query.andWhere('user.balance <= :maxBalance', {
+        maxBalance: filters.maxBalance,
+      })
+    }
+
+    const [items, total] = await query
+      .orderBy('user.id', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit)
+      .getManyAndCount()
+
+    return {
+      items,
+      total,
+      page,
+      limit,
+      hasMore: page * limit < total,
+      filters: {
+        search: search || null,
+        role: filters.role?.trim() || null,
+        minBalance: filters.minBalance ?? null,
+        maxBalance: filters.maxBalance ?? null,
+      },
+    }
+  }
+
+  async findAdminById(id: number): Promise<User> {
+    const user = await this.findById(id)
+    if (!user) {
+      throw new NotFoundException('User not found')
+    }
+
+    return user
+  }
+
+  async updateForAdmin(
+    id: number,
+    payload: AdminUpdateUserDto,
+  ): Promise<User> {
+    const user = await this.findAdminById(id)
+
+    if (payload.display_name !== undefined) {
+      const displayName = payload.display_name.trim()
+      if (!displayName) {
+        throw new BadRequestException('Display name is required')
+      }
+      user.display_name = displayName
+    }
+
+    if (payload.role !== undefined) {
+      const role = payload.role.trim()
+      if (!isPlayerRole(role)) {
+        throw new BadRequestException('Invalid player role')
+      }
+      user.role = role
+    }
+
+    if (payload.balance !== undefined) {
+      if (!Number.isFinite(payload.balance) || payload.balance < 0) {
+        throw new BadRequestException('Balance must be a non-negative number')
+      }
+      user.balance = Math.round(payload.balance * 100) / 100
+    }
+
+    if (payload.avatar !== undefined) {
+      user.avatar = payload.avatar.trim()
+    }
+
+    if (payload.trade_link !== undefined) {
+      const tradeLink = payload.trade_link?.trim()
+      user.trade_link = tradeLink || null
+    }
+
+    if (payload.telegram_bonus_claimed !== undefined) {
+      user.telegram_bonus_claimed = payload.telegram_bonus_claimed
+    }
+
+    if (payload.discord_bonus_claimed !== undefined) {
+      user.discord_bonus_claimed = payload.discord_bonus_claimed
+    }
+
+    return this.userRepository.save(user)
+  }
+
   async findById(id: number): Promise<User | null> {
     const user = await this.userRepository.findOne({
       where: { id },
@@ -97,6 +262,8 @@ export class UserService {
   }
 
   async getDepositHistory(userId: number): Promise<UserDepositHistoryItem[]> {
+    await this.findAdminById(userId)
+
     const deposits = await this.userDepositRepository.find({
       where: { user_id: userId },
       order: { created_at: 'DESC' },
@@ -115,6 +282,149 @@ export class UserService {
       external_id: deposit.external_id,
       failure_reason: deposit.failure_reason,
     }))
+  }
+
+  async getDepositsAdminOverview(): Promise<AdminDepositsOverview> {
+    const raw = await this.userDepositRepository
+      .createQueryBuilder('deposit')
+      .select('COUNT(*)', 'total_count')
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'waiting' THEN 1 ELSE 0 END), 0)`,
+        'waiting_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'success' THEN 1 ELSE 0 END), 0)`,
+        'success_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'error' THEN 1 ELSE 0 END), 0)`,
+        'error_count',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'cancelled' THEN 1 ELSE 0 END), 0)`,
+        'cancelled_count',
+      )
+      .addSelect('COALESCE(SUM(deposit.amount), 0)', 'total_amount')
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'waiting' THEN deposit.amount ELSE 0 END), 0)`,
+        'waiting_amount',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'success' THEN deposit.amount ELSE 0 END), 0)`,
+        'success_amount',
+      )
+      .addSelect(
+        `COALESCE(SUM(CASE WHEN deposit.status = 'success' THEN deposit.bonus_amount ELSE 0 END), 0)`,
+        'success_bonus_amount',
+      )
+      .getRawOne<{
+        cancelled_count?: number | string | null
+        error_count?: number | string | null
+        success_amount?: number | string | null
+        success_bonus_amount?: number | string | null
+        success_count?: number | string | null
+        total_amount?: number | string | null
+        total_count?: number | string | null
+        waiting_amount?: number | string | null
+        waiting_count?: number | string | null
+      }>()
+
+    return {
+      amount: {
+        success: this.toNumber(raw?.success_amount),
+        total: this.toNumber(raw?.total_amount),
+        waiting: this.toNumber(raw?.waiting_amount),
+      },
+      bonus: {
+        success: this.toNumber(raw?.success_bonus_amount),
+      },
+      cancelled: this.toNumber(raw?.cancelled_count),
+      error: this.toNumber(raw?.error_count),
+      success: this.toNumber(raw?.success_count),
+      total: this.toNumber(raw?.total_count),
+      waiting: this.toNumber(raw?.waiting_count),
+    }
+  }
+
+  async findDepositsForAdmin(
+    filters: AdminDepositListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminDepositItem>> {
+    const pagination = normalizePagination({
+      limit: filters.limit,
+      page: filters.page,
+    })
+    const queryBuilder = this.userDepositRepository
+      .createQueryBuilder('deposit')
+      .leftJoinAndSelect('deposit.user', 'user')
+    let hasWhere = false
+
+    const addWhere = (condition: string, parameters?: Record<string, unknown>) => {
+      if (!hasWhere) {
+        queryBuilder.where(condition, parameters)
+        hasWhere = true
+        return
+      }
+      queryBuilder.andWhere(condition, parameters)
+    }
+
+    if (filters.status) {
+      addWhere('deposit.status = :status', { status: filters.status })
+    }
+
+    const source = filters.source?.trim()
+    if (source) {
+      addWhere('deposit.source = :source', { source })
+    }
+
+    if (filters.userId !== undefined) {
+      addWhere('deposit.user_id = :userId', { userId: filters.userId })
+    }
+
+    if (filters.minAmount !== undefined) {
+      addWhere('deposit.amount >= :minAmount', {
+        minAmount: filters.minAmount,
+      })
+    }
+
+    if (filters.maxAmount !== undefined) {
+      addWhere('deposit.amount <= :maxAmount', {
+        maxAmount: filters.maxAmount,
+      })
+    }
+
+    const search = filters.search?.trim()
+    if (search) {
+      addWhere(
+        `(CAST(deposit.id AS TEXT) ILIKE :search OR CAST(deposit.user_id AS TEXT) ILIKE :search OR COALESCE(deposit.source, '') ILIKE :search OR COALESCE(deposit.external_id, '') ILIKE :search OR COALESCE(deposit.failure_reason, '') ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search)`,
+        { search: `%${search}%` },
+      )
+    }
+
+    const [deposits, total] = await queryBuilder
+      .orderBy('deposit.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+      .getManyAndCount()
+
+    return buildPaginatedResponse(
+      deposits.map(deposit => this.toAdminDeposit(deposit)),
+      total,
+      pagination,
+    )
+  }
+
+  async findDepositAdminById(id: number): Promise<AdminDepositItem> {
+    const deposit = await this.userDepositRepository
+      .createQueryBuilder('deposit')
+      .leftJoinAndSelect('deposit.user', 'user')
+      .where('deposit.id = :id', { id })
+      .getOne()
+
+    if (!deposit) {
+      throw new NotFoundException('Deposit not found')
+    }
+
+    return this.toAdminDeposit(deposit)
   }
 
   async findBySteamId(steam_id: string | number): Promise<User | null> {
@@ -818,6 +1128,35 @@ export class UserService {
     await manager.save(cooldown)
 
     return Math.round((previous - next) / 1000)
+  }
+
+  private toAdminDeposit(deposit: UserDeposit): AdminDepositItem {
+    return {
+      amount: deposit.amount,
+      bonus_amount: deposit.bonus_amount ?? 0,
+      created_at: deposit.created_at,
+      external_id: deposit.external_id,
+      failure_reason: deposit.failure_reason,
+      id: deposit.id,
+      method: deposit.source ?? 'manual',
+      status: deposit.status,
+      updated_at: deposit.updated_at,
+      user:
+        deposit.user != null
+          ? {
+              avatar: deposit.user.avatar ?? null,
+              display_name: deposit.user.display_name,
+              id: deposit.user.id,
+            }
+          : null,
+      user_id: deposit.user_id,
+    }
+  }
+
+  private toNumber(value: string | number | null | undefined): number {
+    const parsed = Number(value)
+
+    return Number.isFinite(parsed) ? parsed : 0
   }
 
   async validateAndDeductBalance(

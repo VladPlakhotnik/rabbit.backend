@@ -5,6 +5,7 @@ import { CaseHistory } from './entities/case-history.entity'
 import { UpgradeHistory } from './entities/upgrade-history.entity'
 import { UserHistoryService } from './userHistory.service'
 import { UserHistoryController } from './userHistory.controller'
+import { AdminUserHistoryController } from './admin-user-history.controller'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
 
@@ -25,7 +26,7 @@ import { DotaSkin } from '../skins/dota-skin.entity'
     ]),
   ],
   providers: [UserHistoryService],
-  controllers: [UserHistoryController],
+  controllers: [UserHistoryController, AdminUserHistoryController],
   exports: [UserHistoryService],
 })
 export class UserHistoryModule {}

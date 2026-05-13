@@ -44,7 +44,7 @@ export class AdminService {
 
   async findAll(): Promise<SafeAdmin[]> {
     const rows = await this.admins.find({ order: { created_at: 'DESC' } })
-    return rows.map((r) => r.toSafeJson())
+    return rows.map(r => r.toSafeJson())
   }
 
   async findById(id: string): Promise<SafeAdmin> {
@@ -53,7 +53,11 @@ export class AdminService {
     return admin.toSafeJson()
   }
 
-  async update(id: string, dto: UpdateAdminDto, requester: Admin): Promise<SafeAdmin> {
+  async update(
+    id: string,
+    dto: UpdateAdminDto,
+    requester: Admin,
+  ): Promise<SafeAdmin> {
     const target = await this.admins.findOne({ where: { id } })
     if (!target) throw new NotFoundException('Admin not found')
 
@@ -81,7 +85,9 @@ export class AdminService {
       dto.role === AdminRole.SUPER_ADMIN &&
       requester.role !== AdminRole.SUPER_ADMIN
     ) {
-      throw new ForbiddenException('Only super_admin can grant super_admin role')
+      throw new ForbiddenException(
+        'Only super_admin can grant super_admin role',
+      )
     }
 
     if (dto.first_name !== undefined) target.first_name = dto.first_name

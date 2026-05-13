@@ -86,21 +86,34 @@ export class ClickerUserService implements OnModuleInit {
    * Returns `{ data, total, page, limit }` so the table can render
    * pagination controls without a separate `/count` endpoint.
    */
-  async findAll(page = 1, limit = 20) {
+  async findAll(page = 1, limit = 20, search?: string) {
     const safePage = Math.max(1, Math.floor(page))
     const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)))
-    const [data, total] = await this.clickerUserRepository.findAndCount({
-      relations: [
-        'level',
-        'click_level',
-        'energy_level',
-        'auto_clicker_level',
-        'crit_click_level',
-      ],
-      order: { id: 'ASC' },
-      skip: (safePage - 1) * safeLimit,
-      take: safeLimit,
-    })
+    const qb = this.clickerUserRepository
+      .createQueryBuilder('clickerUser')
+      .leftJoinAndSelect('clickerUser.level', 'level')
+      .leftJoinAndSelect('clickerUser.click_level', 'clickLevel')
+      .leftJoinAndSelect('clickerUser.energy_level', 'energyLevel')
+      .leftJoinAndSelect('clickerUser.auto_clicker_level', 'autoClickerLevel')
+      .leftJoinAndSelect('clickerUser.crit_click_level', 'critClickLevel')
+      .orderBy('clickerUser.id', 'ASC')
+      .skip((safePage - 1) * safeLimit)
+      .take(safeLimit)
+
+    const normalizedSearch = search?.trim()
+    if (normalizedSearch) {
+      qb.andWhere(
+        `(${[
+          'CAST(clickerUser.id AS TEXT) ILIKE :search',
+          'CAST(clickerUser.user_id AS TEXT) ILIKE :search',
+          'CAST(clickerUser.points AS TEXT) ILIKE :search',
+          'CAST(clickerUser.total_points AS TEXT) ILIKE :search',
+        ].join(' OR ')})`,
+        { search: `%${normalizedSearch}%` },
+      )
+    }
+
+    const [data, total] = await qb.getManyAndCount()
     return { data, total, page: safePage, limit: safeLimit }
   }
 

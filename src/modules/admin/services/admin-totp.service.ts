@@ -1,4 +1,9 @@
-import { Injectable, BadRequestException, UnauthorizedException, Logger } from '@nestjs/common'
+import {
+  Injectable,
+  BadRequestException,
+  UnauthorizedException,
+  Logger,
+} from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import * as speakeasy from 'speakeasy'
@@ -45,11 +50,15 @@ export class AdminTotpService {
   // Returns the otpauth URI + raw secret. Frontend renders the URI as
   // a QR; the raw secret is shown alongside as a fallback for users on
   // a single device (no second device to scan from).
-  async beginSetup(adminId: string): Promise<{ secret: string; otpauth_uri: string }> {
+  async beginSetup(
+    adminId: string,
+  ): Promise<{ secret: string; otpauth_uri: string }> {
     const admin = await this.admins.findOne({ where: { id: adminId } })
     if (!admin) throw new UnauthorizedException('Admin not found')
     if (admin.totp_enabled) {
-      throw new BadRequestException('TOTP is already enabled — disable first to re-enroll')
+      throw new BadRequestException(
+        'TOTP is already enabled — disable first to re-enroll',
+      )
     }
 
     // 20 bytes = 160 bits, the RFC 6238 reference implementation length.

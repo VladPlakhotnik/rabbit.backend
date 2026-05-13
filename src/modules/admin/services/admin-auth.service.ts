@@ -94,7 +94,11 @@ export class AdminAuthService implements OnModuleInit {
 
   // ─── Login ─────────────────────────────────────────────────────
 
-  async login(dto: LoginDto, ip: string | null, userAgent: string | null): Promise<LoginResult> {
+  async login(
+    dto: LoginDto,
+    ip: string | null,
+    userAgent: string | null,
+  ): Promise<LoginResult> {
     const email = dto.email.toLowerCase().trim()
 
     // We deliberately use the SAME error message for "no such email"
@@ -106,7 +110,10 @@ export class AdminAuthService implements OnModuleInit {
     if (!admin) {
       // Constant-time-ish — burn the same hash budget the legit path
       // would have spent. Doesn't have to be exact, just non-trivial.
-      await bcrypt.compare(dto.password, '$2b$12$invalidsalt.................................')
+      await bcrypt.compare(
+        dto.password,
+        '$2b$12$invalidsalt.................................',
+      )
       throw new UnauthorizedException('Invalid credentials')
     }
 
@@ -179,9 +186,12 @@ export class AdminAuthService implements OnModuleInit {
   ): Promise<LoginResult> {
     let payload: RefreshTokenPayload
     try {
-      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(presentedToken, {
-        secret: getJwtRefreshSecret(),
-      })
+      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(
+        presentedToken,
+        {
+          secret: getJwtRefreshSecret(),
+        },
+      )
     } catch {
       throw new UnauthorizedException('Invalid refresh token')
     }
@@ -225,7 +235,9 @@ export class AdminAuthService implements OnModuleInit {
         `Refresh-token reuse detected for admin ${payload.sub} — revoking all sessions`,
       )
       await this.revokeAllForAdmin(payload.sub)
-      throw new UnauthorizedException('Refresh token reuse detected — all sessions revoked')
+      throw new UnauthorizedException(
+        'Refresh token reuse detected — all sessions revoked',
+      )
     }
 
     if (row.expires_at <= new Date()) {
@@ -255,9 +267,12 @@ export class AdminAuthService implements OnModuleInit {
 
     let payload: RefreshTokenPayload
     try {
-      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(presentedToken, {
-        secret: getJwtRefreshSecret(),
-      })
+      payload = await this.jwt.verifyAsync<RefreshTokenPayload>(
+        presentedToken,
+        {
+          secret: getJwtRefreshSecret(),
+        },
+      )
     } catch {
       return
     }
@@ -309,8 +324,8 @@ export class AdminAuthService implements OnModuleInit {
     })
     const now = new Date()
     return rows
-      .filter((r) => r.expires_at > now && !r.used_at)
-      .map((r) => ({
+      .filter(r => r.expires_at > now && !r.used_at)
+      .map(r => ({
         id: r.id,
         ip_address: r.ip_address,
         user_agent: r.user_agent,
@@ -337,7 +352,10 @@ export class AdminAuthService implements OnModuleInit {
   // Used by the "Sign out other devices" button — caller passes the
   // jti from the currently-presented refresh token (decoded from the
   // user_rt cookie / Authorization chain) so we don't kill them too.
-  async revokeOtherSessions(adminId: string, currentJti: string): Promise<number> {
+  async revokeOtherSessions(
+    adminId: string,
+    currentJti: string,
+  ): Promise<number> {
     const rows = await this.refreshTokens.find({
       where: { admin_id: adminId, revoked_at: IsNull() },
     })
@@ -434,18 +452,24 @@ export class AdminAuthService implements OnModuleInit {
   }
 
   async ensureEmailFree(email: string): Promise<void> {
-    const exists = await this.admins.findOne({ where: { email: email.toLowerCase() } })
+    const exists = await this.admins.findOne({
+      where: { email: email.toLowerCase() },
+    })
     if (exists) throw new ConflictException('Email already registered')
   }
 
   // Touch helper for AdminService.changeOwnPassword — wipes all other
   // refresh sessions when password changes (kicking out other devices).
-  async revokeAllExceptCurrent(adminId: string, currentJti: string | null): Promise<void> {
+  async revokeAllExceptCurrent(
+    adminId: string,
+    currentJti: string | null,
+  ): Promise<void> {
     const rows = await this.refreshTokens.find({
       where: { admin_id: adminId, revoked_at: IsNull() },
     })
     for (const r of rows) {
-      if (currentJti && (await bcrypt.compare(currentJti, r.token_hash))) continue
+      if (currentJti && (await bcrypt.compare(currentJti, r.token_hash)))
+        continue
       r.revoked_at = new Date()
       await this.refreshTokens.save(r)
     }
@@ -454,4 +478,9 @@ export class AdminAuthService implements OnModuleInit {
 
 // Re-export so guards can `throw new BadRequestException(...)` etc.
 // without each importing them separately. Just a convenience.
-export { BadRequestException, ConflictException, ForbiddenException, UnauthorizedException }
+export {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  UnauthorizedException,
+}

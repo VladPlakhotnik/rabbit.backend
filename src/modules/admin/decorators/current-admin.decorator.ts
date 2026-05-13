@@ -7,7 +7,9 @@ import { Admin } from '../entities/admin.entity'
 //   @Get('/me')
 //   @UseGuards(AdminJwtGuard)
 //   me(@CurrentAdmin() admin: Admin) { return admin.toSafeJson() }
-export const CurrentAdmin = createParamDecorator((_: unknown, ctx: ExecutionContext): Admin => {
-  const req = ctx.switchToHttp().getRequest<{ user: Admin }>()
-  return req.user
-})
+export const CurrentAdmin = createParamDecorator(
+  (_: unknown, ctx: ExecutionContext): Admin => {
+    const req = ctx.switchToHttp().getRequest<{ user: Admin }>()
+    return req.user
+  },
+)

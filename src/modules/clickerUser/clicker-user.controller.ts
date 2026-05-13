@@ -16,11 +16,13 @@ import { Request as ExpressRequest } from 'express'
 import { IsInt, IsOptional, IsString, MaxLength } from 'class-validator'
 import { ClickerUserService } from './clicker-user.service'
 import { ListClickerUsersQueryDto } from './dto/list-clicker-users.dto'
+import { normalizePagination } from '../../common/pagination'
 import { Admin } from '../admin/entities/admin.entity'
 import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
 import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
 import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
 import { AdminRole } from '../admin/types/admin-role.enum'
+import { ClickerHistoryService } from '../clickerHistory/clicker-history.service'
 
 class GrantPointsDto {
   /**
@@ -55,7 +57,10 @@ interface RequestWithAdmin extends Omit<ExpressRequest, 'user'> {
 @ApiTags('clicker-users')
 @Controller('clicker-users')
 export class ClickerUserController {
-  constructor(private readonly clickerUserService: ClickerUserService) {}
+  constructor(
+    private readonly clickerUserService: ClickerUserService,
+    private readonly clickerHistoryService: ClickerHistoryService,
+  ) {}
 
   // ─── Player-facing ───────────────────────────────────────────────
 
@@ -95,7 +100,36 @@ export class ClickerUserController {
     description: '{ data: ClickerUser[], total, page, limit }',
   })
   findAll(@Query() query: ListClickerUsersQueryDto) {
-    return this.clickerUserService.findAll(query.page ?? 1, query.limit ?? 20)
+    return this.clickerUserService.findAll(
+      query.page ?? 1,
+      query.limit ?? 20,
+      query.search,
+    )
+  }
+
+  @Get(':userId/history')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER, AdminRole.VIEWER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get clicker history for a player user_id (admin)' })
+  findHistory(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.clickerHistoryService.getUserHistory(
+      userId,
+      normalizePagination({ page, limit }),
+    )
+  }
+
+  @Get('by-user/:userId')
+  @UseGuards(AdminJwtGuard, AdminRolesGuard)
+  @AdminRoles(AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.MANAGER, AdminRole.VIEWER)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get clicker profile by player user_id (admin)' })
+  findByUserId(@Param('userId', ParseIntPipe) userId: number) {
+    return this.clickerUserService.findByUserId(userId)
   }
 
   @Get(':id')

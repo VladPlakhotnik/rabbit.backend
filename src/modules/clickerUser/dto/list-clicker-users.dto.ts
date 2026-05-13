@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer'
-import { IsInt, IsOptional, Max, Min } from 'class-validator'
+import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator'
 
 // Query DTO for `GET /clicker-users` admin listing. Pagination is
 // mandatory in spirit (table will grow proportional to active players)
@@ -22,4 +22,9 @@ export class ListClickerUsersQueryDto {
   @Min(1)
   @Max(100)
   limit?: number
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  search?: string
 }

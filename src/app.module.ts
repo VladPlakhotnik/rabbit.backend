@@ -44,6 +44,7 @@ import { CrashLiveModule } from './modules/crashLive/crash-live.module'
 import { CrashModule } from './modules/crash/crash.module'
 import { EarnVaultModule } from './modules/earnVault/earn-vault.module'
 import { VipModule } from './modules/vip/vip.module'
+import { BonusesModule } from './modules/bonuses/bonuses.module'
 
 @Module({
   imports: [
@@ -89,6 +90,7 @@ import { VipModule } from './modules/vip/vip.module'
     CrashAutoBetsModule,
     CrashLiveModule,
     VipModule,
+    BonusesModule,
     EarnVaultModule,
     AdminModule,
     // TO DO

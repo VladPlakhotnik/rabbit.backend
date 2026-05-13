@@ -52,7 +52,7 @@ export class PromoCode {
   current_uses!: number
 
   @Column({ type: 'text', nullable: true })
-  description!: string
+  description!: string | null
 
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'created_by' })

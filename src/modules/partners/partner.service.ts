@@ -9,6 +9,11 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { DataSource, EntityManager, Repository } from 'typeorm'
 import { createHash, randomBytes } from 'crypto'
 import axios from 'axios'
+import {
+  buildPaginatedResponse,
+  normalizePagination,
+  type PaginatedResponse,
+} from '../../common/pagination'
 import { PartnerLevelConfig } from './entities/partnerLevel.entity'
 import { PartnerProfile, PartnerLevel } from './entities/partnerProfile.entity'
 import { PartnerCpmDailyStat } from './entities/partnerCpmDailyStat.entity'
@@ -26,6 +31,11 @@ import {
   PromoCodeType,
 } from '../promoCodes/entities/promoCode.entity'
 import { User } from '../users/user.entity'
+import type {
+  AdminPartnerListQueryDto,
+  AdminUpdatePartnerLevelDto,
+  AdminUpdatePartnerProfileDto,
+} from './dto/admin-partner.dto'
 import {
   buildPartnerPostbackPayload,
   isResolvedPartnerPostbackUrlSafe,
@@ -215,6 +225,86 @@ export interface PartnerPostbackDeliveryDto {
   created_at: Date
 }
 
+export interface AdminPartnerUserDto {
+  id: number
+  display_name: string
+  avatar: string | null
+  role: string
+}
+
+export interface AdminPartnerItem {
+  id: number
+  user_id: number
+  user: AdminPartnerUserDto
+  level: PartnerLevel
+  level_name: string
+  referral_code: string | null
+  referral_balance: number
+  total_earned: number
+  total_referrals_deposit: number
+  active_referrals: number
+  referral_deposit_amount: number
+  campaign_count: number
+  postback_enabled: boolean
+  code_locked_by_admin: boolean
+  last_code_change_at: Date | null
+  created_at: Date
+  updated_at: Date
+}
+
+export interface AdminPartnerOverview {
+  total_partners: number
+  locked_codes: number
+  postback_enabled: number
+  active_campaigns: number
+  referral_balance_total: number
+  total_earned: number
+  total_referrals_deposit: number
+  active_referrals: number
+  referral_deposit_amount: number
+  ledger: {
+    pending_amount: number
+    approved_amount: number
+    paid_amount: number
+  }
+  traffic_30d: {
+    impressions: number
+    unique_impressions: number
+    payable_impressions: number
+    cpm_estimated_amount: number
+  }
+  levels: PartnerLevelDto[]
+}
+
+export interface AdminPartnerDetail extends AdminPartnerItem {
+  referrals: {
+    count: number
+    items: ReferralListItem[]
+  }
+  campaigns: PartnerCampaignDto[]
+  ledger: {
+    available: number
+    pending: number
+    min_payout: number
+    items: PartnerLedgerDto[]
+  }
+  settings: {
+    postback_enabled: boolean
+    postback_url: string | null
+  }
+  postbacks: PartnerPostbackDeliveryDto[]
+}
+
+interface AdminPartnerMaps {
+  codes: Map<number, string>
+  referrals: Map<
+    number,
+    { active_referrals: number; referral_deposit_amount: number }
+  >
+  campaigns: Map<number, number>
+  postbacks: Map<number, boolean>
+}
+
 @Injectable()
 export class PartnerService {
   private readonly logger = new Logger(PartnerService.name)
@@ -266,6 +356,278 @@ export class PartnerService {
       referral_percentage: row.referral_percentage,
       cpm_rate: row.cpm_rate,
     }))
+  }
+
+  async getAdminOverview(): Promise<AdminPartnerOverview> {
+    const startDateSql = this.formatSqlDate(
+      this.getUtcDayOffset(-(DEFAULT_STATS_PERIOD_DAYS - 1)),
+    )
+
+    const [
+      levels,
+      postbackEnabled,
+      activeCampaigns,
+      profileRows,
+      referralRows,
+      ledgerRows,
+      trafficRows,
+    ] = await Promise.all([
+      this.getLevels(),
+      this.partnerPostbackSettingRepository.count({
+        where: { enabled: true },
+      }),
+      this.partnerCampaignRepository.count({
+        where: { status: PartnerCampaignStatus.ACTIVE },
+      }),
+      this.dataSource.query(`
+        SELECT
+          COUNT(*)::int AS total_partners,
+          COUNT(*) FILTER (WHERE "code_locked_by_admin")::int AS locked_codes,
+          COALESCE(SUM("referral_balance"), 0)::numeric AS referral_balance_total,
+          COALESCE(SUM("total_earned"), 0)::numeric AS total_earned,
+          COALESCE(SUM("total_referrals_deposit"), 0)::numeric AS total_referrals_deposit
+        FROM "partner_profiles"
+      `),
+      this.dataSource.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE COALESCE("deposit_amount", 0) > 0)::int AS active_referrals,
+          COALESCE(SUM("deposit_amount"), 0)::numeric AS referral_deposit_amount
+        FROM "users"
+        WHERE "referral_parent_id" IS NOT NULL
+      `),
+      this.dataSource.query(`
+        SELECT
+          COALESCE(SUM("amount") FILTER (WHERE "status" = '${PartnerLedgerStatus.PENDING}'), 0)::numeric AS pending_amount,
+          COALESCE(SUM("amount") FILTER (WHERE "status" = '${PartnerLedgerStatus.APPROVED}'), 0)::numeric AS approved_amount,
+          COALESCE(SUM("amount") FILTER (WHERE "status" = '${PartnerLedgerStatus.PAID}'), 0)::numeric AS paid_amount
+        FROM "partner_commission_ledger"
+      `),
+      this.dataSource.query(
+        `
+          SELECT
+            COALESCE(SUM("impressions"), 0)::int AS impressions,
+            COALESCE(SUM("unique_impressions"), 0)::int AS unique_impressions,
+            COALESCE(SUM("payable_impressions"), 0)::int AS payable_impressions,
+            COALESCE(SUM("estimated_amount"), 0)::numeric AS cpm_estimated_amount
+          FROM "partner_cpm_daily_stats"
+          WHERE "day" >= $1::date
+        `,
+        [startDateSql],
+      ),
+    ])
+
+    const profile = profileRows[0] ?? {}
+    const referrals = referralRows[0] ?? {}
+    const ledger = ledgerRows[0] ?? {}
+    const traffic = trafficRows[0] ?? {}
+
+    return {
+      total_partners: Number(profile.total_partners) || 0,
+      locked_codes: Number(profile.locked_codes) || 0,
+      postback_enabled: Number(postbackEnabled) || 0,
+      active_campaigns: Number(activeCampaigns) || 0,
+      referral_balance_total: Number(profile.referral_balance_total) || 0,
+      total_earned: Number(profile.total_earned) || 0,
+      total_referrals_deposit: Number(profile.total_referrals_deposit) || 0,
+      active_referrals: Number(referrals.active_referrals) || 0,
+      referral_deposit_amount:
+        Number(referrals.referral_deposit_amount) || 0,
+      ledger: {
+        pending_amount: Number(ledger.pending_amount) || 0,
+        approved_amount: Number(ledger.approved_amount) || 0,
+        paid_amount: Number(ledger.paid_amount) || 0,
+      },
+      traffic_30d: {
+        impressions: Number(traffic.impressions) || 0,
+        unique_impressions: Number(traffic.unique_impressions) || 0,
+        payable_impressions: Number(traffic.payable_impressions) || 0,
+        cpm_estimated_amount: Number(traffic.cpm_estimated_amount) || 0,
+      },
+      levels,
+    }
+  }
+
+  async findAllForAdmin(
+    query: AdminPartnerListQueryDto = {},
+  ): Promise<PaginatedResponse<AdminPartnerItem>> {
+    const pagination = normalizePagination({
+      page: query.page,
+      limit: query.limit,
+    })
+
+    const qb = this.partnerProfileRepository
+      .createQueryBuilder('profile')
+      .leftJoinAndSelect('profile.user', 'user')
+      .leftJoin(
+        PromoCode,
+        'promo',
+        [
+          'promo.created_by = profile.user_id',
+          'promo.type = :referralType',
+          'promo.status = :referralStatus',
+        ].join(' AND '),
+        {
+          referralStatus: PromoCodeStatus.ACTIVE,
+          referralType: PromoCodeType.REFERRAL,
+        },
+      )
+
+    if (query.level !== undefined) {
+      qb.where('profile.level = :level', { level: query.level })
+    }
+
+    if (query.userId !== undefined) {
+      qb.andWhere('profile.user_id = :userId', { userId: query.userId })
+    }
+
+    if (query.codeLocked !== undefined) {
+      qb.andWhere('profile.code_locked_by_admin = :codeLocked', {
+        codeLocked: query.codeLocked,
+      })
+    }
+
+    if (query.minBalance !== undefined) {
+      qb.andWhere('profile.referral_balance >= :minBalance', {
+        minBalance: query.minBalance,
+      })
+    }
+
+    if (query.maxBalance !== undefined) {
+      qb.andWhere('profile.referral_balance <= :maxBalance', {
+        maxBalance: query.maxBalance,
+      })
+    }
+
+    const search = query.search?.trim()
+    if (search) {
+      qb.andWhere(
+        [
+          '(',
+          'CAST(profile.user_id AS TEXT) ILIKE :search',
+          'OR COALESCE(user.display_name, \'\') ILIKE :search',
+          'OR COALESCE(promo.code, \'\') ILIKE :search',
+          ')',
+        ].join(' '),
+        { search: `%${search}%` },
+      )
+    }
+
+    qb.orderBy('profile.created_at', 'DESC')
+      .skip(pagination.skip)
+      .take(pagination.limit)
+
+    const [profiles, total] = await qb.getManyAndCount()
+    const userIds = profiles.map(profile => profile.user_id)
+    const [adminMaps, levels] = await Promise.all([
+      this.loadAdminPartnerMaps(userIds),
+      this.getLevels(),
+    ])
+    const levelMap = new Map(levels.map(level => [level.level, level.name]))
+    const items = profiles.map(profile =>
+      this.toAdminPartnerItem(profile, adminMaps, levelMap),
+    )
+
+    return buildPaginatedResponse(items, total, pagination)
+  }
+
+  async findAdminByUserId(userId: number): Promise<AdminPartnerDetail> {
+    const profile = await this.partnerProfileRepository.findOne({
+      where: { user_id: userId },
+      relations: ['user'],
+    })
+    if (!profile) {
+      throw new NotFoundException('Partner profile not found')
+    }
+
+    const [adminMaps, levels, referrals, campaigns, ledger, setting, postbacks] =
+      await Promise.all([
+        this.loadAdminPartnerMaps([userId]),
+        this.getLevels(),
+        this.getReferrals(userId),
+        this.getAdminCampaigns(userId),
+        this.getAdminLedger(userId),
+        this.partnerPostbackSettingRepository.findOne({
+          where: { user_id: userId },
+        }),
+        this.getPostbackDeliveries(userId),
+      ])
+    const levelMap = new Map(levels.map(level => [level.level, level.name]))
+
+    return {
+      ...this.toAdminPartnerItem(profile, adminMaps, levelMap),
+      campaigns,
+      ledger,
+      postbacks,
+      referrals,
+      settings: {
+        postback_enabled: setting?.enabled ?? false,
+        postback_url: setting?.postback_url ?? null,
+      },
+    }
+  }
+
+  async updateProfileForAdmin(
+    userId: number,
+    input: AdminUpdatePartnerProfileDto,
+  ): Promise<AdminPartnerDetail> {
+    const profile = await this.partnerProfileRepository.findOne({
+      where: { user_id: userId },
+    })
+    if (!profile) {
+      throw new NotFoundException('Partner profile not found')
+    }
+
+    if (input.code_locked_by_admin !== undefined) {
+      profile.code_locked_by_admin = input.code_locked_by_admin
+    }
+
+    if (input.level !== undefined) {
+      profile.level = input.level
+    }
+
+    await this.partnerProfileRepository.save(profile)
+
+    if (input.recompute_level) {
+      await this.recomputeLevel(userId)
+    }
+
+    return this.findAdminByUserId(userId)
+  }
+
+  async updateLevelForAdmin(
+    level: number,
+    input: AdminUpdatePartnerLevelDto,
+  ): Promise<PartnerLevelDto> {
+    if (
+      !Number.isInteger(level) ||
+      level < PartnerLevel.BRONZE ||
+      level > PartnerLevel.DIAMOND
+    ) {
+      throw new BadRequestException('Invalid partner level')
+    }
+
+    const row = await this.partnerLevelRepository.findOne({
+      where: { level },
+    })
+    if (!row) {
+      throw new NotFoundException('Partner level not found')
+    }
+
+    if (input.min_referrals_deposit !== undefined) {
+      row.min_referrals_deposit = input.min_referrals_deposit
+    }
+    if (input.your_percentage !== undefined) {
+      row.your_percentage = input.your_percentage
+    }
+    if (input.referral_percentage !== undefined) {
+      row.referral_percentage = input.referral_percentage
+    }
+    if (input.cpm_rate !== undefined) {
+      row.cpm_rate = input.cpm_rate
+    }
+
+    const saved = await this.partnerLevelRepository.save(row)
+    return this.toLevelDto(saved)
   }
 
   /**
@@ -1866,6 +2228,203 @@ export class PartnerService {
       unique_impressions: Number(row.unique_impressions) || 0,
       payable_impressions: Number(row.payable_impressions) || 0,
       estimated_amount: Number(row.estimated_amount) || 0,
+    }
+  }
+
+  private async getAdminCampaigns(
+    userId: number,
+  ): Promise<PartnerCampaignDto[]> {
+    const campaigns = await this.partnerCampaignRepository.find({
+      where: { user_id: userId },
+      order: { created_at: 'DESC' },
+    })
+    const stats = await this.getCampaignStatsMap(userId, DEFAULT_STATS_PERIOD_DAYS)
+
+    return campaigns.map(campaign =>
+      this.toCampaignDto(
+        campaign,
+        stats.get(campaign.id) ?? this.emptyCampaignStats(),
+      ),
+    )
+  }
+
+  private async getAdminLedger(userId: number): Promise<{
+    available: number
+    pending: number
+    min_payout: number
+    items: PartnerLedgerDto[]
+  }> {
+    const [profile, ledgerRows] = await Promise.all([
+      this.partnerProfileRepository.findOne({ where: { user_id: userId } }),
+      this.partnerCommissionLedgerRepository.find({
+        where: { partner_user_id: userId },
+        order: { created_at: 'DESC' },
+        take: 100,
+      }),
+    ])
+    const pending = ledgerRows
+      .filter(row => row.status === PartnerLedgerStatus.PENDING)
+      .reduce((sum, row) => sum + row.amount, 0)
+
+    return {
+      available: profile?.referral_balance ?? 0,
+      pending,
+      min_payout: 10,
+      items: ledgerRows.map(row => ({
+        id: row.id,
+        type: row.type,
+        status: row.status,
+        amount: row.amount,
+        reference: row.reference,
+        description: row.description,
+        campaign_id: row.campaign_id,
+        created_at: row.created_at,
+      })),
+    }
+  }
+
+  private async loadAdminPartnerMaps(
+    userIds: number[],
+  ): Promise<AdminPartnerMaps> {
+    if (userIds.length === 0) {
+      return {
+        campaigns: new Map(),
+        codes: new Map(),
+        postbacks: new Map(),
+        referrals: new Map(),
+      }
+    }
+
+    const [codeRows, referralRows, campaignRows, postbackRows] =
+      await Promise.all([
+        this.dataSource.query(
+          `
+            SELECT DISTINCT ON ("created_by")
+              "created_by" AS user_id,
+              "code"
+            FROM "promo_codes"
+            WHERE "created_by" = ANY($1::int[])
+              AND "type" = $2
+              AND "status" = $3
+            ORDER BY "created_by", "created_at" DESC
+          `,
+          [userIds, PromoCodeType.REFERRAL, PromoCodeStatus.ACTIVE],
+        ),
+        this.dataSource.query(
+          `
+            SELECT
+              "referral_parent_id" AS user_id,
+              COUNT(*) FILTER (WHERE COALESCE("deposit_amount", 0) > 0)::int AS active_referrals,
+              COALESCE(SUM("deposit_amount"), 0)::numeric AS referral_deposit_amount
+            FROM "users"
+            WHERE "referral_parent_id" = ANY($1::int[])
+            GROUP BY 1
+          `,
+          [userIds],
+        ),
+        this.dataSource.query(
+          `
+            SELECT
+              "user_id",
+              COUNT(*)::int AS campaign_count
+            FROM "partner_campaigns"
+            WHERE "user_id" = ANY($1::int[])
+            GROUP BY 1
+          `,
+          [userIds],
+        ),
+        this.dataSource.query(
+          `
+            SELECT
+              "user_id",
+              "enabled" AS postback_enabled
+            FROM "partner_postback_settings"
+            WHERE "user_id" = ANY($1::int[])
+          `,
+          [userIds],
+        ),
+      ])
+
+    return {
+      campaigns: new Map(
+        campaignRows.map((row: { campaign_count: string | number; user_id: string | number }) => [
+          Number(row.user_id),
+          Number(row.campaign_count) || 0,
+        ]),
+      ),
+      codes: new Map(
+        codeRows.map((row: { code: string; user_id: string | number }) => [
+          Number(row.user_id),
+          row.code,
+        ]),
+      ),
+      postbacks: new Map(
+        postbackRows.map((row: { postback_enabled: boolean; user_id: string | number }) => [
+          Number(row.user_id),
+          Boolean(row.postback_enabled),
+        ]),
+      ),
+      referrals: new Map(
+        referralRows.map(
+          (row: {
+            active_referrals: string | number
+            referral_deposit_amount: string | number
+            user_id: string | number
+          }) => [
+            Number(row.user_id),
+            {
+              active_referrals: Number(row.active_referrals) || 0,
+              referral_deposit_amount:
+                Number(row.referral_deposit_amount) || 0,
+            },
+          ],
+        ),
+      ),
+    }
+  }
+
+  private toAdminPartnerItem(
+    profile: PartnerProfile,
+    maps: AdminPartnerMaps,
+    levelMap: Map<PartnerLevel, string>,
+  ): AdminPartnerItem {
+    const referrals = maps.referrals.get(profile.user_id)
+
+    return {
+      id: profile.id,
+      user_id: profile.user_id,
+      user: {
+        avatar: profile.user?.avatar ?? null,
+        display_name: profile.user?.display_name ?? `User #${profile.user_id}`,
+        id: profile.user?.id ?? profile.user_id,
+        role: profile.user?.role ?? 'user',
+      },
+      level: profile.level,
+      level_name: levelMap.get(profile.level) ?? String(profile.level),
+      referral_code: maps.codes.get(profile.user_id) ?? null,
+      referral_balance: Number(profile.referral_balance) || 0,
+      total_earned: Number(profile.total_earned) || 0,
+      total_referrals_deposit:
+        Number(profile.total_referrals_deposit) || 0,
+      active_referrals: referrals?.active_referrals ?? 0,
+      referral_deposit_amount: referrals?.referral_deposit_amount ?? 0,
+      campaign_count: maps.campaigns.get(profile.user_id) ?? 0,
+      postback_enabled: maps.postbacks.get(profile.user_id) ?? false,
+      code_locked_by_admin: profile.code_locked_by_admin,
+      last_code_change_at: profile.last_code_change_at,
+      created_at: profile.created_at,
+      updated_at: profile.updated_at,
+    }
+  }
+
+  private toLevelDto(row: PartnerLevelConfig): PartnerLevelDto {
+    return {
+      cpm_rate: Number(row.cpm_rate) || 0,
+      level: row.level as PartnerLevel,
+      min_referrals_deposit: Number(row.min_referrals_deposit) || 0,
+      name: row.name,
+      referral_percentage: Number(row.referral_percentage) || 0,
+      your_percentage: Number(row.your_percentage) || 0,
     }
   }
 

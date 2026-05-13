@@ -38,6 +38,9 @@ export class RegisterAdminDto {
   @MaxLength(100)
   last_name!: string
 
-  @IsEnum(AdminRole, { message: 'Role must be one of: super_admin, admin, manager, viewer' })
+  @IsEnum(AdminRole, {
+    message:
+      'Role must be one of: super_admin, admin, manager, viewer, investor',
+  })
   role!: AdminRole
 }

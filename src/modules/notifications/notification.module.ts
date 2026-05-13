@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm'
 import { JwtModule } from '@nestjs/jwt'
 import { NotificationService } from './notification.service'
 import { NotificationController } from './notification.controller'
+import { AdminNotificationsController } from './admin-notifications.controller'
 import { NotificationsGateway } from './notifications.gateway'
 import { Notification } from './entities/notification.entity'
 import { User } from '../users/user.entity'
@@ -22,7 +23,7 @@ import { getAccessSecret } from '../auth/auth-secrets'
     }),
   ],
   providers: [NotificationService, NotificationsGateway],
-  controllers: [NotificationController],
+  controllers: [NotificationController, AdminNotificationsController],
   exports: [NotificationService],
 })
 export class NotificationModule {}

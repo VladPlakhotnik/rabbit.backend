@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
+import { AdminMinesController } from './admin-mines.controller'
 import { MinesController } from './mines.controller'
 import { MinesService } from './mines.service'
 import { MinesSession } from './entities/mines-session.entity'
@@ -17,7 +18,7 @@ import { VipModule } from '../vip/vip.module'
     BotsModule,
     VipModule,
   ],
-  controllers: [MinesController],
+  controllers: [MinesController, AdminMinesController],
   providers: [
     MinesService,
     MinesLiveService,
