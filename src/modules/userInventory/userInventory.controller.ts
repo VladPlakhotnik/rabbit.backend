@@ -13,6 +13,7 @@ import {
   Query,
 } from '@nestjs/common'
 import { SoldItem, UserInventoryService } from './userInventory.service'
+import { GameType } from './userInventory.entity'
 import { AuthGuard } from '@nestjs/passport'
 import { Request } from 'express'
 import { User } from '../users/user.entity'
@@ -24,6 +25,12 @@ const parsePositiveFloat = (raw: string | undefined): number | undefined => {
   if (raw === undefined || raw === '') return undefined
   const parsed = Number.parseFloat(raw)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+const parseGameType = (raw: string | undefined): GameType | undefined => {
+  if (raw === undefined || raw === '') return undefined
+  if (raw === 'csgo' || raw === 'dota') return raw
+  throw new BadRequestException('Invalid game type')
 }
 
 interface SellSkinResponse {
@@ -86,12 +93,19 @@ export class UserInventoryController {
     description: 'Only return skins priced ≤ this value',
     required: false,
   })
+  @ApiQuery({
+    name: 'gameType',
+    description: 'Only return inventory from this game catalog',
+    required: false,
+    enum: ['csgo', 'dota'],
+  })
   @UseGuards(AuthGuard('jwt'))
   @Get('me')
   async getMyInventory(
     @Req() req: Request,
     @Query('search') search?: string,
     @Query('maxPrice') maxPrice?: string,
+    @Query('gameType') gameType?: string,
   ) {
     try {
       const user = req.user as User
@@ -105,6 +119,7 @@ export class UserInventoryController {
         {
           search,
           maxPrice: parsePositiveFloat(maxPrice),
+          gameType: parseGameType(gameType),
           excludeSold: true,
           excludeWithdrawn: true,
         },

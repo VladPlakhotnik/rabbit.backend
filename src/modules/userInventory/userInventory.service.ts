@@ -57,6 +57,7 @@ export class UserInventoryService {
     filters?: {
       search?: string
       maxPrice?: number
+      gameType?: GameType
       excludeSold?: boolean
       excludeWithdrawn?: boolean
     },
@@ -87,6 +88,12 @@ export class UserInventoryService {
 
       if (filters?.excludeWithdrawn) {
         query.andWhere('inv.is_withdrawn = false')
+      }
+
+      if (filters?.gameType) {
+        query.andWhere('inv.game_type = :gameType', {
+          gameType: filters.gameType,
+        })
       }
 
       if (filters?.search && filters.search.trim() !== '') {

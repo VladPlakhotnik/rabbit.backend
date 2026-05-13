@@ -10,6 +10,7 @@ import type { Cache } from 'cache-manager'
 import { InjectRepository } from '@nestjs/typeorm'
 import { EntityManager, Repository } from 'typeorm'
 import { User } from './user.entity'
+import { UserDeposit } from './user-deposit.entity'
 import { HttpService } from '@nestjs/axios'
 import { firstValueFrom } from 'rxjs'
 import { jwtUserCacheKey } from '../auth/jwt-user-cache-key'
@@ -25,6 +26,19 @@ interface BalanceDeductionOptions {
   }
 }
 
+export interface UserDepositHistoryItem {
+  id: number
+  user_id: number
+  method: string
+  amount: number
+  bonus_amount: number
+  status: UserDeposit['status']
+  created_at: Date
+  updated_at: Date
+  external_id: string | null
+  failure_reason: string | null
+}
+
 /**
  * Service for working with users
  * @class UserService
@@ -37,6 +51,8 @@ export class UserService {
   constructor(
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(UserDeposit)
+    private readonly userDepositRepository: Repository<UserDeposit>,
     private readonly httpService: HttpService,
     private readonly vipService: VipService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
@@ -78,6 +94,27 @@ export class UserService {
     })
 
     return user || null
+  }
+
+  async getDepositHistory(userId: number): Promise<UserDepositHistoryItem[]> {
+    const deposits = await this.userDepositRepository.find({
+      where: { user_id: userId },
+      order: { created_at: 'DESC' },
+      take: 100,
+    })
+
+    return deposits.map(deposit => ({
+      id: deposit.id,
+      user_id: deposit.user_id,
+      method: deposit.source ?? 'manual',
+      amount: deposit.amount,
+      bonus_amount: deposit.bonus_amount ?? 0,
+      status: deposit.status,
+      created_at: deposit.created_at,
+      updated_at: deposit.updated_at,
+      external_id: deposit.external_id,
+      failure_reason: deposit.failure_reason,
+    }))
   }
 
   async findBySteamId(steam_id: string | number): Promise<User | null> {

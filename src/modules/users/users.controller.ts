@@ -81,6 +81,18 @@ export class UserController {
     return req.user
   }
 
+  @ApiOperation({ summary: 'Get current user deposit history' })
+  @ApiResponse({
+    status: 200,
+    description: 'Return current user deposit history ordered newest first',
+  })
+  @UseGuards(AuthGuard('jwt'))
+  @Get('me/deposits')
+  async getMyDeposits(@Req() req: Request) {
+    const user = req.user as User
+    return this.userService.getDepositHistory(user.id)
+  }
+
   @ApiOperation({ summary: 'Get user by ID' })
   @ApiResponse({ status: 200, description: 'Return user by ID' })
   //@UseGuards(AuthGuard('jwt'))

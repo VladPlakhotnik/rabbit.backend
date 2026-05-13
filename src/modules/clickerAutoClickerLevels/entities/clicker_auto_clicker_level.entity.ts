@@ -17,7 +17,7 @@ export class ClickerAutoClickerLevel {
   @Column({ name: 'upgrade_cost' })
   upgrade_cost!: number
 
-  /** How long the autoclicker stays active per Activate, in seconds. */
+  /** Max idle-bank accumulation cap for this tier, in seconds. */
   @Column({ name: 'duration_sec' })
   duration_sec!: number
 

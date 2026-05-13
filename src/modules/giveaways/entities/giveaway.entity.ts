@@ -10,6 +10,7 @@ import {
 import { CsgoSkin } from '../../skins/csgo-skin.entity'
 import { User } from '../../users/user.entity'
 import { numericTransformer } from '../../../common/helpers/numericTransformer'
+import type { GiveawayType } from '../giveaways.logic'
 
 export enum GiveawayStatus {
   UPCOMING = 'UPCOMING',
@@ -48,6 +49,14 @@ export class Giveaway {
 
   @Column({ type: 'integer', array: true, default: [] })
   participants!: number[]
+
+  @Column({
+    type: 'varchar',
+    length: 32,
+    nullable: true,
+    name: 'giveaway_type',
+  })
+  giveaway_type!: GiveawayType | null
 
   @Column({ type: 'timestamp', name: 'start_time' })
   start_time!: Date

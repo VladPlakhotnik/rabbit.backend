@@ -7,6 +7,7 @@ import { deriveRestoredAutoClickerCycle } from './clicker-auto-clicker.logic'
 import { CLAIM_AUTO_LUA } from './clicker.lua.claim-auto'
 import { DEDUCT_LUA } from './clicker.deduct.lua'
 import { ACTIVATE_BOOST_LUA } from './clicker.activate-boost.lua'
+import { readAutoClickerMaxIdleSecOverride } from './clicker-env-overrides'
 import {
   DEFAULT_AUTO_CLICKER_IDLE_THRESHOLD_SEC,
   DEFAULT_REGEN_PER_SEC_FALLBACK,
@@ -47,21 +48,15 @@ const AUTO_CLICKER_IDLE_THRESHOLD_SEC = (() => {
 const AUTO_CLICKER_IDLE_THRESHOLD_MS = AUTO_CLICKER_IDLE_THRESHOLD_SEC * 1000
 
 /**
- * Test override for the autoclicker accumulation cap. When set to a
- * positive number, OVERRIDES the per-level `duration_sec` from the DB.
+ * Dev/test override for the autoclicker accumulation cap. Requires
+ * CLICKER_ENABLE_LOCAL_AUTO_CLICKER_OVERRIDE=true and a positive
+ * CLICKER_AUTO_CLICKER_MAX_IDLE_SEC outside production.
  * Lets us reproduce 4 h cap bugs without literally idling for 4 h —
  * `CLICKER_AUTO_CLICKER_MAX_IDLE_SEC=300` reproduces a 5-min cap.
  *
- * `0` (or unset) keeps the per-level value untouched. Negative or
- * non-numeric falls back too — never break prod on a typo.
+ * `0`, unset, invalid, production, or missing opt-in keeps the per-level value untouched.
  */
-const AUTO_CLICKER_MAX_IDLE_SEC_OVERRIDE = (() => {
-  const raw = process.env.CLICKER_AUTO_CLICKER_MAX_IDLE_SEC
-  if (raw == null || raw === '') return 0
-  const parsed = Number(raw)
-  if (!Number.isFinite(parsed) || parsed <= 0) return 0
-  return parsed
-})()
+const AUTO_CLICKER_MAX_IDLE_SEC_OVERRIDE = readAutoClickerMaxIdleSecOverride()
 
 export interface ClickerMetaInput {
   cost: number

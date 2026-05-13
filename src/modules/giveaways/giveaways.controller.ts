@@ -6,6 +6,7 @@ import {
   UseGuards,
   Req,
   BadRequestException,
+  Header,
 } from '@nestjs/common'
 import { Request as ExpressRequest } from 'express'
 import { AuthGuard } from '@nestjs/passport'
@@ -29,6 +30,7 @@ export class GiveawaysController {
     description: 'Return all giveaways with skin and winner information',
   })
   @Get()
+  @Header('Cache-Control', 'no-store')
   async getAllGiveaways() {
     return this.giveawaysService.findAll()
   }
@@ -39,6 +41,7 @@ export class GiveawaysController {
     description: 'Return all active giveaways with skin and winner information',
   })
   @Get('active')
+  @Header('Cache-Control', 'no-store')
   async getAllActiveGiveaways() {
     return this.giveawaysService.findAllActive()
   }
@@ -76,6 +79,7 @@ export class GiveawaysController {
     description: 'Return all completed giveaways with winners',
   })
   @Get('winners')
+  @Header('Cache-Control', 'no-store')
   async getAllWinners() {
     return this.giveawaysService.findAllWinners()
   }

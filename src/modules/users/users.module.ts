@@ -14,6 +14,7 @@ import { VipLedger } from '../vip/vip-ledger.entity'
 import { VipModule } from '../vip/vip.module'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { RewardsCooldown } from '../rewards/entities/rewardsCooldown.entity'
+import { UserDeposit } from './user-deposit.entity'
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { RewardsCooldown } from '../rewards/entities/rewardsCooldown.entity'
       Notification,
       VipLedger,
       RewardsCooldown,
+      UserDeposit,
     ]),
     HttpModule,
     SocialModule,
