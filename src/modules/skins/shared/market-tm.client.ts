@@ -169,7 +169,7 @@ export class TmMarketClient {
       this.http.get<TmMarketPricesResponse>(url, {
         timeout: this.config.timeoutMs,
         headers: {
-          'User-Agent': 'Rabbit-Backend/1.0',
+          'User-Agent': 'Bunny-Backend/1.0',
         },
       }),
     )
@@ -213,7 +213,7 @@ export class TmMarketClient {
     // which adds friction for stream consumption.
     const response = await axios.get(url, {
       timeout: this.config.timeoutMs,
-      headers: { 'User-Agent': 'Rabbit-Backend/1.0' },
+      headers: { 'User-Agent': 'Bunny-Backend/1.0' },
       responseType: 'stream',
     })
 
@@ -383,7 +383,7 @@ export class TmMarketClient {
       response = await firstValueFrom(
         this.http.get<TmBuyForResponse>(url, {
           timeout: this.config.timeoutMs,
-          headers: { 'User-Agent': 'Rabbit-Backend/1.0' },
+          headers: { 'User-Agent': 'Bunny-Backend/1.0' },
           // Don't throw on 4xx — let us inspect the body. TM returns
           // 200 + {success:false} for normal errors; if we see a 401
           // body it's almost certainly Cloudflare or an account-state
@@ -458,7 +458,7 @@ export class TmMarketClient {
     const response = await firstValueFrom(
       this.http.get<TmBuyInfoResponse>(url, {
         timeout: this.config.timeoutMs,
-        headers: { 'User-Agent': 'Rabbit-Backend/1.0' },
+        headers: { 'User-Agent': 'Bunny-Backend/1.0' },
       }),
     )
 

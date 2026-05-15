@@ -17,6 +17,7 @@ import { VipModule } from '../vip/vip.module'
 import { ThrottlerModule } from '@nestjs/throttler'
 import { RewardsCooldown } from '../rewards/entities/rewardsCooldown.entity'
 import { UserDeposit } from './user-deposit.entity'
+import { UserRefreshToken } from '../auth/entities/user-refresh-token.entity'
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { UserDeposit } from './user-deposit.entity'
       VipLedger,
       RewardsCooldown,
       UserDeposit,
+      UserRefreshToken,
     ]),
     HttpModule,
     SocialModule,

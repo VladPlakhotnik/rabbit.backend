@@ -1,7 +1,7 @@
 services:
   redis:
     image: redis:7-alpine
-    container_name: rabbit-redis
+    container_name: bunny-redis
     ports:
       - '6379:6379'
     volumes:
@@ -18,7 +18,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: rabbit-backend
+    container_name: bunny-backend
     ports:
       - '5000:5000'
     volumes:

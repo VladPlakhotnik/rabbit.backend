@@ -1,8 +1,8 @@
 // Helpers for redacting bearer tokens out of log lines.
 //
 // Mirrored — if you change this file, also update its twin in:
-//   - rabbit.frontend/src/shared/utils/mask-token.ts (when added)
-//   - rabbit-admin/src/shared/lib/mask-token.ts       (when added)
+//   - bunny.frontend/src/shared/utils/mask-token.ts (when added)
+//   - bunny-admin/src/shared/lib/mask-token.ts       (when added)
 // (currently only the backend logs bearer tokens, so the helper is
 //  only required here. Keep this comment if a frontend variant gets
 //  added later so they stay in sync.)

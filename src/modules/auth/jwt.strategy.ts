@@ -48,11 +48,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     // the standard JWT pattern.
     const cacheKey = jwtUserCacheKey(userId)
     const cached = await this.cache.get<User>(cacheKey)
-    if (cached) return cached
+    if (cached) {
+      if (cached.is_blocked) {
+        throw new UnauthorizedException(ERROR_MESSAGES.AUTH.ACCOUNT_BLOCKED)
+      }
+      return cached
+    }
 
     const user = await this.userService.findById(userId)
     if (!user) {
       throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
+    }
+    if (user.is_blocked) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.ACCOUNT_BLOCKED)
     }
 
     // Negative results aren't cached — a deleted user must produce 401

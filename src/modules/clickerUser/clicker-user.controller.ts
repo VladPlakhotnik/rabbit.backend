@@ -242,6 +242,6 @@ export class ClickerUserController {
 //     cross-table FKs. If a profile must truly disappear, write a
 //     dedicated migration script.
 //
-// Frontend (rabbit-admin) currently calls only `GET /clicker-users` and
+// Frontend (bunny-admin) currently calls only `GET /clicker-users` and
 // `POST /clicker-users/:userId/grant-points` — anything above will need
 // matching `entities/clicker-user/api` mutations + a UI surface.

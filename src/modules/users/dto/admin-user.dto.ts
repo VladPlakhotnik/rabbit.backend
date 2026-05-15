@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator'
 import { PLAYER_ROLE_VALUES } from '../player-role.enum'
+import { USER_BLOCK_REASON_TEMPLATES } from '../user-block'
 
 export class AdminUserListQueryDto {
   @IsOptional()
@@ -85,4 +86,16 @@ export class AdminUpdateUserDto {
   @IsOptional()
   @IsBoolean()
   discord_bonus_claimed?: boolean
+}
+
+export class AdminBlockUserDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(USER_BLOCK_REASON_TEMPLATES)
+  @MaxLength(64)
+  template?: string
+
+  @IsString()
+  @MaxLength(500)
+  reason!: string
 }

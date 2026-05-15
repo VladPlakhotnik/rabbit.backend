@@ -91,7 +91,7 @@ export class PartnerLevelConfig {
   referral_percentage!: number
 
   /**
-   * CPM rate in Rabbit balance units per 1,000 qualified unique visits.
+   * CPM rate in Bunny balance units per 1,000 qualified unique visits.
    * CPM is estimated/pending by default and should be approved before
    * adding anything to referral_balance.
    */

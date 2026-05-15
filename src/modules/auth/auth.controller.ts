@@ -35,6 +35,10 @@ import {
   readSteamLinkStateCookie,
 } from './steam-link-state'
 import { getClientIp, getUserAgent } from '../../common/helpers/request-meta'
+import {
+  resolveCountryFromHeaders,
+  type UserCountryCandidate,
+} from '../../common/helpers/user-country'
 import type {
   SteamAuthResult,
   GoogleAuthResult,
@@ -461,6 +465,7 @@ export class AuthController {
     const existingUser = await findUserFn()
     const ip = getClientIp(req)
     const userAgent = getUserAgent(req)
+    const country = resolveCountryFromHeaders(req.headers)
 
     let user: User
     if (existingUser) {
@@ -468,6 +473,7 @@ export class AuthController {
         `${providerName} authentication: Found existing user with ID ${existingUser.id}`,
       )
       user = existingUser
+      await this.userService.setCountryIfMissing(user, country)
     } else {
       // First sign-in via this provider. The clicker profile is no
       // longer materialised here - it's created lazily the first time
@@ -477,7 +483,9 @@ export class AuthController {
       this.logger.log(
         `${providerName} authentication: Creating new user with ${providerName} ID`,
       )
-      user = await this.userService.create(this.createDefaultUserData(userData))
+      user = await this.userService.create(
+        this.createDefaultUserData(userData, country),
+      )
       this.logger.log(
         `${providerName} authentication: Created new user with ID ${user.id}`,
       )
@@ -548,7 +556,10 @@ export class AuthController {
   /**
    * Creates default user data for new users
    */
-  private createDefaultUserData(userData: AuthCallbackUserData): Partial<User> {
+  private createDefaultUserData(
+    userData: AuthCallbackUserData,
+    country: UserCountryCandidate | null,
+  ): Partial<User> {
     // Convert steam_id string to number, but handle large numbers carefully
     // For Steam IDs larger than MAX_SAFE_INTEGER, we'll pass as string
     // and let TypeORM/PostgreSQL handle the conversion to bigint
@@ -572,6 +583,9 @@ export class AuthController {
       vip_xp: 0,
       vip_theoretical_rake: 0,
       withdrawal_amount: 0,
+      country_code: country?.countryCode ?? null,
+      country_source: country?.source ?? null,
+      country_detected_at: country ? new Date() : null,
       created_at: new Date(),
     }
   }

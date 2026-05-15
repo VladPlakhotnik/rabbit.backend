@@ -5,6 +5,7 @@ import { IsNull, LessThanOrEqual, Repository } from 'typeorm'
 import { randomUUID } from 'crypto'
 import * as bcrypt from 'bcrypt'
 import { User } from '../users/user.entity'
+import { UserService } from '../users/users.service'
 import {
   ACCESS_TOKEN_EXPIRES,
   REFRESH_TOKEN_EXPIRES,
@@ -49,6 +50,7 @@ export class AuthService {
 
   constructor(
     private readonly jwtService: JwtService,
+    private readonly userService: UserService,
     @InjectRepository(UserRefreshToken)
     private readonly refreshTokens: Repository<UserRefreshToken>,
   ) {}
@@ -140,8 +142,13 @@ export class AuthService {
     // strategies can correlate without an extra hit. Fire-and-forget
     // the lookup; if it's gone we still issue with id only.
     const userIdNum = payload.sub
+    const user = await this.assertUserCanAuthenticate(userIdNum)
     const accessPayload: AccessTokenPayload = {
       sub: userIdNum,
+      steam_id: user.steam_id ?? null,
+      telegram_id: user.telegram_user_id ?? null,
+      google_id: user.google_id ?? null,
+      discord_id: user.discord_user_id ?? null,
       type: 'access',
     }
 
@@ -275,6 +282,10 @@ export class AuthService {
     ip: string | null,
     userAgent: string | null,
   ): Promise<TokenResponse> {
+    if (user.is_blocked) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.ACCOUNT_BLOCKED)
+    }
+
     const accessPayload: AccessTokenPayload = {
       sub: user.id,
       steam_id: user.steam_id ?? null,
@@ -292,6 +303,17 @@ export class AuthService {
     )
     this.logger.log(`Issued tokens for user ${user.id}`)
     return pair
+  }
+
+  private async assertUserCanAuthenticate(userId: number): Promise<User> {
+    const user = await this.userService.findById(userId)
+    if (!user) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.NOT_AUTHENTICATED)
+    }
+    if (user.is_blocked) {
+      throw new UnauthorizedException(ERROR_MESSAGES.AUTH.ACCOUNT_BLOCKED)
+    }
+    return user
   }
 
   // Signs the access + refresh JWTs and persists the refresh-token row.

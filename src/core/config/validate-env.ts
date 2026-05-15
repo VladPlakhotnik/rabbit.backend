@@ -16,6 +16,8 @@ const REQUIRED_VARS = [
   'DATABASE_URL',
   'JWT_ACCESS_SECRET',
   'JWT_REFRESH_SECRET',
+  'ADMIN_JWT_ACCESS_SECRET',
+  'ADMIN_JWT_REFRESH_SECRET',
 ] as const
 
 // App will start without these but key features will silently break.

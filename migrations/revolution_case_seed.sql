@@ -58,7 +58,7 @@ INSERT INTO skin_case (case_id, skin_hash_name, game_type, chance, is_drop_out) 
   -- Restricted tier — 5 skins × 2.80% = 14.00%
   (4, 'MAC-10 | Sakkaku (Field-Tested)',                  'csgo',  2.80, true),
   (4, 'M4A1-S | Emphorosaur-S (Field-Tested)',            'csgo',  2.80, true),
-  (4, 'Glock-18 | Umbral Rabbit (Field-Tested)',          'csgo',  2.80, true),
+  (4, 'Glock-18 | Umbral Bunny (Field-Tested)',          'csgo',  2.80, true),
   (4, 'R8 Revolver | Banana Cannon (Field-Tested)',       'csgo',  2.80, true),
   (4, 'P90 | Neoqueen (Field-Tested)',                    'csgo',  2.80, true),
   -- Mil-Spec tier — 80.00% / 6 skins, +0.02 absorber on P250 Re.built

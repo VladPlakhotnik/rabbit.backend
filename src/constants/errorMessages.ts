@@ -6,6 +6,7 @@ export const ERROR_MESSAGES = {
     TOKEN_EXPIRED: 'Token has expired',
     INVALID_TOKEN: 'Invalid token',
     INVALID_REFRESH_TOKEN: 'Invalid refresh token',
+    ACCOUNT_BLOCKED: 'Account is blocked',
   },
   USER: {
     NOT_FOUND: 'User not found',

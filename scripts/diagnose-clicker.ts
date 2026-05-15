@@ -6,7 +6,7 @@
 // Usage:
 //   yarn ts-node scripts/diagnose-clicker.ts <user_id>
 //   # or
-//   npx ts-node rabbit.backend/scripts/diagnose-clicker.ts <user_id>
+//   npx ts-node bunny.backend/scripts/diagnose-clicker.ts <user_id>
 //
 // Reads:
 //   - REDIS_URL / REDISCLOUD_URL (or localhost:6379)

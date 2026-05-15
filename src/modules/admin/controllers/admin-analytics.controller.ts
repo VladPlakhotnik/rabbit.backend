@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common'
+import { Controller, Get, Query, UseGuards } from '@nestjs/common'
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger'
 import { AdminRoles } from '../decorators/admin-roles.decorator'
 import { AdminJwtGuard } from '../guards/admin-jwt.guard'
@@ -28,5 +28,14 @@ export class AdminAnalyticsController {
   })
   getInvestorAnalytics() {
     return this.analytics.getInvestorAnalytics()
+  }
+
+  @Get('summary')
+  @AdminRoles(...ANALYTICS_ROLES)
+  @ApiOperation({
+    summary: 'Owner and investor analytics summary for dashboard pages',
+  })
+  getSummary(@Query('timezone') timezone?: string) {
+    return this.analytics.getSummary(timezone)
   }
 }

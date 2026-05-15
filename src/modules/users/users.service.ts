@@ -8,9 +8,10 @@ import {
 import { CACHE_MANAGER } from '@nestjs/cache-manager'
 import type { Cache } from 'cache-manager'
 import { InjectRepository } from '@nestjs/typeorm'
-import { Brackets, EntityManager, Repository } from 'typeorm'
+import { Brackets, EntityManager, IsNull, Repository } from 'typeorm'
 import { User } from './user.entity'
 import { UserDeposit } from './user-deposit.entity'
+import { UserRefreshToken } from '../auth/entities/user-refresh-token.entity'
 import { HttpService } from '@nestjs/axios'
 import { firstValueFrom } from 'rxjs'
 import { jwtUserCacheKey } from '../auth/jwt-user-cache-key'
@@ -25,10 +26,16 @@ import {
 } from '../../common/pagination'
 import type { AdminDepositListQueryDto } from './dto/admin-deposit.dto'
 import {
+  AdminBlockUserDto,
   AdminUpdateUserDto,
   AdminUserListQueryDto,
 } from './dto/admin-user.dto'
 import { isPlayerRole } from './player-role.enum'
+import { normalizeUserBlockInput } from './user-block'
+import {
+  shouldSetUserCountry,
+  type UserCountryCandidate,
+} from '../../common/helpers/user-country'
 
 interface BalanceDeductionOptions {
   vipEarning?: VipEarning & {
@@ -89,6 +96,8 @@ export class UserService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(UserDeposit)
     private readonly userDepositRepository: Repository<UserDeposit>,
+    @InjectRepository(UserRefreshToken)
+    private readonly userRefreshTokenRepository: Repository<UserRefreshToken>,
     private readonly httpService: HttpService,
     private readonly vipService: VipService,
     @Inject(CACHE_MANAGER) private readonly cache: Cache,
@@ -249,6 +258,46 @@ export class UserService {
     if (payload.discord_bonus_claimed !== undefined) {
       user.discord_bonus_claimed = payload.discord_bonus_claimed
     }
+
+    return this.userRepository.save(user)
+  }
+
+  async blockForAdmin(
+    id: number,
+    payload: AdminBlockUserDto,
+    adminId: string | null,
+  ): Promise<User> {
+    const user = await this.findAdminById(id)
+    const block = normalizeUserBlockInput(payload)
+
+    const now = new Date()
+    user.is_blocked = true
+    user.blocked_reason = block.reason
+    user.blocked_reason_template = block.template
+    user.blocked_at = now
+    user.blocked_by_admin_id = adminId
+    user.unblocked_at = null
+    user.unblocked_by_admin_id = null
+
+    const savedUser = await this.userRepository.save(user)
+    await this.userRefreshTokenRepository.update(
+      { user_id: id, revoked_at: IsNull() },
+      { revoked_at: now },
+    )
+
+    return savedUser
+  }
+
+  async unblockForAdmin(id: number, adminId: string | null): Promise<User> {
+    const user = await this.findAdminById(id)
+
+    user.is_blocked = false
+    user.blocked_reason = null
+    user.blocked_reason_template = null
+    user.blocked_at = null
+    user.blocked_by_admin_id = null
+    user.unblocked_at = new Date()
+    user.unblocked_by_admin_id = adminId
 
     return this.userRepository.save(user)
   }
@@ -536,6 +585,25 @@ export class UserService {
 
     const newUser = this.userRepository.create(processedData)
     return this.userRepository.save(newUser)
+  }
+
+  async setCountryIfMissing(
+    user: Pick<User, 'id' | 'country_code' | 'country_source'>,
+    country: UserCountryCandidate | null,
+  ): Promise<void> {
+    if (!country || !shouldSetUserCountry(user, country)) return
+
+    await this.userRepository
+      .createQueryBuilder()
+      .update(User)
+      .set({
+        country_code: country.countryCode,
+        country_detected_at: () => 'CURRENT_TIMESTAMP',
+        country_source: country.source,
+      })
+      .where('id = :id', { id: user.id })
+      .andWhere("(country_code IS NULL OR country_code = '')")
+      .execute()
   }
 
   async updateTradeLink(userId: number, tradeLink: string): Promise<void> {
@@ -976,11 +1044,11 @@ export class UserService {
       return Boolean(
         profile.personaname
           ?.toLocaleLowerCase()
-          .includes(RABBIT_NICKNAME_MARKER.toLocaleLowerCase()),
+          .includes(BUNNY_NICKNAME_MARKER.toLocaleLowerCase()),
       )
     }
 
-    return this.isRabbitSteamAvatar(
+    return this.isBunnySteamAvatar(
       profile.avatarfull || profile.avatarmedium || profile.avatar,
     )
   }
@@ -1099,12 +1167,12 @@ export class UserService {
     }
   }
 
-  private isRabbitSteamAvatar(avatarUrl?: string | null): boolean {
+  private isBunnySteamAvatar(avatarUrl?: string | null): boolean {
     const hash = avatarUrl?.match(
       /([a-f0-9]{40})(?:_(?:full|medium))?\.(?:jpg|jpeg|png|webp)?$/i,
     )?.[1]
 
-    return hash ? RABBIT_STEAM_AVATAR_HASHES.has(hash.toLocaleLowerCase()) : false
+    return hash ? BUNNY_STEAM_AVATAR_HASHES.has(hash.toLocaleLowerCase()) : false
   }
 
   private async reduceBonusWheelCooldown(
@@ -1282,8 +1350,8 @@ interface SteamProfile {
 
 const STEAM_PROFILE_BONUS_RECHECK_MS = 24 * 60 * 60 * 1000
 const STEAM_PROFILE_COOLDOWN_REDUCTION_MS = 6 * 60 * 60 * 1000
-const RABBIT_NICKNAME_MARKER = 'WRABBIT'
-const RABBIT_STEAM_AVATAR_HASHES = new Set([
+const BUNNY_NICKNAME_MARKER = 'WBUNNY'
+const BUNNY_STEAM_AVATAR_HASHES = new Set([
   '944ed3e7eaf8c66cdab6afd13c6970f7daab5c54',
   '690865b76faee706fc1fc9fbd699be9d7f42cd94',
   '9b8493987c0c713d023397db9152ac6bc1d4c9d1',

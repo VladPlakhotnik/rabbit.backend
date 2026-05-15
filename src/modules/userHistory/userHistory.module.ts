@@ -8,6 +8,7 @@ import { UserHistoryController } from './userHistory.controller'
 import { AdminUserHistoryController } from './admin-user-history.controller'
 import { CsgoSkin } from '../skins/csgo-skin.entity'
 import { DotaSkin } from '../skins/dota-skin.entity'
+import { CrashSession } from '../crash/entities/crash-session.entity'
 
 @Module({
   // CsgoSkin + DotaSkin are registered here so the upgrade-history
@@ -21,6 +22,7 @@ import { DotaSkin } from '../skins/dota-skin.entity'
       UserHistory,
       CaseHistory,
       UpgradeHistory,
+      CrashSession,
       CsgoSkin,
       DotaSkin,
     ]),

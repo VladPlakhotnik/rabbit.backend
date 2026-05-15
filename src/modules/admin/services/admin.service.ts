@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -8,8 +9,13 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 import { RegisterAdminDto } from '../dto/register.dto'
 import { UpdateAdminDto } from '../dto/update-admin.dto'
+import { UpdateOwnAdminProfileDto } from '../dto/update-own-profile.dto'
 import { Admin, SafeAdmin } from '../entities/admin.entity'
 import { AdminRole } from '../types/admin-role.enum'
+import {
+  normalizeAdminProfileUpdate,
+  validateAdminAvatarUrl,
+} from '../utils/admin-profile'
 import { AdminAuthService } from './admin-auth.service'
 
 // CRUD on admin records. All endpoints calling these methods are
@@ -51,6 +57,35 @@ export class AdminService {
     const admin = await this.admins.findOne({ where: { id } })
     if (!admin) throw new NotFoundException('Admin not found')
     return admin.toSafeJson()
+  }
+
+  async updateOwnProfile(
+    admin: Admin,
+    dto: UpdateOwnAdminProfileDto,
+  ): Promise<SafeAdmin> {
+    const patch = normalizeAdminProfileUpdate(dto)
+
+    if (patch.first_name !== undefined) {
+      if (!patch.first_name) throw new BadRequestException('First name required')
+      admin.first_name = patch.first_name
+    }
+
+    if (patch.last_name !== undefined) {
+      if (!patch.last_name) throw new BadRequestException('Last name required')
+      admin.last_name = patch.last_name
+    }
+
+    if (patch.avatar_url !== undefined) {
+      if (patch.avatar_url !== null && !validateAdminAvatarUrl(patch.avatar_url)) {
+        throw new BadRequestException(
+          'Avatar must be a PNG, JPEG, or WebP data URL',
+        )
+      }
+      admin.avatar_url = patch.avatar_url
+    }
+
+    const saved = await this.admins.save(admin)
+    return saved.toSafeJson()
   }
 
   async update(

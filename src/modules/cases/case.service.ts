@@ -37,7 +37,7 @@ import {
 
 // Delay between the openCase response and the LiveDrop fan-out. Matches
 // the frontend `CASE_OPEN_TOTAL_DURATION_MS` (4.5 spin + 3.0 landing +
-// 0.4 recenter, see rabbit.frontend/src/shared/constants/animation.ts).
+// 0.4 recenter, see bunny.frontend/src/shared/constants/animation.ts).
 // All clients — including the owner — see the drop at this delayed
 // moment, which keeps a single source of truth for ordering across
 // browsers. If frontend timing changes, update both sides.

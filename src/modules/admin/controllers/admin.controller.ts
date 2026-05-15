@@ -12,6 +12,7 @@ import {
   UseGuards,
 } from '@nestjs/common'
 import { CurrentAdmin } from '../decorators/current-admin.decorator'
+import { AdminMutation } from '../decorators/admin-mutation.decorator'
 import { AdminRoles } from '../decorators/admin-roles.decorator'
 import { RegisterAdminDto } from '../dto/register.dto'
 import { UpdateAdminDto } from '../dto/update-admin.dto'
@@ -30,7 +31,7 @@ export class AdminController {
   // is no public registration endpoint by design.
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  @AdminRoles(AdminRole.SUPER_ADMIN)
+  @AdminMutation({ entity: 'admins', action: 'create' }, [AdminRole.SUPER_ADMIN])
   create(@Body() dto: RegisterAdminDto, @CurrentAdmin() requester: Admin) {
     return this.admins.create(dto, requester.id)
   }
@@ -50,7 +51,7 @@ export class AdminController {
   }
 
   @Patch(':id')
-  @AdminRoles(AdminRole.SUPER_ADMIN)
+  @AdminMutation({ entity: 'admins', action: 'update' }, [AdminRole.SUPER_ADMIN])
   update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateAdminDto,
@@ -61,7 +62,7 @@ export class AdminController {
 
   @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @AdminRoles(AdminRole.SUPER_ADMIN)
+  @AdminMutation({ entity: 'admins', action: 'delete' }, [AdminRole.SUPER_ADMIN])
   async remove(
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentAdmin() requester: Admin,

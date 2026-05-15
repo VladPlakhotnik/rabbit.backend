@@ -80,6 +80,7 @@ const createService = (depositRepository: unknown) =>
     depositRepository as never,
     {} as never,
     {} as never,
+    {} as never,
     { del: async () => undefined } as never,
   )
 

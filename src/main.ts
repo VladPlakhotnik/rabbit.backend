@@ -7,10 +7,12 @@ import { AppModule } from './app.module'
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'
 import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
+import { json, urlencoded } from 'express'
 import { Logger, ValidationPipe } from '@nestjs/common'
 import { ConnectionManager } from './core/database/connection-manager'
 import { getCorsOrigins } from './core/config/cors'
 import { validateEnv } from './core/config/validate-env'
+import { ADMIN_PROFILE_JSON_BODY_LIMIT } from './modules/admin/utils/admin-profile'
 
 // Crash early on a misconfigured environment. Better than serving 500s
 // on the first request that needs the missing variable.
@@ -20,7 +22,13 @@ const logger = new Logger('Bootstrap')
 
 async function bootstrap() {
   try {
-    const app = await NestFactory.create(AppModule)
+    const app = await NestFactory.create(AppModule, { bodyParser: false })
+
+    // Admin profile avatars are sent as base64 data URLs in JSON. A 512 KB
+    // image expands to about 700 KB, so the default 100 KB parser limit is too
+    // low while 1 MB keeps the accepted payload bounded.
+    app.use(json({ limit: ADMIN_PROFILE_JSON_BODY_LIMIT }))
+    app.use(urlencoded({ extended: true, limit: ADMIN_PROFILE_JSON_BODY_LIMIT }))
 
     // Tell Nest to listen for SIGINT/SIGTERM and run lifecycle hooks
     // (`OnModuleDestroy`, `OnApplicationShutdown`). Without this, Ctrl+C in
@@ -40,15 +48,20 @@ async function bootstrap() {
       process.exit(1)
     }
 
-    const config = new DocumentBuilder()
-      .setTitle('API')
-      .setDescription('The API documentation')
-      .setVersion('1.0')
-      .addBearerAuth()
-      .build()
+    const swaggerEnabled =
+      process.env.NODE_ENV !== 'production' ||
+      process.env.ENABLE_SWAGGER === 'true'
+    if (swaggerEnabled) {
+      const config = new DocumentBuilder()
+        .setTitle('API')
+        .setDescription('The API documentation')
+        .setVersion('1.0')
+        .addBearerAuth()
+        .build()
 
-    const document = SwaggerModule.createDocument(app, config)
-    SwaggerModule.setup('api', app, document)
+      const document = SwaggerModule.createDocument(app, config)
+      SwaggerModule.setup('api', app, document)
+    }
 
     // Sets a baseline of security headers on every response. CSP is left to
     // the SPA frontend (different origin), and crossOriginEmbedderPolicy is

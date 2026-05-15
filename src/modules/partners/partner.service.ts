@@ -993,7 +993,7 @@ export class PartnerService {
     }
 
     return this.deliverPartnerPostback(userId, row, 'test', {
-      message: 'Rabbit postback test event',
+      message: 'Bunny postback test event',
     })
   }
 
@@ -1945,8 +1945,8 @@ export class PartnerService {
       const response = await axios.post(setting.postback_url, payload, {
         headers: {
           'Content-Type': 'application/json',
-          'X-Rabbit-Event': eventType,
-          'X-Rabbit-Signature': signature,
+          'X-Bunny-Event': eventType,
+          'X-Bunny-Signature': signature,
         },
         timeout: 5000,
         maxRedirects: 0,
@@ -2465,7 +2465,7 @@ export class PartnerService {
     const salt =
       process.env.PARTNER_ATTRIBUTION_SALT ||
       process.env.JWT_ACCESS_SECRET ||
-      'rabbit-local-dev'
+      'bunny-local-dev'
     return createHash('sha256')
       .update(`${salt}:${ip || 'unknown'}:${userAgent || 'unknown'}`)
       .digest('hex')

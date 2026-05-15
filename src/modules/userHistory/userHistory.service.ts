@@ -20,8 +20,26 @@ import {
   type NormalizedPagination,
   type PaginatedResponse,
 } from '../../common/pagination'
+import {
+  CrashSession,
+  type CrashSessionStatus,
+  type CrashStakeMode,
+} from '../crash/entities/crash-session.entity'
 
 type HistoryGameType = 'csgo' | 'dota'
+
+export interface CrashHistoryItemDto {
+  cashout_multiplier: number | null
+  created_at: Date
+  id: number
+  mfr_seed_hash: string
+  slot: number
+  stake_amount: number
+  stake_mode: CrashStakeMode
+  status: CrashSessionStatus
+  updated_at: Date
+  win_amount: number | null
+}
 
 @Injectable()
 export class UserHistoryService {
@@ -32,6 +50,8 @@ export class UserHistoryService {
     private readonly caseHistoryRepository: Repository<CaseHistory>,
     @InjectRepository(UpgradeHistory)
     private readonly upgradeHistoryRepository: Repository<UpgradeHistory>,
+    @InjectRepository(CrashSession)
+    private readonly crashSessionRepository: Repository<CrashSession>,
     @InjectRepository(CsgoSkin)
     private readonly csgoSkinRepository: Repository<CsgoSkin>,
     @InjectRepository(DotaSkin)
@@ -328,6 +348,34 @@ export class UserHistoryService {
       success: row.success ?? false,
       skin_id: row.skin_id,
       created_at: row.created_at,
+    }))
+
+    return buildPaginatedResponse(items, total, pagination)
+  }
+
+  async getCrashHistory(
+    userId: number,
+    pagination: NormalizedPagination = normalizePagination(),
+  ): Promise<PaginatedResponse<CrashHistoryItemDto>> {
+    const [rows, total] = await this.crashSessionRepository.findAndCount({
+      where: { user_id: userId },
+      order: { created_at: 'DESC' },
+      skip: pagination.skip,
+      take: pagination.limit,
+    })
+
+    const items = rows.map(row => ({
+      id: row.id,
+      stake_mode: row.stake_mode,
+      slot: row.slot,
+      stake_amount: Number(row.stake_amount),
+      cashout_multiplier:
+        row.cashout_multiplier === null ? null : Number(row.cashout_multiplier),
+      win_amount: row.win_amount === null ? null : Number(row.win_amount),
+      status: row.status,
+      mfr_seed_hash: row.mfr_seed_hash,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
     }))
 
     return buildPaginatedResponse(items, total, pagination)

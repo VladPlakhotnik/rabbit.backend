@@ -11,7 +11,7 @@ import {
 } from 'class-validator'
 
 export class CreateClickerCaseDto {
-  @ApiProperty({ description: 'URL-safe slug, e.g. "rabbit-starter"' })
+  @ApiProperty({ description: 'URL-safe slug, e.g. "bunny-starter"' })
   @IsString()
   @MaxLength(255)
   @Matches(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)

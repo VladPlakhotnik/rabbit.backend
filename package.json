@@ -1,7 +1,7 @@
 {
-  "name": "deadlock.backend",
+  "name": "bunny.backend",
   "version": "0.1.0",
-  "description": "Deadlock Backend",
+  "description": "Bunny Backend",
   "private": false,
   "scripts": {
     "prestart": "yarn build",

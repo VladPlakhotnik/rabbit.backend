@@ -53,8 +53,61 @@ interface DailyTrendPoint {
   withdrawals: number
 }
 
+interface RegistrationTrendPoint {
+  date: string
+  newUsers: number
+}
+
+interface AnalyticsCountrySummary {
+  code: string
+  name: string
+  percentage: number
+  users: number
+}
+
+interface AnalyticsFinancePeriodSummary {
+  deposits: AmountSummary
+  netCashflow: number
+  pendingDeposits: AmountSummary
+  withdrawals: AmountSummary
+}
+
+interface AnalyticsGamePeriodSummary {
+  byVertical: GameVerticalSummary[]
+  total: GameVerticalSummary
+}
+
+interface AnalyticsNamedPeriod<T> {
+  from: string
+  key: 'today' | 'week' | 'month'
+  label: string
+  to: string
+  value: T
+}
+
 const PERIOD_DAYS = 30
 const TREND_DAYS = 14
+const DASHBOARD_TREND_DAYS = 7
+const COUNTRY_NAMES: Record<string, string> = {
+  AE: 'United Arab Emirates',
+  AU: 'Australia',
+  BR: 'Brazil',
+  CA: 'Canada',
+  CN: 'China',
+  DE: 'Germany',
+  ES: 'Spain',
+  FR: 'France',
+  GB: 'United Kingdom',
+  IN: 'India',
+  JP: 'Japan',
+  KZ: 'Kazakhstan',
+  NL: 'Netherlands',
+  PL: 'Poland',
+  RU: 'Russia',
+  TR: 'Turkey',
+  UA: 'Ukraine',
+  US: 'United States',
+}
 
 @Injectable()
 export class AdminAnalyticsService {
@@ -178,6 +231,73 @@ export class AdminAnalyticsService {
         online: onlineUsers,
       },
       trend,
+    }
+  }
+
+  async getSummary(timezone = 'UTC') {
+    const safeTimezone = this.normalizeTimezone(timezone)
+    const now = new Date()
+    const todayFrom = await this.getTimezoneDayStart(safeTimezone)
+    const weekFrom = this.addDays(now, -7)
+    const monthFrom = this.addDays(now, -30)
+    const registrationTrendFrom = this.startOfUtcDay(
+      this.addDays(now, -(DASHBOARD_TREND_DAYS - 1)),
+    )
+
+    const [
+      todayUsers,
+      weekUsers,
+      monthUsers,
+      todayFinance,
+      weekFinance,
+      monthFinance,
+      todayGames,
+      weekGames,
+      monthGames,
+      registrationTrend,
+      onlineUsers,
+    ] = await Promise.all([
+      this.getUserSummary(todayFrom, now),
+      this.getUserSummary(weekFrom, now),
+      this.getUserSummary(monthFrom, now),
+      this.getFinancePeriodSummary(todayFrom, now),
+      this.getFinancePeriodSummary(weekFrom, now),
+      this.getFinancePeriodSummary(monthFrom, now),
+      this.getGamePeriodSummary(todayFrom, now),
+      this.getGamePeriodSummary(weekFrom, now),
+      this.getGamePeriodSummary(monthFrom, now),
+      this.getRegistrationTrend(registrationTrendFrom, now),
+      this.presenceService.getOnlineCount(),
+    ])
+
+    const countries = await this.getCountrySummary(todayUsers.totalUsers)
+
+    return {
+      generated_at: now.toISOString(),
+      timezone: safeTimezone,
+      totals: {
+        online: onlineUsers,
+        totalBalance: todayUsers.totalBalance,
+        totalUsers: todayUsers.totalUsers,
+      },
+      registrations: {
+        month: monthUsers.newUsers,
+        today: todayUsers.newUsers,
+        total: todayUsers.totalUsers,
+        trend: registrationTrend,
+        week: weekUsers.newUsers,
+      },
+      finance: {
+        month: this.namedPeriod('month', monthFrom, now, monthFinance),
+        today: this.namedPeriod('today', todayFrom, now, todayFinance),
+        week: this.namedPeriod('week', weekFrom, now, weekFinance),
+      },
+      games: {
+        month: this.namedPeriod('month', monthFrom, now, monthGames),
+        today: this.namedPeriod('today', todayFrom, now, todayGames),
+        week: this.namedPeriod('week', weekFrom, now, weekGames),
+      },
+      geography: countries,
     }
   }
 
@@ -484,6 +604,150 @@ export class AdminAnalyticsService {
     }))
   }
 
+  private async getRegistrationTrend(
+    from: Date,
+    to: Date,
+  ): Promise<RegistrationTrendPoint[]> {
+    const days = new Map<string, RegistrationTrendPoint>()
+
+    for (let day = new Date(from); day <= to; day = this.addDays(day, 1)) {
+      const key = day.toISOString().slice(0, 10)
+      days.set(key, { date: key, newUsers: 0 })
+    }
+
+    const rows = await this.dataSource.query(
+      `
+        SELECT date_trunc('day', created_at)::date AS day, COUNT(*) AS new_users
+        FROM users
+        WHERE created_at >= $1 AND created_at < $2
+        GROUP BY 1
+      `,
+      [from, to],
+    )
+
+    for (const row of rows) {
+      const item = days.get(this.dayKey(row.day))
+      if (item) item.newUsers = this.toNumber(row.new_users)
+    }
+
+    return [...days.values()]
+  }
+
+  private async getFinancePeriodSummary(
+    from: Date,
+    to: Date,
+  ): Promise<AnalyticsFinancePeriodSummary> {
+    const [deposits, withdrawals] = await Promise.all([
+      this.getDepositSummary(from, to),
+      this.getWithdrawalSummary(from, to),
+    ])
+
+    return {
+      deposits: deposits.success,
+      netCashflow: this.roundMoney(deposits.success.amount - withdrawals.actualAmount),
+      pendingDeposits: deposits.waiting,
+      withdrawals: {
+        amount: withdrawals.actualAmount,
+        count: withdrawals.completed,
+      },
+    }
+  }
+
+  private async getGamePeriodSummary(
+    from: Date,
+    to: Date,
+  ): Promise<AnalyticsGamePeriodSummary> {
+    const byVertical = await Promise.all([
+      this.getCasesSummary(from, to),
+      this.getUpgradeSummary(from, to),
+      this.getMinesSummary(from, to),
+      this.getCrashSummary(from, to),
+    ])
+
+    return {
+      byVertical,
+      total: this.combineVerticals(byVertical),
+    }
+  }
+
+  private async getCountrySummary(totalUsers: number): Promise<{
+    countries: AnalyticsCountrySummary[]
+    hasCountryData: boolean
+  }> {
+    const countryColumn = await this.getUserCountryColumn()
+
+    if (!countryColumn) {
+      return {
+        countries: [
+          {
+            code: 'unknown',
+            name: 'Unknown',
+            percentage: totalUsers > 0 ? 100 : 0,
+            users: totalUsers,
+          },
+        ],
+        hasCountryData: false,
+      }
+    }
+
+    const rows = await this.dataSource.query(
+      `
+        SELECT COALESCE(NULLIF(UPPER(${countryColumn}), ''), 'unknown') AS code, COUNT(*) AS users
+        FROM users
+        GROUP BY 1
+        ORDER BY users DESC
+        LIMIT 12
+      `,
+    )
+
+    const countries: AnalyticsCountrySummary[] = rows.map(
+      (row: Record<string, unknown>) => {
+        const users = this.toNumber(row.users)
+        const code = String(row.code ?? 'unknown')
+        return {
+          code,
+          name: this.getCountryName(code),
+          percentage:
+            totalUsers > 0 ? this.roundPercent((users / totalUsers) * 100) : 0,
+          users,
+        }
+      },
+    )
+
+    return {
+      countries,
+      hasCountryData: countries.some(country => country.code !== 'unknown'),
+    }
+  }
+
+  private getCountryName(code: string): string {
+    if (code === 'unknown') return 'Unknown'
+    return COUNTRY_NAMES[code] ?? code
+  }
+
+  private async getUserCountryColumn(): Promise<string | null> {
+    const rows = await this.dataSource.query(
+      `
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'users'
+          AND column_name IN ('country_code', 'country', 'geo_country')
+        ORDER BY CASE column_name
+          WHEN 'country_code' THEN 1
+          WHEN 'country' THEN 2
+          ELSE 3
+        END
+        LIMIT 1
+      `,
+    )
+    const column = rows[0]?.column_name
+    if (column === 'country_code' || column === 'country' || column === 'geo_country') {
+      return `"${column}"`
+    }
+    return null
+  }
+
   private verticalSummary(
     key: GameVerticalSummary['key'],
     raw: Record<string, unknown> | undefined,
@@ -531,6 +795,21 @@ export class AdminAnalyticsService {
     }
   }
 
+  private namedPeriod<T>(
+    key: AnalyticsNamedPeriod<T>['key'],
+    from: Date,
+    to: Date,
+    value: T,
+  ): AnalyticsNamedPeriod<T> {
+    return {
+      from: from.toISOString(),
+      key,
+      label: key,
+      to: to.toISOString(),
+      value,
+    }
+  }
+
   private amountSummary(count: unknown, amount: unknown): AmountSummary {
     return {
       amount: this.toMoney(amount),
@@ -555,6 +834,31 @@ export class AdminAnalyticsService {
     return new Date(
       Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
     )
+  }
+
+  private async getTimezoneDayStart(timezone: string): Promise<Date> {
+    try {
+      const [row] = await this.dataSource.query(
+        `
+          SELECT (date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1) AS day_start
+        `,
+        [timezone],
+      )
+      const value = row?.day_start
+      const date = value instanceof Date ? value : new Date(value)
+      return Number.isNaN(date.getTime()) ? this.startOfUtcDay(new Date()) : date
+    } catch {
+      return this.startOfUtcDay(new Date())
+    }
+  }
+
+  private normalizeTimezone(timezone: string): string {
+    try {
+      new Intl.DateTimeFormat('en', { timeZone: timezone }).format(new Date())
+      return timezone
+    } catch {
+      return 'UTC'
+    }
   }
 
   private dayKey(value: Date | string): string {

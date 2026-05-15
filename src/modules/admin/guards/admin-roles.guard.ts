@@ -8,6 +8,7 @@ import { Reflector } from '@nestjs/core'
 import { ADMIN_ROLES_KEY } from '../decorators/admin-roles.decorator'
 import { Admin } from '../entities/admin.entity'
 import { AdminRole } from '../types/admin-role.enum'
+import { isAdmin2faRequiredRole } from '../types/admin-role-policy'
 
 // Reads the @AdminRoles() metadata and rejects if the request's admin
 // (set by AdminJwtGuard → AdminJwtStrategy.validate) doesn't have one
@@ -33,6 +34,9 @@ export class AdminRolesGuard implements CanActivate {
       throw new ForbiddenException(
         `Insufficient role — requires one of [${required.join(', ')}]`,
       )
+    }
+    if (isAdmin2faRequiredRole(admin.role) && !admin.totp_enabled) {
+      throw new ForbiddenException('Two-factor authentication required')
     }
     return true
   }

@@ -63,7 +63,7 @@ export class ClickerCasesController {
     })
   }
 
-  // Slug route MUST come before `:id` so `/clicker-cases/rabbit-starter`
+  // Slug route MUST come before `:id` so `/clicker-cases/bunny-starter`
   // is parsed as a slug, not as an id (which would 404 because the value
   // isn't a number).
   @Get('slug/:slug')

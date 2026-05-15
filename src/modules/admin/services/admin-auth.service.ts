@@ -32,6 +32,7 @@ import {
   AdminJwtPayload,
   RefreshTokenPayload,
 } from '../types/jwt-payload'
+import { AdminSecurityEventService } from './admin-security-event.service'
 import { AdminTotpService } from './admin-totp.service'
 
 // Special-shaped 401 returned when the account has TOTP enabled and
@@ -62,6 +63,7 @@ export class AdminAuthService implements OnModuleInit {
     private readonly refreshTokens: Repository<AdminRefreshToken>,
     private readonly jwt: JwtService,
     private readonly totp: AdminTotpService,
+    private readonly securityEvents: AdminSecurityEventService,
   ) {}
 
   // ─── Bootstrap ─────────────────────────────────────────────────
@@ -114,24 +116,65 @@ export class AdminAuthService implements OnModuleInit {
         dto.password,
         '$2b$12$invalidsalt.................................',
       )
+      await this.securityEvents.record({
+        adminEmail: email,
+        type: 'login_failed',
+        ip,
+        userAgent,
+        metadata: { reason: 'unknown_email' },
+      })
       throw new UnauthorizedException('Invalid credentials')
     }
 
     // Locked? Even with correct password, refuse.
     if (admin.locked_until && admin.locked_until > new Date()) {
+      await this.securityEvents.record({
+        adminId: admin.id,
+        adminEmail: admin.email,
+        type: 'login_blocked',
+        ip,
+        userAgent,
+        metadata: { reason: 'locked', locked_until: admin.locked_until },
+      })
       throw new ForbiddenException(
         `Account temporarily locked. Try again at ${admin.locked_until.toISOString()}`,
       )
     }
 
     if (!admin.is_active) {
+      await this.securityEvents.record({
+        adminId: admin.id,
+        adminEmail: admin.email,
+        type: 'login_blocked',
+        ip,
+        userAgent,
+        metadata: { reason: 'disabled' },
+      })
       throw new ForbiddenException('Account disabled')
     }
 
     const passwordOk = await bcrypt.compare(dto.password, admin.password_hash)
 
     if (!passwordOk) {
-      await this.recordFailedAttempt(admin)
+      const locked = await this.recordFailedAttempt(admin)
+      await this.securityEvents.record({
+        adminId: admin.id,
+        adminEmail: admin.email,
+        type: 'login_failed',
+        ip,
+        userAgent,
+        metadata: { reason: 'password' },
+      })
+      if (locked) {
+        await this.securityEvents.record({
+          adminId: admin.id,
+          adminEmail: admin.email,
+          type: 'account_locked',
+          ip,
+          userAgent,
+          metadata: { locked_until: admin.locked_until },
+        })
+      }
       throw new UnauthorizedException('Invalid credentials')
     }
 
@@ -150,7 +193,25 @@ export class AdminAuthService implements OnModuleInit {
       if (!this.totp.verifyForLogin(admin, dto.totp_code)) {
         // Wrong code DOES count toward the lockout — it's an actual
         // failed credential attempt at this point.
-        await this.recordFailedAttempt(admin)
+        const locked = await this.recordFailedAttempt(admin)
+        await this.securityEvents.record({
+          adminId: admin.id,
+          adminEmail: admin.email,
+          type: 'login_failed',
+          ip,
+          userAgent,
+          metadata: { reason: 'totp' },
+        })
+        if (locked) {
+          await this.securityEvents.record({
+            adminId: admin.id,
+            adminEmail: admin.email,
+            type: 'account_locked',
+            ip,
+            userAgent,
+            metadata: { locked_until: admin.locked_until },
+          })
+        }
         throw new UnauthorizedException('Invalid TOTP code')
       }
     }
@@ -163,18 +224,28 @@ export class AdminAuthService implements OnModuleInit {
     await this.admins.save(admin)
 
     const tokens = await this.issueTokens(admin, ip, userAgent)
+    await this.securityEvents.record({
+      adminId: admin.id,
+      adminEmail: admin.email,
+      type: 'login_success',
+      ip,
+      userAgent,
+    })
     return { admin: admin.toSafeJson(), ...tokens }
   }
 
-  private async recordFailedAttempt(admin: Admin): Promise<void> {
+  private async recordFailedAttempt(admin: Admin): Promise<boolean> {
     admin.failed_login_attempts += 1
+    let locked = false
     if (admin.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
       admin.locked_until = new Date(Date.now() + LOCKOUT_DURATION_MS)
+      locked = true
       this.logger.warn(
         `Admin <${admin.email}> locked until ${admin.locked_until.toISOString()} after ${admin.failed_login_attempts} failed attempts`,
       )
     }
     await this.admins.save(admin)
+    return locked
   }
 
   // ─── Refresh ───────────────────────────────────────────────────
@@ -235,6 +306,12 @@ export class AdminAuthService implements OnModuleInit {
         `Refresh-token reuse detected for admin ${payload.sub} — revoking all sessions`,
       )
       await this.revokeAllForAdmin(payload.sub)
+      await this.securityEvents.record({
+        adminId: payload.sub,
+        type: 'refresh_reuse_detected',
+        ip,
+        userAgent,
+      })
       throw new UnauthorizedException(
         'Refresh token reuse detected — all sessions revoked',
       )
@@ -346,6 +423,11 @@ export class AdminAuthService implements OnModuleInit {
     if (row.revoked_at) return // already revoked — no-op
     row.revoked_at = new Date()
     await this.refreshTokens.save(row)
+    await this.securityEvents.record({
+      adminId,
+      type: 'session_revoked',
+      metadata: { session_id: sessionId },
+    })
   }
 
   // Revoke every active session except the one carrying `currentJti`.
@@ -368,10 +450,52 @@ export class AdminAuthService implements OnModuleInit {
       await this.refreshTokens.save(r)
       revokedCount++
     }
+    await this.securityEvents.record({
+      adminId,
+      type: 'sessions_revoked',
+      metadata: { revoked_count: revokedCount },
+    })
     return revokedCount
   }
 
   // ─── Token issuance ────────────────────────────────────────────
+
+  async changeOwnPassword(
+    admin: Admin,
+    currentPassword: string,
+    newPassword: string,
+    currentJti: string | null,
+    ip: string | null,
+    userAgent: string | null,
+  ): Promise<void> {
+    const currentOk = await bcrypt.compare(currentPassword, admin.password_hash)
+    if (!currentOk) {
+      await this.securityEvents.record({
+        adminId: admin.id,
+        adminEmail: admin.email,
+        type: 'password_change_failed',
+        ip,
+        userAgent,
+        metadata: { reason: 'current_password' },
+      })
+      throw new UnauthorizedException('Invalid current password')
+    }
+
+    if (await bcrypt.compare(newPassword, admin.password_hash)) {
+      throw new BadRequestException('New password must be different')
+    }
+
+    admin.password_hash = await this.hashPassword(newPassword)
+    await this.admins.save(admin)
+    await this.revokeAllExceptCurrent(admin.id, currentJti)
+    await this.securityEvents.record({
+      adminId: admin.id,
+      adminEmail: admin.email,
+      type: 'password_changed',
+      ip,
+      userAgent,
+    })
+  }
 
   private async issueTokens(
     admin: Admin,

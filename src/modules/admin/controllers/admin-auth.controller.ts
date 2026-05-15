@@ -9,6 +9,7 @@ import {
   UnauthorizedException,
   UseGuards,
 } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
 import { ThrottlerGuard } from '@nestjs/throttler'
 import { Throttle } from '@nestjs/throttler'
 import { Request, Response } from 'express'
@@ -16,10 +17,16 @@ import {
   COOKIE_NAME,
   COOKIE_PATH,
   REFRESH_TOKEN_TTL_SECONDS,
+  getJwtRefreshSecret,
   isProduction,
 } from '../admin.config'
+import { CurrentAdmin } from '../decorators/current-admin.decorator'
+import { ChangeAdminPasswordDto } from '../dto/change-password.dto'
 import { LoginDto } from '../dto/login.dto'
+import { Admin } from '../entities/admin.entity'
+import { AdminJwtGuard } from '../guards/admin-jwt.guard'
 import { AdminAuthService } from '../services/admin-auth.service'
+import { RefreshTokenPayload } from '../types/jwt-payload'
 import { getClientIp, getUserAgent } from '../../../common/helpers/request-meta'
 
 const setRefreshCookie = (res: Response, token: string): void => {
@@ -45,7 +52,10 @@ const clearRefreshCookie = (res: Response): void => {
 @Controller('admin/auth')
 @UseGuards(ThrottlerGuard)
 export class AdminAuthController {
-  constructor(private readonly auth: AdminAuthService) {}
+  constructor(
+    private readonly auth: AdminAuthService,
+    private readonly jwt: JwtService,
+  ) {}
 
   // 5 attempts / 60 seconds / IP — slows down brute-force without
   // blocking legitimate retries. Per-account lockout (5 fails →
@@ -105,5 +115,38 @@ export class AdminAuthController {
     const token = req.cookies?.[COOKIE_NAME] as string | undefined
     await this.auth.logout(token ?? null)
     clearRefreshCookie(res)
+  }
+
+  @Post('password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(AdminJwtGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async changePassword(
+    @CurrentAdmin() admin: Admin,
+    @Body() dto: ChangeAdminPasswordDto,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.auth.changeOwnPassword(
+      admin,
+      dto.current_password,
+      dto.new_password,
+      await this.readCurrentJti(req),
+      getClientIp(req),
+      getUserAgent(req),
+    )
+  }
+
+  private async readCurrentJti(req: Request): Promise<string | null> {
+    const refreshToken = req.cookies?.[COOKIE_NAME] as string | undefined
+    if (!refreshToken) return null
+    try {
+      const payload = await this.jwt.verifyAsync<RefreshTokenPayload>(
+        refreshToken,
+        { secret: getJwtRefreshSecret() },
+      )
+      return payload.type === 'refresh' ? payload.jti : null
+    } catch {
+      return null
+    }
   }
 }

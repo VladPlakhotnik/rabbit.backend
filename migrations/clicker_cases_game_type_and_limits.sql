@@ -13,8 +13,8 @@
 --
 -- Caps chosen so the shop's "remaining" badge is meaningful but doesn't
 -- run out during a small playtest:
---   rabbit-starter: 1000 (cheap case, gets opened often)
---   rabbit-deluxe:   200 (mid-tier, runs out faster — that's the point)
+--   bunny-starter: 1000 (cheap case, gets opened often)
+--   bunny-deluxe:   200 (mid-tier, runs out faster — that's the point)
 --
 -- Idempotent — re-running won't reset `remaining_count` if the case was
 -- already limited (CASE guard below).
@@ -44,7 +44,7 @@ UPDATE clicker_cases
          ELSE remaining_count
        END,
        updated_at = NOW()
- WHERE slug = 'rabbit-starter';
+ WHERE slug = 'bunny-starter';
 
 UPDATE clicker_cases
    SET is_limited = true,
@@ -54,6 +54,6 @@ UPDATE clicker_cases
          ELSE remaining_count
        END,
        updated_at = NOW()
- WHERE slug = 'rabbit-deluxe';
+ WHERE slug = 'bunny-deluxe';
 
 COMMIT;

@@ -70,11 +70,41 @@ export class User {
   })
   balance!: number
 
+  @Column({ type: 'boolean', default: false })
+  is_blocked!: boolean
+
+  @Column({ type: 'text', nullable: true })
+  blocked_reason!: string | null
+
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  blocked_reason_template!: string | null
+
+  @Column({ type: 'timestamptz', nullable: true })
+  blocked_at!: Date | null
+
+  @Column({ type: 'uuid', nullable: true })
+  blocked_by_admin_id!: string | null
+
+  @Column({ type: 'timestamptz', nullable: true })
+  unblocked_at!: Date | null
+
+  @Column({ type: 'uuid', nullable: true })
+  unblocked_by_admin_id!: string | null
+
   @Column({ type: 'varchar', length: 255 })
   profile_url!: string
 
   @Column({ type: 'varchar', length: 255 })
   trade_link!: string | null
+
+  @Column({ type: 'varchar', length: 2, nullable: true })
+  country_code!: string | null
+
+  @Column({ type: 'varchar', length: 32, nullable: true })
+  country_source!: string | null
+
+  @Column({ type: 'timestamptz', nullable: true })
+  country_detected_at!: Date | null
 
   @Column({ type: 'timestamp' })
   created_at!: Date

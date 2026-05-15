@@ -1,6 +1,6 @@
-# Rabbit Backend
+# Bunny Backend
 
-Rabbit Backend is the NestJS API for the Rabbit gaming platform. It powers authentication, users, inventory, cases, game modes, giveaways, live feeds, notifications, payments, and integrations with Steam, Telegram, market APIs, Redis, Postgres, Fly.io, and the admin panel.
+Bunny Backend is the NestJS API for the Bunny gaming platform. It powers authentication, users, inventory, cases, game modes, giveaways, live feeds, notifications, payments, and integrations with Steam, Telegram, market APIs, Redis, Postgres, Fly.io, and the admin panel.
 
 ## Stack
 
@@ -135,7 +135,7 @@ When Redis is unavailable, some modules degrade poorly by design because they pr
 
 Production deployment is configured for Fly.io:
 
-- app: `rabbit-backend`
+- app: `bunny-backend`
 - region: `ams`
 - internal port: `5000`
 - runtime command: `node --max-old-space-size=192 dist/main.js`
@@ -146,10 +146,10 @@ The `prod` branch is the deployment branch for this repository.
 Useful Fly commands:
 
 ```bash
-fly status -a rabbit-backend
-fly releases -a rabbit-backend
-fly logs -a rabbit-backend
-fly checks list -a rabbit-backend
+fly status -a bunny-backend
+fly releases -a bunny-backend
+fly logs -a bunny-backend
+fly checks list -a bunny-backend
 ```
 
 ## Security Notes
@@ -158,7 +158,7 @@ fly checks list -a rabbit-backend
 - Keep access and refresh JWT secrets different.
 - Use `CORS_ORIGINS` explicitly in production.
 - Prefer idempotency helpers for balance/inventory mutations.
-- Keep user-facing social link flows tied to the authenticated Rabbit user, never to a user id supplied by the request body.
+- Keep user-facing social link flows tied to the authenticated Bunny user, never to a user id supplied by the request body.
 
 ## Documentation
 

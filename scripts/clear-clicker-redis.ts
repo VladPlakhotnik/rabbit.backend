@@ -3,7 +3,7 @@
 // Usage:
 //   yarn ts-node scripts/clear-clicker-redis.ts
 //   # or, from the repo root:
-//   npx ts-node rabbit.backend/scripts/clear-clicker-redis.ts
+//   npx ts-node bunny.backend/scripts/clear-clicker-redis.ts
 //
 // Connects to the same Redis the backend uses (REDIS_URL env or the
 // default localhost:6379) and deletes every key under both the legacy

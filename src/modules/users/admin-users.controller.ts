@@ -10,11 +10,14 @@ import {
 } from '@nestjs/common'
 import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger'
 import { AdminMutation } from '../admin/decorators/admin-mutation.decorator'
+import { CurrentAdmin } from '../admin/decorators/current-admin.decorator'
 import { AdminRoles } from '../admin/decorators/admin-roles.decorator'
+import { Admin } from '../admin/entities/admin.entity'
 import { AdminJwtGuard } from '../admin/guards/admin-jwt.guard'
 import { AdminRolesGuard } from '../admin/guards/admin-roles.guard'
 import { AdminRole } from '../admin/types/admin-role.enum'
 import {
+  AdminBlockUserDto,
   AdminUpdateUserDto,
   AdminUserListQueryDto,
 } from './dto/admin-user.dto'
@@ -75,5 +78,25 @@ export class AdminUsersController {
     @Body() payload: AdminUpdateUserDto,
   ) {
     return this.userService.updateForAdmin(id, payload)
+  }
+
+  @ApiOperation({ summary: 'Block game user from authenticated backend flows' })
+  @ApiResponse({ status: 200, description: 'Return blocked user profile' })
+  @AdminMutation({ entity: 'users.block', action: 'update' })
+  @Patch(':id/block')
+  block(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() payload: AdminBlockUserDto,
+    @CurrentAdmin() admin: Admin,
+  ) {
+    return this.userService.blockForAdmin(id, payload, admin.id)
+  }
+
+  @ApiOperation({ summary: 'Unblock game user' })
+  @ApiResponse({ status: 200, description: 'Return unblocked user profile' })
+  @AdminMutation({ entity: 'users.block', action: 'update' })
+  @Patch(':id/unblock')
+  unblock(@Param('id', ParseIntPipe) id: number, @CurrentAdmin() admin: Admin) {
+    return this.userService.unblockForAdmin(id, admin.id)
   }
 }

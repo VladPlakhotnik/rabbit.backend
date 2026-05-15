@@ -36,6 +36,9 @@ export class Admin {
   @Column({ type: 'varchar', length: 100, name: 'last_name' })
   last_name!: string
 
+  @Column({ type: 'text', nullable: true, name: 'avatar_url' })
+  avatar_url!: string | null
+
   @Column({
     type: 'enum',
     enum: AdminRole,
@@ -107,6 +110,7 @@ export class Admin {
       email: this.email,
       first_name: this.first_name,
       last_name: this.last_name,
+      avatar_url: this.avatar_url,
       role: this.role,
       is_active: this.is_active,
       last_login_at: this.last_login_at,
@@ -122,6 +126,7 @@ export interface SafeAdmin {
   email: string
   first_name: string
   last_name: string
+  avatar_url: string | null
   role: AdminRole
   is_active: boolean
   last_login_at: Date | null

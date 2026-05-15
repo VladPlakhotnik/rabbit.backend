@@ -58,4 +58,23 @@ export class AdminUserHistoryController {
       normalizePagination({ page, limit }),
     )
   }
+
+  @AdminRoles(
+    AdminRole.SUPER_ADMIN,
+    AdminRole.ADMIN,
+    AdminRole.MANAGER,
+    AdminRole.VIEWER,
+  )
+  @ApiOperation({ summary: 'List user crash history for admin profile page' })
+  @Get('crash')
+  findCrashHistory(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.userHistoryService.getCrashHistory(
+      userId,
+      normalizePagination({ page, limit }),
+    )
+  }
 }

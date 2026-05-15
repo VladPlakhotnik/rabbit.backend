@@ -10,7 +10,7 @@ VALUES
     ('GIFT',     'BONUS', 'INACTIVE', 'Reserved word', CURRENT_TIMESTAMP, 0),
     ('BONUS',    'BONUS', 'INACTIVE', 'Reserved word', CURRENT_TIMESTAMP, 0),
     ('PROMO',    'BONUS', 'INACTIVE', 'Reserved word', CURRENT_TIMESTAMP, 0),
-    ('RABBIT',   'BONUS', 'INACTIVE', 'Reserved brand', CURRENT_TIMESTAMP, 0),
+    ('BUNNY',   'BONUS', 'INACTIVE', 'Reserved brand', CURRENT_TIMESTAMP, 0),
     ('RBT',      'BONUS', 'INACTIVE', 'Reserved brand', CURRENT_TIMESTAMP, 0),
     ('ADMIN',    'BONUS', 'INACTIVE', 'Reserved word', CURRENT_TIMESTAMP, 0),
     ('SUPPORT',  'BONUS', 'INACTIVE', 'Reserved word', CURRENT_TIMESTAMP, 0),

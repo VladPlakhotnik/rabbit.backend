@@ -115,10 +115,10 @@ INSERT INTO clicker_cases
   (id, slug, name, description, image_url, case_price, is_popular,
    is_limited, remaining_count, max_count, created_at, updated_at)
 VALUES
-  (1, 'rabbit-starter', 'Rabbit Starter Case',
+  (1, 'bunny-starter', 'Bunny Starter Case',
    'A handful of cheap CS:GO skins. Drop one for 100 carrots.',
    '', 100, true,  false, 0, 0, NOW(), NOW()),
-  (2, 'rabbit-deluxe',  'Rabbit Deluxe Case',
+  (2, 'bunny-deluxe',  'Bunny Deluxe Case',
    'Mid-tier CS:GO skins. 1000 carrots a try.',
    '', 1000, false, false, 0, 0, NOW(), NOW())
 ON CONFLICT (id) DO UPDATE SET
