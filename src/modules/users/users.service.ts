@@ -53,8 +53,13 @@ export interface UserDepositHistoryItem {
   status: UserDeposit['status']
   created_at: Date
   updated_at: Date
+  credited_at: Date | null
   external_id: string | null
+  external_order_id: string | null
   failure_reason: string | null
+  provider_status: string | null
+  steam_id: string | null
+  trade_offer_id: string | null
 }
 
 export interface AdminDepositItem extends UserDepositHistoryItem {
@@ -327,9 +332,14 @@ export class UserService {
       bonus_amount: deposit.bonus_amount ?? 0,
       status: deposit.status,
       created_at: deposit.created_at,
+      credited_at: deposit.credited_at,
       updated_at: deposit.updated_at,
       external_id: deposit.external_id,
+      external_order_id: deposit.external_order_id,
       failure_reason: deposit.failure_reason,
+      provider_status: deposit.provider_status,
+      steam_id: deposit.steam_id,
+      trade_offer_id: deposit.trade_offer_id,
     }))
   }
 
@@ -444,7 +454,7 @@ export class UserService {
     const search = filters.search?.trim()
     if (search) {
       addWhere(
-        `(CAST(deposit.id AS TEXT) ILIKE :search OR CAST(deposit.user_id AS TEXT) ILIKE :search OR COALESCE(deposit.source, '') ILIKE :search OR COALESCE(deposit.external_id, '') ILIKE :search OR COALESCE(deposit.failure_reason, '') ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search)`,
+        `(CAST(deposit.id AS TEXT) ILIKE :search OR CAST(deposit.user_id AS TEXT) ILIKE :search OR COALESCE(deposit.source, '') ILIKE :search OR COALESCE(deposit.external_id, '') ILIKE :search OR COALESCE(deposit.external_order_id, '') ILIKE :search OR COALESCE(deposit.provider_status, '') ILIKE :search OR COALESCE(deposit.trade_offer_id, '') ILIKE :search OR COALESCE(deposit.failure_reason, '') ILIKE :search OR COALESCE(user.display_name, '') ILIKE :search)`,
         { search: `%${search}%` },
       )
     }
@@ -1203,11 +1213,16 @@ export class UserService {
       amount: deposit.amount,
       bonus_amount: deposit.bonus_amount ?? 0,
       created_at: deposit.created_at,
+      credited_at: deposit.credited_at,
       external_id: deposit.external_id,
+      external_order_id: deposit.external_order_id,
       failure_reason: deposit.failure_reason,
       id: deposit.id,
       method: deposit.source ?? 'manual',
+      provider_status: deposit.provider_status,
       status: deposit.status,
+      steam_id: deposit.steam_id,
+      trade_offer_id: deposit.trade_offer_id,
       updated_at: deposit.updated_at,
       user:
         deposit.user != null

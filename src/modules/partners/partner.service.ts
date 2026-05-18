@@ -61,6 +61,9 @@ const LANDING_PATH_REGEX = /^\/[A-Z0-9/_-]{0,120}$/i
 const DEFAULT_CAMPAIGN_SLUG = 'main'
 const DEFAULT_CAMPAIGN_NAME = 'Main campaign'
 
+const roundMoney = (value: number): number =>
+  Math.round((value + Number.EPSILON) * 100) / 100
+
 export interface PartnerDashboard {
   level: PartnerLevel
   code: string
@@ -108,6 +111,27 @@ export interface ReferralListItem {
 }
 
 export type PartnerReferralStatus = 'registered' | 'unconverted' | 'active'
+
+export interface PartnerReferralDepositInput {
+  amount: number
+  depositId: number
+  firstDeposit: boolean
+  referralUser: Pick<
+    User,
+    | 'display_name'
+    | 'id'
+    | 'referral_campaign_id'
+    | 'referral_parent_id'
+    | 'referral_source'
+    | 'referral_sub_id'
+  >
+  source: string
+}
+
+export interface PartnerReferralDepositPostback {
+  data: Record<string, unknown>
+  partnerUserId: number
+}
 
 export interface PartnerStatisticsPoint {
   date: string
@@ -690,6 +714,87 @@ export class PartnerService {
     return nextLevel
   }
 
+  async recordReferralDeposit(
+    manager: EntityManager,
+    input: PartnerReferralDepositInput,
+  ): Promise<PartnerReferralDepositPostback | null> {
+    const partnerUserId = input.referralUser.referral_parent_id
+    const amount = roundMoney(input.amount)
+
+    if (
+      !partnerUserId ||
+      partnerUserId === input.referralUser.id ||
+      amount <= 0
+    ) {
+      return null
+    }
+
+    const profileRows = await manager.query<
+      { total_referrals_deposit: string | number }[]
+    >(
+      `
+        INSERT INTO "partner_profiles"
+          (
+            "user_id",
+            "level",
+            "referral_balance",
+            "total_earned",
+            "total_referrals_deposit",
+            "last_code_change_at",
+            "code_locked_by_admin",
+            "created_at",
+            "updated_at"
+          )
+        VALUES ($1, $2, 0, 0, $3, NULL, false, NOW(), NOW())
+        ON CONFLICT ("user_id")
+        DO UPDATE SET
+          "total_referrals_deposit" =
+            ROUND(("partner_profiles"."total_referrals_deposit" + EXCLUDED."total_referrals_deposit")::numeric, 2),
+          "updated_at" = NOW()
+        RETURNING "total_referrals_deposit"
+      `,
+      [partnerUserId, PartnerLevel.BRONZE, amount],
+    )
+
+    await this.incrementCampaignReferralDeposit(
+      manager,
+      input,
+      partnerUserId,
+      amount,
+    )
+    await this.recomputeLevel(partnerUserId, manager)
+
+    if (!input.firstDeposit) {
+      return null
+    }
+
+    return {
+      data: {
+        amount,
+        campaign_id: input.referralUser.referral_campaign_id ?? null,
+        deposit_id: input.depositId,
+        referral_display_name: input.referralUser.display_name,
+        referral_source: input.referralUser.referral_source ?? null,
+        referral_sub_id: input.referralUser.referral_sub_id ?? null,
+        referral_user_id: input.referralUser.id,
+        source: input.source,
+        total_referrals_deposit:
+          Number(profileRows[0]?.total_referrals_deposit) || amount,
+      },
+      partnerUserId,
+    }
+  }
+
+  async dispatchReferralFirstDepositPostback(
+    postback: PartnerReferralDepositPostback,
+  ): Promise<void> {
+    await this.dispatchPartnerPostback(
+      postback.partnerUserId,
+      'first_deposit',
+      postback.data,
+    )
+  }
+
   /**
    * Returns the partner dashboard for `userId`, creating profile + referral code on first access.
    *
@@ -697,9 +802,9 @@ export class PartnerService {
    * indexed read on partner_levels + a no-op save when the level is
    * already correct) and means the dashboard always reflects current
    * level for the current `total_referrals_deposit`. The future
-   * deposit-success hook will also call `recomputeLevel` directly so
-   * level-ups happen the moment the threshold is crossed; this lazy
-   * pass is a safety net against drift.
+   * deposit-success hook also calls `recomputeLevel` directly so level-ups
+   * happen the moment the threshold is crossed; this lazy pass is a safety
+   * net against drift.
    */
   async getDashboard(userId: number): Promise<PartnerDashboard> {
     const { profile, code } = await this.getOrCreateProfile(userId)
@@ -1891,6 +1996,39 @@ export class PartnerService {
       'commission_approved',
       'payout_paid',
     ]
+  }
+
+  private async incrementCampaignReferralDeposit(
+    manager: EntityManager,
+    input: PartnerReferralDepositInput,
+    partnerUserId: number,
+    amount: number,
+  ): Promise<void> {
+    const campaignId = input.referralUser.referral_campaign_id
+    if (!campaignId) {
+      return
+    }
+
+    await manager.query(
+      `
+        INSERT INTO "partner_campaign_daily_stats"
+          (
+            "partner_user_id",
+            "campaign_id",
+            "day",
+            "referral_deposit_amount",
+            "created_at",
+            "updated_at"
+          )
+        VALUES ($1, $2, $3::date, $4, NOW(), NOW())
+        ON CONFLICT ("partner_user_id", "campaign_id", "day")
+        DO UPDATE SET
+          "referral_deposit_amount" =
+            ROUND(("partner_campaign_daily_stats"."referral_deposit_amount" + EXCLUDED."referral_deposit_amount")::numeric, 2),
+          "updated_at" = NOW()
+      `,
+      [partnerUserId, campaignId, this.formatSqlDate(new Date()), amount],
+    )
   }
 
   private async dispatchPartnerPostback(

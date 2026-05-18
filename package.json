@@ -74,7 +74,6 @@
     "socket.io": "^4.8.1",
     "speakeasy": "^2.0.0",
     "stream-json": "^2.1.0",
-    "stripe": "^17.4.0",
     "ts-node": "^10.9.2",
     "tweetnacl": "^1.0.3",
     "typeorm": "^0.3.22",

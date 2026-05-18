@@ -308,19 +308,30 @@ export class AdminAnalyticsService {
     const [raw] = await this.dataSource.query(
       `
         SELECT
-          COUNT(*) AS total_count,
-          COALESCE(SUM(amount), 0) AS total_amount,
-          COUNT(*) FILTER (WHERE status = 'success') AS success_count,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'success'), 0) AS success_amount,
-          COUNT(DISTINCT user_id) FILTER (WHERE status = 'success') AS active_depositors,
-          COUNT(*) FILTER (WHERE status = 'waiting') AS waiting_count,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'waiting'), 0) AS waiting_amount,
-          COUNT(*) FILTER (WHERE status = 'error') AS error_count,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'error'), 0) AS error_amount,
-          COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_count,
-          COALESCE(SUM(amount) FILTER (WHERE status = 'cancelled'), 0) AS cancelled_amount
+          COUNT(*) FILTER (WHERE created_at >= $1 AND created_at < $2) AS total_count,
+          COALESCE(SUM(amount) FILTER (WHERE created_at >= $1 AND created_at < $2), 0) AS total_amount,
+          COUNT(*) FILTER (
+            WHERE status = 'success'
+              AND COALESCE(credited_at, created_at) >= $1
+              AND COALESCE(credited_at, created_at) < $2
+          ) AS success_count,
+          COALESCE(SUM(amount) FILTER (
+            WHERE status = 'success'
+              AND COALESCE(credited_at, created_at) >= $1
+              AND COALESCE(credited_at, created_at) < $2
+          ), 0) AS success_amount,
+          COUNT(DISTINCT user_id) FILTER (
+            WHERE status = 'success'
+              AND COALESCE(credited_at, created_at) >= $1
+              AND COALESCE(credited_at, created_at) < $2
+          ) AS active_depositors,
+          COUNT(*) FILTER (WHERE status = 'waiting' AND created_at >= $1 AND created_at < $2) AS waiting_count,
+          COALESCE(SUM(amount) FILTER (WHERE status = 'waiting' AND created_at >= $1 AND created_at < $2), 0) AS waiting_amount,
+          COUNT(*) FILTER (WHERE status = 'error' AND created_at >= $1 AND created_at < $2) AS error_count,
+          COALESCE(SUM(amount) FILTER (WHERE status = 'error' AND created_at >= $1 AND created_at < $2), 0) AS error_amount,
+          COUNT(*) FILTER (WHERE status = 'cancelled' AND created_at >= $1 AND created_at < $2) AS cancelled_count,
+          COALESCE(SUM(amount) FILTER (WHERE status = 'cancelled' AND created_at >= $1 AND created_at < $2), 0) AS cancelled_amount
         FROM user_deposits
-        WHERE created_at >= $1 AND created_at < $2
       `,
       [from, to],
     )
@@ -378,7 +389,14 @@ export class AdminAnalyticsService {
     const [raw] = await this.dataSource.query(
       `
         WITH active_users AS (
-          SELECT user_id FROM user_deposits WHERE created_at >= $1 AND created_at < $2
+          SELECT user_id
+          FROM user_deposits
+          WHERE created_at >= $1 AND created_at < $2
+             OR (
+               status = 'success'
+               AND COALESCE(credited_at, created_at) >= $1
+               AND COALESCE(credited_at, created_at) < $2
+             )
           UNION SELECT user_id FROM case_history WHERE created_at >= $1 AND created_at < $2
           UNION SELECT user_id FROM upgrade_history WHERE created_at >= $1 AND created_at < $2
           UNION SELECT user_id FROM mines_sessions WHERE created_at >= $1 AND created_at < $2
@@ -522,10 +540,12 @@ export class AdminAnalyticsService {
       [
         this.dataSource.query(
           `
-          SELECT date_trunc('day', created_at)::date AS day,
-                 COALESCE(SUM(amount) FILTER (WHERE status = 'success'), 0) AS deposits
+          SELECT date_trunc('day', COALESCE(credited_at, created_at))::date AS day,
+                 COALESCE(SUM(amount), 0) AS deposits
           FROM user_deposits
-          WHERE created_at >= $1 AND created_at < $2
+          WHERE status = 'success'
+            AND COALESCE(credited_at, created_at) >= $1
+            AND COALESCE(credited_at, created_at) < $2
           GROUP BY 1
         `,
           [from, to],

@@ -1,7 +1,7 @@
 # Fly.io app configuration for Bunny Backend.
 # See https://fly.io/docs/reference/configuration/ for details.
 
-app = 'bunny-backend'
+app = 'rabbit-backend'
 primary_region = 'ams'
 
 [build]

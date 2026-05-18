@@ -19,7 +19,7 @@ export class AdminDepositListQueryDto {
   @Max(100)
   limit?: number
 
-  @ApiPropertyOptional({ example: 'stripe' })
+  @ApiPropertyOptional({ example: 'skinsback' })
   @IsOptional()
   @IsString()
   @MaxLength(160)
@@ -30,7 +30,7 @@ export class AdminDepositListQueryDto {
   @IsIn(Object.values(UserDepositStatus))
   status?: UserDepositStatus
 
-  @ApiPropertyOptional({ example: 'stripe' })
+  @ApiPropertyOptional({ example: 'skinsback' })
   @IsOptional()
   @IsString()
   @MaxLength(64)

@@ -221,9 +221,82 @@ async function returnsAdminOverview() {
   assert.equal(overview.levels[0]?.name, 'bronze')
 }
 
+async function recordsReferralDepositSideEffects() {
+  const queryBuilder = createQueryBuilderMock([], 0)
+  const service = createService(queryBuilder)
+  const queries: { params: unknown[]; sql: string }[] = []
+  const savedProfiles: unknown[] = []
+  const profile = {
+    level: PartnerLevel.BRONZE,
+    total_referrals_deposit: 125,
+    user_id: 7,
+  }
+  const manager = {
+    getRepository: (entity: { name?: string }) => {
+      if (entity.name === 'PartnerProfile') {
+        return {
+          findOne: async () => profile,
+          save: async (next: unknown) => {
+            savedProfiles.push(next)
+            return next
+          },
+        }
+      }
+      if (entity.name === 'PartnerLevelConfig') {
+        return {
+          find: async () => [
+            {
+              level: PartnerLevel.BRONZE,
+              min_referrals_deposit: 0,
+            },
+            {
+              level: PartnerLevel.SILVER,
+              min_referrals_deposit: 100,
+            },
+          ],
+        }
+      }
+      throw new Error(`Unexpected repository: ${entity.name ?? 'unknown'}`)
+    },
+    query: async (sql: string, params: unknown[]) => {
+      queries.push({ params, sql })
+      return [{ total_referrals_deposit: '125' }]
+    },
+  }
+
+  const postback = await service.recordReferralDeposit(manager as never, {
+    amount: 100,
+    depositId: 55,
+    firstDeposit: true,
+    referralUser: {
+      display_name: 'Referral',
+      id: 42,
+      referral_campaign_id: 3,
+      referral_parent_id: 7,
+      referral_source: 'telegram',
+      referral_sub_id: 'a1',
+    },
+    source: 'skinsback',
+  })
+
+  assert.equal(postback?.partnerUserId, 7)
+  assert.equal(postback?.data.amount, 100)
+  assert.equal(postback?.data.deposit_id, 55)
+  assert.equal(postback?.data.total_referrals_deposit, 125)
+  assert.equal(profile.level, PartnerLevel.SILVER)
+  assert.equal(savedProfiles.length, 1)
+  assert.match(queries[0]?.sql ?? '', /partner_profiles/)
+  assert.deepEqual(queries[0]?.params, [7, PartnerLevel.BRONZE, 100])
+  assert.match(queries[1]?.sql ?? '', /partner_campaign_daily_stats/)
+  assert.equal(queries[1]?.params[0], 7)
+  assert.equal(queries[1]?.params[1], 3)
+  assert.equal(queries[1]?.params[3], 100)
+}
+
 async function run() {
   await listsPartnersForAdminWithFilters()
   await returnsAdminOverview()
+  await recordsReferralDepositSideEffects()
 }
 
 void run().catch(error => {

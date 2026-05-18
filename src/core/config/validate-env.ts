@@ -36,6 +36,11 @@ const RECOMMENDED_VARS = [
   'DISCORD_GUILD_ID',
   'DISCORD_INVITE_URL',
   'PARTNER_ATTRIBUTION_SALT',
+  'SKINSBACK_PUBLIC_BACKEND_URL',
+  'SKINSBACK_FRONTEND_URL',
+  'SKINSBACK_CLIENT_ID',
+  'SKINSBACK_CLIENT_SECRET',
+  'SKINSBACK_RESULT_URL',
 ] as const
 
 // Catches a copy-paste of `.env.example` where placeholders weren't replaced.

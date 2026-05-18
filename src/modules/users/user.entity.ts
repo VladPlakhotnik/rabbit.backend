@@ -25,7 +25,13 @@ export class User {
   @Column({ type: 'int', default: 0 })
   upgraded_skins!: number
 
-  @Column({ type: 'int', default: 0 })
+  @Column({
+    type: 'numeric',
+    precision: 12,
+    scale: 2,
+    default: 0,
+    transformer: numericTransformer,
+  })
   deposit_amount!: number
 
   @Column({

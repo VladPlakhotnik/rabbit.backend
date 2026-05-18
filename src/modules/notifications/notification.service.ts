@@ -294,9 +294,6 @@ export class NotificationService {
     )
   }
 
-  // Stub for the future deposit flow. The payments module currently
-  // only creates Stripe payment intents and has no completion path —
-  // when that lands, call this from the success webhook / handler.
   async notifyDepositCompleted(
     userId: number,
     amount: number,

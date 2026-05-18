@@ -45,6 +45,7 @@ import { CrashModule } from './modules/crash/crash.module'
 import { EarnVaultModule } from './modules/earnVault/earn-vault.module'
 import { VipModule } from './modules/vip/vip.module'
 import { BonusesModule } from './modules/bonuses/bonuses.module'
+import { PaymentModule } from './modules/payments/payment.module'
 
 @Module({
   imports: [
@@ -92,9 +93,8 @@ import { BonusesModule } from './modules/bonuses/bonuses.module'
     VipModule,
     BonusesModule,
     EarnVaultModule,
+    PaymentModule,
     AdminModule,
-    // TO DO
-    // PaymentModule,
   ],
   controllers: [AppController],
   providers: [

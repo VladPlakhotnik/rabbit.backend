@@ -1,46 +1,52 @@
 import {
-  Controller,
-  Post,
   Body,
-  HttpException,
-  HttpStatus,
+  Controller,
+  Headers,
+  Post,
+  Req,
+  UseGuards,
 } from '@nestjs/common'
-import { StripeService } from './stripe.service'
+import { AuthGuard } from '@nestjs/passport'
+import { Throttle } from '@nestjs/throttler'
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger'
+import { Request } from 'express'
 
+import { UserThrottlerGuard } from '../../core/guards/user-throttler.guard'
+import { User } from '../users/user.entity'
+import { CreateSkinsbackDepositDto } from './dto/create-skinsback-deposit.dto'
+import { SkinsbackService } from './skinsback.service'
+
+@ApiTags('payment')
 @Controller('payment')
 export class PaymentController {
-  constructor(private stripeService: StripeService) {}
+  constructor(private readonly skinsbackService: SkinsbackService) {}
 
-  @Post('create-payment-intent')
-  async createPaymentIntent(@Body() body: any) {
-    const { amount, paymentMethod } = body
-    const stripe = this.stripeService.getStripeInstance()
+  @Post('skinsback/deposits')
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), UserThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Create a Skinsback skin deposit' })
+  @ApiResponse({ status: 201, description: 'Returns Skinsback payment URL' })
+  async createSkinsbackDeposit(
+    @Req() req: Request,
+    @Body() body: CreateSkinsbackDepositDto,
+  ) {
+    const user = req.user as User
 
-    try {
-      const paymentMethodTypes = []
+    return this.skinsbackService.createDeposit(user.id, body)
+  }
 
-      if (paymentMethod === 'card') {
-        paymentMethodTypes.push('card')
-      } else if (paymentMethod === 'google_pay') {
-        paymentMethodTypes.push('card') // Google Pay обрабатывается как card
-      } else if (paymentMethod === 'apple_pay') {
-        paymentMethodTypes.push('card') // Apple Pay также как card
-      } else {
-        throw new HttpException(
-          'Unsupported payment method',
-          HttpStatus.BAD_REQUEST,
-        )
-      }
-
-      const paymentIntent = await stripe.paymentIntents.create({
-        amount: amount * 100, // сумма в центах
-        currency: 'usd',
-        payment_method_types: paymentMethodTypes,
-      })
-
-      return { clientSecret: paymentIntent.client_secret }
-    } catch (error) {
-      throw new HttpException(error as string, HttpStatus.BAD_REQUEST)
-    }
+  @Post('skinsback/webhook')
+  @ApiOperation({ summary: 'Handle Skinsback deposit webhook' })
+  async handleSkinsbackWebhook(
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Body() body: Record<string, unknown>,
+  ) {
+    return this.skinsbackService.handleWebhook(headers, body)
   }
 }

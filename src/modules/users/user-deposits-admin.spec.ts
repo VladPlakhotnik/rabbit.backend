@@ -93,7 +93,7 @@ async function listsDepositsForAdminWithFilters() {
       external_id: 'pi_test_1',
       failure_reason: null,
       id: 17,
-      source: 'stripe',
+      source: 'skinsback',
       status: 'success',
       updated_at: new Date('2026-05-13T10:01:00Z'),
       user: {
@@ -114,8 +114,8 @@ async function listsDepositsForAdminWithFilters() {
     maxAmount: 300,
     minAmount: 10,
     page: 2,
-    search: 'stripe',
-    source: 'stripe',
+    search: 'skinsback',
+    source: 'skinsback',
     status: UserDepositStatus.SUCCESS,
     userId: 42,
   })
@@ -132,7 +132,7 @@ async function listsDepositsForAdminWithFilters() {
   assert.equal(result.limit, 3)
   assert.equal(result.totalPages, 2)
   assert.equal(result.items[0]?.id, 17)
-  assert.equal(result.items[0]?.method, 'stripe')
+  assert.equal(result.items[0]?.method, 'skinsback')
   assert.equal(result.items[0]?.user?.id, 42)
   assert.equal(queryBuilder.calls.joins.length, 1)
   assert.equal(queryBuilder.calls.skip[0], 3)
