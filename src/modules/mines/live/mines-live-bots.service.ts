@@ -10,6 +10,7 @@ import {
 } from './mines-live-bots.logic'
 import { MinesLiveService } from './mines-live.service'
 import { BotProfileService } from '../../bots/bot-profile.service'
+import { areBotsDisabled } from '../../../core/config/background-jobs'
 
 @Injectable()
 export class MinesLiveBotsService
@@ -26,7 +27,7 @@ export class MinesLiveBotsService
 
   onApplicationBootstrap(): void {
     if (
-      process.env.DISABLE_BOTS === 'true' ||
+      areBotsDisabled() ||
       process.env.DISABLE_MINES_BOTS === 'true'
     ) {
       this.logger.log('Mines bots disabled via env')

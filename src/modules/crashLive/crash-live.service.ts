@@ -25,6 +25,7 @@ import {
   CRASH_LIVE_WAIT_MS,
 } from './crash-live.constants'
 import type { CrashLiveSnapshot, CrashLiveStateHandler } from './crash-live.types'
+import { areBotsDisabled } from '../../core/config/background-jobs'
 
 const INITIAL_HISTORY = [
   1.53, 0.87, 3.41, 1.12, 2.74, 0.96, 5.28, 1.75, 2.02, 1.33, 8.18, 1.07,
@@ -50,6 +51,11 @@ export class CrashLiveService
   constructor(private readonly botProfileService: BotProfileService) {}
 
   async onApplicationBootstrap(): Promise<void> {
+    if (areBotsDisabled()) {
+      this.logger.log('Crash live bots disabled via env')
+      return
+    }
+
     await this.startWaitingRound(1)
     this.timer = setInterval(() => {
       void this.tick()

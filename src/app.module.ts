@@ -46,13 +46,18 @@ import { EarnVaultModule } from './modules/earnVault/earn-vault.module'
 import { VipModule } from './modules/vip/vip.module'
 import { BonusesModule } from './modules/bonuses/bonuses.module'
 import { PaymentModule } from './modules/payments/payment.module'
+import { areScheduledJobsDisabled } from './core/config/background-jobs'
+
+const scheduleImports = areScheduledJobsDisabled()
+  ? []
+  : [ScheduleModule.forRoot()]
 
 @Module({
   imports: [
     // Cron scheduler — used by sync jobs (skin price / catalog) and any
     // future timed tasks. Module is global; @Cron on a provider method
     // is enough to register a job.
-    ScheduleModule.forRoot(),
+    ...scheduleImports,
     DatabaseModule,
     RedisModule,
     CatalogAuditModule,

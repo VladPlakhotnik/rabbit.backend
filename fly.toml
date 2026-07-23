@@ -6,6 +6,11 @@ primary_region = 'ams'
 
 [build]
 
+[env]
+  # Temporary quiet mode: keep the API available without cron jobs,
+  # marketplace syncs, giveaway maintenance, or autonomous bots.
+  DISABLE_BACKGROUND_JOBS = 'true'
+
 [http_service]
   internal_port = 5000
   force_https = true

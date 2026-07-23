@@ -18,6 +18,7 @@ import {
   BotProfileSnapshot,
   pickBotStake,
 } from '../../bots/bot-behavior.logic'
+import { areBotsDisabled } from '../../../core/config/background-jobs'
 
 // Pacing — uniform 1.5–2.6s. Mean ~2.05s gives ~29 drops/min: tight
 // enough that the feed always feels active without overwhelming the eye.
@@ -94,8 +95,8 @@ export class LiveDropBotsService
   ) {}
 
   onApplicationBootstrap(): void {
-    if (process.env.DISABLE_BOTS === 'true') {
-      this.logger.log('Bots disabled via DISABLE_BOTS env')
+    if (areBotsDisabled()) {
+      this.logger.log('LiveDrop bots disabled via env')
       return
     }
 
