@@ -71,29 +71,56 @@ Admin-specific variables are documented in [src/modules/admin/README.md](./src/m
 
 ## Local Development
 
+The recommended setup keeps only PostgreSQL and Redis in Docker and runs the
+NestJS backend directly on the host for fast watch-mode reloads.
+
+The repository-local `latest.dump` is a PostgreSQL 16 custom-format snapshot.
+It is intentionally gitignored because it can contain real user data. To
+recreate the local database from that snapshot and apply every migration added
+after it:
+
 ```bash
 yarn install
-yarn dev
+yarn db:setup
+yarn dev:local
 ```
 
-The API runs on `http://localhost:5000` unless `PORT` is set.
+`db:setup` replaces only the `bunny` database in the `bunny-postgres` Docker
+container. It does not touch Neon or the `DATABASE_URL` stored in `.env`.
+Set `LOCAL_DB_DUMP_PATH` if the dump has a different name or location.
 
-Run Redis with Docker if you do not have it installed locally:
+After the first setup, use `yarn db:up` to start PostgreSQL and Redis without
+reimporting data, and `yarn db:down` to stop them. The Docker volume preserves
+the local data between starts. The API runs on `http://localhost:5000`.
 
-```bash
-docker compose up redis
-```
+`yarn dev:local` overrides only the database/Redis connection and disables
+scheduled jobs and autonomous bots. The remaining secrets and integration
+settings still come from `.env`. Use `yarn dev` when you deliberately want the
+normal `.env` connections instead.
 
-Run the backend through Docker:
+To run the backend itself through Docker as well:
 
 ```bash
 docker compose up backend
+```
+
+The Compose backend waits for both infrastructure services and uses the
+container-internal PostgreSQL/Redis addresses. It is useful for CI and
+environment-parity checks; host-side `yarn dev:local` is usually faster for
+day-to-day backend work.
+
+To discard all local PostgreSQL and Redis data and start over, explicitly
+remove the volumes before running `yarn db:setup` again:
+
+```bash
+docker compose down --volumes
 ```
 
 ## Scripts
 
 ```bash
 yarn dev                       # Start Nest in watch mode
+yarn dev:local                 # Start Nest against Docker PostgreSQL/Redis
 yarn build                     # Build to dist/
 yarn start                     # Run dist/main.js
 yarn lint:check                # ESLint check
@@ -106,6 +133,9 @@ yarn sync:dota:catalog         # One-off Dota catalog sync
 yarn clicker:redis:clear       # Clear clicker Redis state
 yarn clicker:load              # Clicker websocket load smoke
 yarn clicker:security:smoke    # Clicker security smoke script
+yarn db:setup                  # Replace local DB from dump + apply migrations
+yarn db:up                     # Start local PostgreSQL and Redis
+yarn db:down                   # Stop local PostgreSQL and Redis
 ```
 
 ## Database

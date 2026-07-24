@@ -1,9 +1,13 @@
 node_modules
 npm-debug.log
+*.log
+*.dump
 dist
 .git
 .gitignore
 .env
 .env.*
+.codex-logs
+.codex-run
 .vscode
-.idea 
+.idea

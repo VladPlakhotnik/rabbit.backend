@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bunny-postgres
+    ports:
+      - '127.0.0.1:5432:5432'
+    environment:
+      POSTGRES_USER: bunny
+      POSTGRES_PASSWORD: bunny
+      POSTGRES_DB: bunny
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bunny -d bunny']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   redis:
     image: redis:7-alpine
     container_name: bunny-redis
@@ -31,8 +49,16 @@ services:
       - PORT=5000
       - BASE_URL=http://localhost:5000
       - FRONTEND_URL=http://localhost:3000
+      - DATABASE_URL=postgres://bunny:bunny@postgres:5432/bunny
+      - DATABASE_SSL=false
       - REDIS_URL=redis://redis:6379
+      - DISABLE_BACKGROUND_JOBS=true
+      - DISABLE_BOTS=true
+      - DISABLE_MINES_BOTS=true
+      - DISABLE_SCHEDULED_JOBS=true
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -43,7 +69,7 @@ services:
           '--no-verbose',
           '--tries=1',
           '--spider',
-          'http://localhost:5000/api/health',
+          'http://localhost:5000/health',
         ]
       interval: 30s
       timeout: 10s
@@ -53,4 +79,5 @@ services:
     command: yarn dev
 
 volumes:
+  postgres_data:
   redis_data:

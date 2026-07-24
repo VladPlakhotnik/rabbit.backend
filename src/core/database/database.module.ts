@@ -35,9 +35,15 @@ import { DataSource } from 'typeorm'
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
-      ssl: {
-        rejectUnauthorized: false,
-      },
+      // Neon requires TLS; the local Docker PostgreSQL instance does not.
+      // Default to the existing hosted-database behaviour so production does
+      // not change when DATABASE_SSL is absent.
+      ssl:
+        process.env.DATABASE_SSL === 'false'
+          ? false
+          : {
+              rejectUnauthorized: false,
+            },
       autoLoadEntities: true,
       synchronize: false,
       retryAttempts: 3,

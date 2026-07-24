@@ -7,6 +7,7 @@
     "prestart": "yarn build",
     "start": "node dist/main.js",
     "dev": "nest start --watch",
+    "dev:local": "cross-env DATABASE_URL=postgres://bunny:bunny@localhost:5432/bunny DATABASE_SSL=false REDIS_URL=redis://localhost:6379 DISABLE_BACKGROUND_JOBS=true DISABLE_BOTS=true DISABLE_MINES_BOTS=true DISABLE_SCHEDULED_JOBS=true yarn dev",
     "start:debug": "nest start --debug --watch",
     "build": "cross-env NODE_OPTIONS=--max_old_space_size=4096 nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -21,7 +22,10 @@
     "sync:dota:class-instance": "ts-node --transpile-only scripts/sync-dota-class-instance-once.ts",
     "clicker:redis:clear": "ts-node --transpile-only scripts/clear-clicker-redis.ts",
     "clicker:load": "node scripts/clicker-ws-load-test.js",
-    "clicker:security:smoke": "node scripts/clicker-security-smoke.js"
+    "clicker:security:smoke": "node scripts/clicker-security-smoke.js",
+    "db:up": "docker compose up -d --wait postgres redis",
+    "db:setup": "node scripts/setup-local-db.js",
+    "db:down": "docker compose stop postgres redis"
   },
   "dependencies": {
     "@nestjs/axios": "^4.0.0",
